@@ -1,9 +1,10 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.1.0
-- ステータス: 初期たたき台
+- 文書バージョン: 0.2.0
+- ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
+- 最終更新: 2026-07-10
 
 ## 1. 概要
 
@@ -11,10 +12,12 @@ Oracle Councilは、ユーザーの質問をそのまま1つのAIへ渡すので
 
 1. 不完全・曖昧・誤った前提を含む質問を整理する
 2. 最大4つのAI CLIへ独立して回答させる
-3. 回答の相違、矛盾、弱点を相互に検査する
-4. 事実主張を根拠資料で確認する
-5. 根拠を優先して最終回答を統合する
-6. 合意状況、検証状況、不確実な点をユーザーへ示す
+3. 回答から検証対象となるClaimを抽出する
+4. Oracle Council自身が外部Evidenceを収集・照合する
+5. 各AIがEvidenceを参照しながら回答を批評する
+6. 根拠を優先して最終回答を統合する
+7. 別のAIが最終回答を監査する
+8. 合意状況、検証状況、不確実な点をユーザーへ示す
 
 表向きの価値は「AI同士が会議すること」ではなく、次の一点に置く。
 
@@ -32,54 +35,48 @@ Oracle Councilは、ユーザーの質問をそのまま1つのAIへ渡すので
 
 1. 一次資料・公式資料による裏付け
 2. 複数の信頼できる独立資料による裏付け
-3. AI間の論理的な整合性
-4. AIの多数意見
+3. Evidenceと回答の論理的な整合性
+4. AI間の論理的な整合性
+5. AIの多数意見
 
 ### 2.2 分からない場合は保留できる
 
 根拠が不足している場合、情報源が競合する場合、または重大な反対意見を解消できない場合は、次のいずれかで返す。
 
-- 一部検証済み
-- 情報が競合
-- 未確認
-- 回答保留
+- `verified`: 検証済み
+- `partially_verified`: 一部検証済み
+- `unverified`: 未確認
+- `conflicting`: 情報が競合
+- `withheld`: 回答保留
 
 ### 2.3 内部は複雑でも操作は簡単にする
 
-一般ユーザーには質問入力欄と最終回答を中心に見せる。AIごとの回答、批評、投票、証拠一覧などは「検証の詳細」として任意表示にする。
+一般ユーザーには質問入力欄と最終回答を中心に見せる。AIごとの回答、批評、投票、Evidence一覧などは「検証の詳細」として任意表示にする。
 
-### 2.4 AI CLIは交換可能にする
+### 2.4 AI CLIと検索機能を交換可能にする
 
-特定のAIサービスへ強く依存せず、各AI CLIをアダプターとして実装する。利用可能なCLIのみで処理を継続する。
+特定のAIサービスや検索サービスへ強く依存しない。AI CLIは`AgentAdapter`、Evidence収集は`EvidenceProvider`として分離する。
 
-## 3. 目標
+### 2.5 暗黙の機能縮退を行わない
 
-### 3.1 MVPの目標
+`verify`または`strict`でEvidence収集が利用できない場合、外部検証済みであるかのように回答してはならない。処理を停止するか、ユーザーが明示的に`quick`へ切り替える。
+
+## 3. MVPの目標
 
 - 最大4つのAI CLIを並列実行できる
 - AIごとの利用可否、タイムアウト、利用上限を判定できる
 - 不完全な質問に対して必要な場合だけ追加質問できる
 - 各AIが他の回答を見ずに独立回答できる
-- 回答から検証対象となる事実主張を抽出できる
-- 回答間の矛盾と重要な反対意見を抽出できる
+- 回答から検証対象となるClaimを抽出できる
+- Oracle Council側でEvidenceを収集し、Claimと紐付けられる
+- Evidenceを参照した相互批評を実行できる
 - 根拠のある主張を優先して最終回答を生成できる
+- 最終回答を別Agentが監査できる
 - 合意状況と検証状況を分けて表示できる
-- 実行記録をJSONまたはSQLiteへ保存できる
+- 実行記録をJSONLへ保存できる
+- 主要な処理をJSON出力で外部連携できる
 
-### 3.2 将来目標
-
-- Web UI
-- AI評議会の進行状況表示
-- 検証根拠の閲覧画面
-- 質問分野に応じた専門検証モード
-- ローカルLLMを含む任意エージェントの追加
-- 同一質問の再検証と差分表示
-- 複数言語対応
-- ベンチマークによる精度評価
-
-## 4. 対象外
-
-MVPでは次を対象外とする。
+## 4. MVPの対象外
 
 - ハルシネーション完全ゼロの保証
 - AIの内部思考過程や非公開Chain of Thoughtの取得・表示
@@ -87,6 +84,9 @@ MVPでは次を対象外とする。
 - 医療、法律、金融分野における専門家判断の代替
 - すべての有料AI CLIの利用枠を一元管理する機能
 - 自律的に長時間動き続ける無制限討論
+- SQLiteバックエンド
+- 本格的なWeb UI
+- AI CLI組み込み検索だけを根拠とする検証
 
 ## 5. 用語
 
@@ -94,83 +94,90 @@ MVPでは次を対象外とする。
 - **Council**: その実行で参加可能なAgentの集合
 - **Clarifier**: 質問の不足、曖昧さ、前提を検査する役割
 - **Responder**: 独立回答を作る役割
+- **Claim Extractor**: 回答を検証可能なClaimへ分解する役割
 - **Critic**: 回答の矛盾、誤り、弱点を指摘する役割
-- **Verifier**: 事実主張と根拠資料の対応を確認する役割
-- **Synthesizer**: 根拠と批評を統合して最終回答を作る役割
-- **Auditor**: 最終回答に未解決の問題がないか監査する役割
+- **Verifier**: ClaimとEvidenceの対応を判定する役割
+- **Synthesizer**: 回答、Evidence、批評を統合して最終回答案を作る役割
+- **Auditor**: 最終回答案に未解決の問題がないか監査する役割
+- **Voter**: 監査後の最終案を承認または否認する役割
 - **Claim**: 真偽を確認可能な最小単位の事実主張
 - **Evidence**: Claimを支持または否定する外部資料
+- **EvidenceProvider**: 外部資料を検索・取得する交換可能な機能
 - **Quorum**: 合意判定に必要な参加Agent数
 
-役割は特定のAIへ固定しない。同じAgentが複数の工程を担当してもよいが、最終回答を作ったAgentとは別のAgentが監査することを原則とする。
+## 6. アーキテクチャと役割分担
 
-## 6. 想定ユーザー体験
-
-### 6.1 基本フロー
+### 6.1 基本構成
 
 ```text
-ユーザーが質問
-  ↓
-質問の完全性・前提・危険度を確認
-  ↓
-必要な場合だけ追加質問
-  ↓
-最大4つのAIが独立回答
-  ↓
-相違点・事実主張・要検証箇所を抽出
-  ↓
-根拠資料を収集・照合
-  ↓
-相互批評
-  ↓
-根拠を優先して回答を統合
-  ↓
-別Agentが最終監査
-  ↓
-回答・検証状況・未確認事項を表示
+CLI
+ └─ Orchestrator
+     ├─ Clarification Engine
+     ├─ Agent Adapters
+     ├─ Claim Pipeline
+     ├─ Evidence Providers
+     ├─ Verification Engine
+     ├─ Consensus Engine
+     └─ JSONL Storage
 ```
 
-### 6.2 追加質問を行わない例
+### 6.2 役割は「Agentの職種」ではなく「フェーズ」
 
-```text
-質問: 富士山の標高は？
-判定: ready
-処理: そのまま回答・検証工程へ進む
-```
+Claudeを常にCritic、Geminiを常にVerifierとするような固定割り当ては行わない。役割は実行フェーズごとにOrchestratorが決定する。
 
-### 6.3 仮定を明示して進める例
+選定はランダムではなく、次を用いた決定的なルールとする。
 
-```text
-質問: 東京から京都へ安く行く方法は？
-判定: ready_with_assumptions
-仮定: 通常期、大人1名、片道、日本円で比較する
-```
+1. Agentが利用可能である
+2. 設定ファイルの`role_priority`に適合する
+3. 必要な出力形式やコンテキスト長を扱える
+4. 同点の場合は設定順
+5. SynthesizerとAuditorは可能な限り別Agentにする
 
-### 6.4 追加質問を行う例
+同じ設定、同じ利用可能Agent集合であれば、原則として同じ選定結果になる。
 
-```text
-質問: おすすめのパソコンは？
-判定: needs_clarification
-質問:
-1. 主な用途は何ですか？
-2. およその予算はいくらですか？
-3. 持ち運ぶ予定はありますか？
-```
+### 6.3 MVPの担当方式
 
-### 6.5 前提を確認する例
+- **Clarifier**: 1 Agent
+- **Responder**: 利用可能な全Agent
+- **Claim Extractor**: 1 Agent
+- **Evidence収集**: Oracle CouncilのEvidenceProvider
+- **Verifier**: 1 Agent
+- **Critic**: 利用可能な全Agent
+- **Synthesizer**: 1 Agent
+- **Auditor**: Synthesizerとは別の1 Agent
+- **Voter**: 利用可能な全Agent
 
-```text
-質問: なぜティラピアはゴミ魚なのですか？
-判定: premise_issue
-応答: 「一般にゴミ魚とみなされている」という前提は確認が必要です。
-      ティラピアを嫌う人がいる理由について調べる、という意味で進めますか？
-```
+Criticは各回答へ個別に何度も問い合わせるのではなく、匿名化された全回答、Claim、Evidenceを受け取り、1回の呼び出しで統合批評を返す。これにより品質を確保しつつ呼び出し回数を抑える。
+
+重要度`critical`のClaimは、Verifierの判定に加えてAuditorが再確認する。
+
+### 6.4 参加Agentが少ない場合
+
+- 4 Agent: 通常フロー
+- 3 Agent: 通常フロー
+- 2 Agent: SynthesizerとAuditorを分離して継続
+- 1 Agent: 同一Agentが自己監査を行うが、`self_audited: true`とし、合意成立とは表示しない
+- 0 Agent: 回答不能
+
+### 6.5 フェーズ間の汚染対策
+
+各フェーズは原則として新しいCLIプロセスまたは新しいセッションで実行する。前フェーズの会話履歴を自動継承しない。
+
+各Agentへ渡す情報はフェーズごとに明示的に構成し、次のみに制限する。
+
+- 整理後の質問
+- 匿名化された回答
+- 構造化されたClaim
+- 構造化されたEvidence抜粋
+- 前フェーズの説明可能な要約
+
+非公開の内部思考過程、不要な会話履歴、他Agent名は渡さない。
 
 ## 7. 質問整理エンジン
 
 ### 7.1 目的
 
-ユーザーに完全なプロンプト作成を要求せず、雑な質問から回答可能な質問へ整える。既存の「対話型プロンプトメーカー」で採用した反復型の対話設計を参考にするが、Oracle Councilでは必要以上に聞き返さない。
+ユーザーに完全なプロンプト作成を要求せず、雑な質問から回答可能な質問へ整える。既存の「対話型プロンプトメーカー」で採用した反復型の対話設計を参考にするが、必要以上に聞き返さない。
 
 ### 7.2 判定ステータス
 
@@ -200,51 +207,47 @@ MVPでは次を対象外とする。
 - ユーザーはいつでも「この条件で進める」を選べる
 - 整理後の質問と仮定を確認可能にする
 
-### 7.5 内部出力例
+### 7.5 非対話モードの仮定生成
 
-```json
-{
-  "status": "needs_clarification",
-  "original_question": "おすすめのパソコンは？",
-  "interpreted_intent": "日本国内で購入可能なパソコン候補を知りたい",
-  "question_type": "recommendation",
-  "risk_level": "normal",
-  "requires_current_information": true,
-  "assumptions": [],
-  "missing_information": [
-    {
-      "item": "用途",
-      "importance": "critical",
-      "reason": "用途によって必要性能が大きく変わる"
-    }
-  ],
-  "questions": [
-    "主な用途は何ですか？",
-    "およその予算はいくらですか？",
-    "持ち運ぶ予定はありますか？"
-  ]
-}
-```
+`--no-interactive`では次の順に仮定を決める。
+
+1. 地域、通貨、日時などの決定的な規定値
+2. 質問種別ごとのテンプレート規則
+3. Clarifier Agentによる構造化された仮定案
+
+次の場合は自動仮定せず、終了コード`2`で`needs_clarification`を返す。
+
+- 結論が逆転する不足情報
+- 医療、法律、金融、安全に関わる重要条件
+- 個人を特定する必要がある質問
+- Clarifierが`importance: critical`とした不足情報
+
+AIが生成した仮定は実行記録へ保存する。完全な再現性は保証しないが、同じテンプレート、低いランダム性、対応CLIでのseed指定を用いて変動を抑える。
 
 ## 8. Agent管理
 
-### 8.1 初期構成
-
-MVPは最大4 Agentを想定する。具体的なCLI名は設定ファイルで定義し、実装へ固定しない。
-
-例:
+### 8.1 設定例
 
 ```yaml
 agents:
-  - id: agent1
+  - id: claude
     adapter: claude
     enabled: true
-  - id: agent2
+    role_priority:
+      synthesize: 100
+      audit: 80
+
+  - id: codex
     adapter: codex
     enabled: true
-  - id: agent3
+    role_priority:
+      claim_extract: 90
+      verify: 90
+
+  - id: gemini
     adapter: gemini
     enabled: true
+
   - id: agent4
     adapter: custom
     enabled: true
@@ -252,16 +255,16 @@ agents:
 
 ### 8.2 Agent状態
 
-- `OK`: 正常参加
-- `PASS_QUOTA`: 利用枠・トークン上限
-- `PASS_RATE_LIMIT`: レート制限
-- `PASS_AUTH`: 認証またはセッション切れ
-- `TIMEOUT`: 応答時間超過
-- `CONTEXT_OVERFLOW`: 入力長超過
-- `INVALID_OUTPUT`: 必要な形式で応答しなかった
-- `COMMAND_NOT_FOUND`: CLI未導入
-- `DISABLED`: 設定で無効
-- `ERROR`: その他の異常
+- `OK`
+- `PASS_QUOTA`
+- `PASS_RATE_LIMIT`
+- `PASS_AUTH`
+- `TIMEOUT`
+- `CONTEXT_OVERFLOW`
+- `INVALID_OUTPUT`
+- `COMMAND_NOT_FOUND`
+- `DISABLED`
+- `ERROR`
 
 ### 8.3 再試行
 
@@ -271,19 +274,58 @@ agents:
 - 無限再試行は禁止する
 - 失敗したAgentはその実行では棄権扱いとする
 
-### 8.4 参加数による動作
+### 8.4 タイムアウト
 
-- 4 Agent: 通常の評議会
-- 3 Agent: 3 Agentで継続
-- 2 Agent: 両者の評価と根拠を比較して継続
-- 1 Agent: 単独回答として明示し、合意成立とは表示しない
-- 0 Agent: 回答不能とし、各Agentの状態を表示する
+タイムアウトはAgent単位とフェーズ単位の両方を持つ。
 
-## 9. 回答生成と討論
+既定値:
 
-### 9.1 独立回答
+| モード | 1 Agent・1呼び出し | 1フェーズ全体 | 1実行全体 |
+|---|---:|---:|---:|
+| `quick` | 90秒 | 120秒 | 5分 |
+| `verify` | 180秒 | 240秒 | 10分 |
+| `strict` | 300秒 | 420秒 | 20分 |
 
-各Agentは他Agentの回答を見ずに回答する。最初の回答への追従を防ぎ、多様な解釈を確保する。
+- Agent単位タイムアウトで該当Agentを`TIMEOUT`にする
+- フェーズ単位タイムアウトで未完了Agentを棄権扱いにする
+- 全体タイムアウトで`partial`または`failed`として終了する
+- 値は設定ファイルとCLIオプションで変更可能にする
+
+## 9. 評議会の処理フロー
+
+### 9.1 基本フロー
+
+```text
+ユーザーが質問
+  ↓
+質問整理・前提検査
+  ↓
+全Responderが独立回答
+  ↓
+回答差分の軽量スキャン
+  ↓
+Claim抽出と重要度判定
+  ↓
+EvidenceProviderによる検索・取得
+  ↓
+VerifierによるClaim判定
+  ↓
+全CriticがEvidence参照付き批評
+  ↓
+Synthesizerが最終回答案を作成
+  ↓
+Auditorが重大問題を監査
+  ↓
+必要なら1回だけ修正
+  ↓
+全Voterが最終投票
+  ↓
+回答・検証状況・未確認事項を表示
+```
+
+### 9.2 独立回答
+
+各Agentは他Agentの回答を見ずに回答する。
 
 各回答には可能な範囲で次を含める。
 
@@ -294,16 +336,17 @@ agents:
 - 不確実な点
 - 参照した資料
 
-### 9.2 回答の匿名化
+### 9.3 匿名化
 
-相互批評時は、モデル名ではなく `Answer A`、`Answer B` のような識別子を使用する。モデルブランドへの先入観を減らす。
+批評、統合、投票時は、モデル名ではなく`Answer A`、`Answer B`のような識別子を使用する。
 
-### 9.3 批評
+### 9.4 批評
 
-Criticは次を確認する。
+各Criticは、匿名化された全回答、Claim一覧、Evidence判定を1回の入力で受け取り、次を確認する。
 
 - 回答間の矛盾
 - 日付、数字、固有名詞の不一致
+- Evidenceと矛盾する記述
 - 根拠のない断定
 - 質問の前提を無批判に受け入れていないか
 - 論理の飛躍
@@ -311,13 +354,45 @@ Criticは次を確認する。
 - 引用と出典の不一致
 - 重要な条件の見落とし
 
-討論はMVPでは原則1ラウンドとする。無制限の反論合戦は行わない。
+討論はMVPでは原則1ラウンドとする。`agree_with_changes`または監査で修正が必要になった場合のみ、統合案の修正を1回許可する。
 
-## 10. ハルシネーション対策
+## 10. Evidence収集とハルシネーション対策
 
-### 10.1 Claim抽出
+### 10.1 Evidence収集の責任範囲
 
-回答を検証可能な最小単位へ分解する。特に次を優先して抽出する。
+Oracle Council自身の`EvidenceProvider`をEvidence収集の正本とする。
+
+AI CLIの組み込み検索結果は補助情報として利用できるが、次を満たさない限り`verified`の根拠には数えない。
+
+- URLまたは一意な資料識別子を取得できる
+- Oracle Councilが資料へ直接アクセスできる
+- Claimに対応する箇所を取得できる
+- 取得日時と資料メタデータを記録できる
+
+### 10.2 EvidenceProvider
+
+MVPでは交換可能なインターフェースを先に実装する。
+
+```python
+class EvidenceProvider(Protocol):
+    async def search(self, query: str, *, limit: int) -> list[SearchResult]:
+        ...
+
+    async def fetch(self, result: SearchResult) -> EvidenceDocument:
+        ...
+```
+
+最低限、次のProviderを想定する。
+
+- `none`: 外部検索なし。`quick`専用
+- `web`: 外部検索APIまたは検索コマンド
+- `manual`: テスト用の固定Evidence
+
+最初に採用する実検索サービスは設定可能にし、サービス固有コードをOrchestratorへ埋め込まない。
+
+### 10.3 Claim抽出
+
+特に次を優先して抽出する。
 
 - 人名、組織名、製品名
 - 日付、数量、価格、割合
@@ -327,19 +402,32 @@ Criticは次を確認する。
 - 引用文
 - 現在の役職、価格、仕様、提供条件
 
-### 10.2 Claim状態
+### 10.4 Claim重要度
 
-- `verified`: 根拠により確認できた
+`importance`は次のEnumとする。
+
+- `critical`: 誤りが安全、健康、法律、重大な金銭損失に直結する
+- `major`: 質問への中心的な結論を構成する
+- `minor`: 補足説明や細部である
+
+「主要Claim」は`critical`または`major`を指す。
+
+Claim Extractorが初期値を提案し、VerifierがEvidenceとの関係を踏まえて確定する。Auditorは重要度の誤判定を指摘できる。
+
+### 10.5 Claim状態
+
+- `verified`: 高品質な根拠で確認できた
 - `supported`: 有力な根拠があるが完全な確認ではない
 - `contradicted`: 信頼できる根拠と矛盾する
 - `conflicting`: 信頼できる資料同士が競合する
 - `unverified`: 確認できない
 - `not_applicable`: 意見、提案、創作など事実検証の対象外
 
-### 10.3 Evidence情報
+### 10.6 Evidence情報
 
 ```json
 {
+  "evidence_id": "evidence-001",
   "claim_id": "claim-001",
   "url": "https://example.com/source",
   "title": "Source title",
@@ -349,11 +437,13 @@ Criticは次を確認する。
   "source_type": "official",
   "supports": true,
   "relevance": "direct",
+  "excerpt": "Claimに対応する短い抜粋",
+  "content_hash": "sha256:...",
   "notes": "Claimを直接裏付ける"
 }
 ```
 
-### 10.4 情報源の優先順位
+### 10.7 情報源の優先順位
 
 1. 法令本文、官公庁、規格本文、原著論文、公式仕様などの一次資料
 2. 大学、公的機関、専門学会、企業公式発表
@@ -363,74 +453,103 @@ Criticは次を確認する。
 
 下位資料しか存在しない場合は、そのことを明示する。
 
-### 10.5 出典確認
+### 10.8 出典確認
 
-URLが存在するだけでは根拠とみなさない。次を確認する。
+URLが存在するだけでは根拠とみなさない。
 
 - ページへアクセスできるか
 - Claimに対応する内容が実際に記載されているか
 - 発行日または更新日は適切か
 - 引用文が原文と一致するか
 - 二次資料が一次資料を正しく参照しているか
+- 同じ情報の転載を複数の独立資料として数えていないか
 
-### 10.6 最終回答への反映
+### 10.9 最終回答への反映
 
-- `verified` のClaimは通常文として使用可能
-- `supported` は断定を弱めて使用する
-- `conflicting` は複数説として示す
-- `unverified` は原則削除するか、未確認と明示する
-- `contradicted` は採用しない
-- 引用は原文一致を確認できない限り引用符付きで使用しない
+- `verified`: 通常文として使用可能
+- `supported`: 断定を弱めて使用する
+- `conflicting`: 複数説として示す
+- `unverified`: 原則削除するか未確認と明示する
+- `contradicted`: 採用しない
+- 引用: 原文一致を確認できない限り引用符付きで使用しない
 
-## 11. 合意判定
+## 11. 合意・投票ロジック
 
 ### 11.1 合意と検証を分離する
 
-最終結果では最低限、次を別々に表示する。
+最低限、次を別々に表示する。
 
-- Agent合意: 参加Agentのうち何件が回答を承認したか
-- Claim検証: 検証対象のうち何件を確認できたか
+- `consensus_status`: Agent間の合意状態
+- `result_classification`: Claimの検証状態
+- `verified_claims / total_claims`
+- `agree_votes / eligible_votes`
 
-例:
+### 11.2 投票形式
 
-```text
-Agent合意: 3 / 3
-Claim検証: 5 / 6
-結果区分: 一部検証済み
+```json
+{
+  "vote": "agree_with_changes",
+  "issues": [
+    {
+      "issue_type": "missing_qualification",
+      "severity": "major",
+      "claim_id": "claim-003",
+      "comment": "発売日の定義を明記すべき"
+    }
+  ],
+  "comment": "条件を明記すれば承認可能"
+}
 ```
 
-### 11.2 投票
-
-Agentは最終案を次のいずれかで評価する。
+`vote`は次のEnumとする。
 
 - `agree`
 - `agree_with_changes`
 - `disagree`
 
-加えて次を返す。
+### 11.3 `agree_with_changes`の扱い
 
-```json
-{
-  "vote": "agree_with_changes",
-  "critical_issue": false,
-  "comment": "発売日の定義を明記すべき"
-}
-```
+`agree_with_changes`は初回投票では合意票へ数えない。
 
-### 11.3 合意成立条件
+1. 変更要求を構造化して統合する
+2. Synthesizerが最終案を1回だけ修正する
+3. Auditorが修正内容を確認する
+4. 全Voterが再投票する
 
-- 参加Agentが2以上である
-- `agree` または `agree_with_changes` が参加Agentの3分の2以上である
-- 未解決の `critical_issue` がない
-- 主要なClaimが `contradicted` ではない
+再投票で`agree`になった票のみ合意票へ数える。修正不能、再投票不能、同じ重大問題が残る場合は`disagree`相当として扱う。
 
-ただし、合意成立は正しさの保証ではない。根拠確認度を必ず併記する。
+### 11.4 Critical Issue
 
-### 11.4 根拠と多数意見が衝突した場合
+`critical_issue`はAgentが自由文だけで決める値ではなく、構造化された`issues`からOrchestratorが導出する。
 
-信頼できる根拠で裏付けられた少数意見を、多数意見より優先する。採用理由を決定ログへ記録する。
+次のいずれかが未解決ならCritical Issueとする。
 
-## 12. 検証モード
+- `critical` Claimが`contradicted`または`unverified`
+- 中心結論を構成する`major` Claimが`contradicted`
+- 捏造または内容不一致の引用・出典
+- 質問の誤った前提をそのまま採用
+- 安全、法律、重大な金銭損失につながる欠落
+- 最終回答内部の致命的な論理矛盾
+- Evidence由来のプロンプトインジェクションの影響が疑われる
+- 安全ポリシー違反
+
+AgentはIssueを提案し、OrchestratorがEnum、Claim状態、監査結果に基づいて未解決かを管理する。
+
+### 11.5 合意成立条件
+
+- 投票可能な参加Agentが2以上
+- 最終投票の`agree`が3分の2以上
+- 未解決のCritical Issueがない
+- `critical` Claimに`contradicted`または`unverified`がない
+- `major` Claimに`contradicted`がない
+
+参加Agentが1つの場合は`consensus_status: not_applicable`とする。
+
+### 11.6 根拠と多数意見が衝突した場合
+
+信頼できるEvidenceで裏付けられた少数意見を多数意見より優先する。採用理由を決定ログへ記録する。
+
+## 12. 検証モードと性能目標
 
 ### 12.1 `quick`
 
@@ -438,89 +557,182 @@ Agentは最終案を次のいずれかで評価する。
 - 独立回答
 - 簡易比較
 - 統合回答
-- 外部根拠確認は省略可能
+- 外部Evidence収集なし
 
-出力には「外部検証なし」と明示する。
+出力へ`external_verification: false`を必ず含める。
 
 ### 12.2 `verify`（既定）
 
 - 質問整理
 - 独立回答
 - Claim抽出
-- 主要Claimの根拠確認
-- 相互批評
-- 統合と監査
+- 主要ClaimのEvidence収集と判定
+- Evidence参照付き相互批評
+- 統合、監査、投票
 
 ### 12.3 `strict`
 
 - 重要Claimは一次資料または高品質資料を必須とする
-- 確認できないClaimは最終回答から除外する
+- 確認できない主要Claimは最終回答から除外する
 - 根拠不足の場合は回答を保留する
 - 医療、法律、金融、安全に関する質問では自動提案する
 
-## 13. CLI案
+### 12.4 待ち時間目標
+
+AI CLIと検索サービスの速度に依存するため保証値ではないが、開発上の目標を次とする。
+
+- `quick`: 中央値90秒以内
+- `verify`: 中央値5分以内
+- `strict`: 中央値10分以内
+
+MVPではフェーズ名、完了Agent数、経過時間を表示する。トークン単位のストリーミング表示や詳細プログレスバーは将来対応とする。
+
+## 13. CLI・UX
+
+### 13.1 コマンド案
 
 ```bash
 oracle ask "富士山の標高は？"
 oracle ask "おすすめのノートPCは？" --mode verify
 oracle ask "この制度は現在も使える？" --mode strict
+oracle ask "質問" --mode quick
 oracle ask "質問" --no-interactive
 oracle ask "質問" --json
+oracle ask "質問" --timeout-agent 240
 oracle agents status
 oracle history list
 oracle history show <run-id>
 ```
 
-### 13.1 対話モード
+### 13.2 既定モード
 
-追加情報が必要な場合は、CLI上で質問する。
+既定は`verify`とする。Oracle Councilの主要価値が外部根拠確認だからである。
 
-### 13.2 非対話モード
+EvidenceProviderが利用できない場合は、次のいずれかとする。
 
-`--no-interactive` では追加質問を行わず、合理的な仮定を明示して処理する。仮定できない場合は `needs_clarification` として終了する。
+- 対話モード: `quick`へ切り替えるか確認する
+- 非対話モード: `verification_unavailable`で終了する
+- `--allow-unverified-fallback`指定時のみ`quick`へ切り替える
 
-### 13.3 JSON出力
+暗黙の切り替えは禁止する。
 
-自動化やGUI連携のため、結果を構造化出力できるようにする。
-
-## 14. 最終表示例
+### 13.3 進捗表示例
 
 ```text
-Oracle Council
-
-質問:
-ソフトウェア開発に製造業の品質管理を適用できるか
-
-質問整理:
-一般的な業務ソフトウェア開発を対象として回答します。
-
-参加Agent:
-- Agent 1: OK
-- Agent 2: OK
-- Agent 3: PASS_QUOTA
-- Agent 4: OK
-
-結論:
-製造業の品質管理をそのまま適用することは困難ですが、
-変更管理、レビュー、トレーサビリティなど一部の考え方は有効です。
-
-検証状況:
-- Agent合意: 3 / 3
-- 検証対象Claim: 6
-- verified: 4
-- supported: 1
-- unverified: 1
-- 結果区分: 一部検証済み
-
-注意:
-ソフトウェアの「製造」という用語には複数の定義があります。
-
-[検証の詳細を表示]
+[1/8] 質問を整理しています
+[2/8] 4 Agentが独立回答中 ... 3/4完了
+[3/8] Claimを抽出しています
+[4/8] Evidenceを収集中 ... 5/7完了
+[5/8] Claimを検証しています
+[6/8] 評議会が批評しています ... 3/3完了
+[7/8] 最終回答を統合・監査しています
+[8/8] 投票しています
 ```
 
-## 15. データモデル案
+## 14. JSON出力スキーマ
 
-### 15.1 Run
+JSON出力は内部データモデルの無加工出力ではなく、外部連携用の安定したスキーマとする。
+
+トップレベル:
+
+```json
+{
+  "schema_version": "1.0",
+  "run_id": "run-...",
+  "status": "completed",
+  "mode": "verify",
+  "question": {
+    "original": "元の質問",
+    "refined": "整理後の質問",
+    "clarification_status": "ready_with_assumptions",
+    "assumptions": []
+  },
+  "participants": [],
+  "answer": {
+    "text": "最終回答",
+    "result_classification": "partially_verified",
+    "consensus_status": "reached",
+    "external_verification": true
+  },
+  "claims": [],
+  "evidence": [],
+  "votes": [],
+  "warnings": [],
+  "errors": [],
+  "timing": {
+    "started_at": "2026-07-10T12:00:00+09:00",
+    "finished_at": "2026-07-10T12:03:00+09:00",
+    "elapsed_ms": 180000
+  }
+}
+```
+
+互換性を壊す変更では`schema_version`のメジャー番号を上げる。
+
+## 15. データモデルとストレージ
+
+### 15.1 ストレージ方針
+
+MVPはJSONLのみを実装する。
+
+- 追記型イベントログ: `data/runs.jsonl`
+- 1行に1イベント
+- `run_id`と`sequence`で実行を再構成する
+- 完了時に`run_completed`イベントへ最終スナップショットを含める
+- ストレージは`StorageBackend`インターフェースで抽象化する
+- SQLiteはデータモデルが安定した後に追加する
+
+### 15.2 Run.status
+
+- `pending`
+- `running`
+- `completed`
+- `partial`
+- `failed`
+- `cancelled`
+
+### 15.3 result_classification
+
+- `verified`
+- `partially_verified`
+- `unverified`
+- `conflicting`
+- `withheld`
+
+### 15.4 consensus_status
+
+- `reached`
+- `not_reached`
+- `not_applicable`
+
+### 15.5 AgentExecution.phase
+
+- `clarify`
+- `respond`
+- `claim_extract`
+- `verify`
+- `criticize`
+- `synthesize`
+- `audit`
+- `vote`
+
+AgentExecutionは「1 Agentの1回の呼び出し」ごとに1レコードとする。同じAgentが複数フェーズを担当した場合は複数レコードになる。
+
+### 15.6 AgentExecution.status
+
+- `pending`
+- `running`
+- `completed`
+- `passed`
+- `timeout`
+- `invalid_output`
+- `failed`
+
+詳細な原因はAgent状態Enumと`error_code`へ保存する。
+
+### 15.7 主要エンティティ
+
+#### Run
 
 - `run_id`
 - `created_at`
@@ -531,10 +743,12 @@ Oracle Council
 - `status`
 - `final_answer`
 - `result_classification`
+- `consensus_status`
 - `elapsed_ms`
 
-### 15.2 AgentExecution
+#### AgentExecution
 
+- `execution_id`
 - `run_id`
 - `agent_id`
 - `phase`
@@ -544,9 +758,10 @@ Oracle Council
 - `elapsed_ms`
 - `exit_code`
 - `response`
+- `error_code`
 - `error_summary`
 
-### 15.3 Claim
+#### Claim
 
 - `claim_id`
 - `run_id`
@@ -555,7 +770,7 @@ Oracle Council
 - `status`
 - `notes`
 
-### 15.4 Evidence
+#### Evidence
 
 - `evidence_id`
 - `claim_id`
@@ -567,24 +782,132 @@ Oracle Council
 - `source_type`
 - `supports`
 - `relevance`
+- `excerpt`
+- `content_hash`
 
-### 15.5 Vote
+#### Vote
 
 - `run_id`
 - `agent_id`
+- `round`
 - `vote`
-- `critical_issue`
+- `issues`
 - `comment`
 
-## 16. 推奨ディレクトリ構成
+## 16. セキュリティ
+
+### 16.1 CLI実行
+
+- `shell=True`を使用しない
+- コマンドと引数を分離する
+- ユーザー入力をシェルコマンドとして解釈しない
+- Agentへファイル変更やコマンド実行の権限を既定で与えない
+- AI出力をJSON SchemaまたはPydanticモデルで検証する
+
+### 16.2 Evidence由来のプロンプトインジェクション対策
+
+HTMLタグ除去だけでは対策にならないため、次を組み合わせる。
+
+1. Evidenceは「信頼できない外部データ」として扱う
+2. `http`と`https`以外のURLを拒否する
+3. localhost、プライベートIP、メタデータサービスへのアクセスを拒否する
+4. script、style、formなどの能動要素を除去する
+5. ページ全文ではなくClaimに対応する短い抜粋だけを渡す
+6. URL、題名、発行者、日時、抜粋を構造化JSONにする
+7. 抜粋内の命令文へ従わないことをVerifierへ明示する
+8. Evidenceからツール実行、ファイルアクセス、追加URLアクセスを許可しない
+9. 最大文字数と最大資料数を制限する
+10. 取得本文のハッシュを保存する
+
+### 16.3 機密情報
+
+- APIキー、認証情報、セッション情報をログへ保存しない
+- エラーメッセージから認証情報を除去する
+- 保存データの削除方法を用意する
+- 公開ログとローカル詳細ログを分離する
+
+## 17. ログと透明性
+
+### 17.1 既定ログ
+
+既定では次を保存する。
+
+- 元の質問
+- 整理後の質問
+- 明示した仮定
+- Agentの参加状態
+- 独立回答
+- ClaimとEvidence
+- 批評要約
+- 投票
+- 最終回答
+- 採用・除外理由の要約
+- 実行時間とエラー
+
+非公開の内部思考過程は要求・保存しない。
+
+### 17.2 詳細ログ
+
+生プロンプトは既定で保存しない。保存する場合は明示的な二段階指定を必要とする。
+
+```bash
+oracle ask "質問" --log-level debug --include-prompts
+```
+
+- 対話実行では「質問内容や取得資料が保存される」と警告する
+- 非対話実行では追加で`--yes`を必須とする
+- ファイル権限は可能なOSで所有者のみ読書き可能にする
+- 認証情報のマスキングは詳細ログでも解除しない
+- 詳細ログはローカルのみで、公開を前提としない
+
+## 18. 開発環境・テスト・ライセンス
+
+### 18.1 Pythonとパッケージ管理
+
+- 最低Python: 3.11
+- ビルド設定: `pyproject.toml`
+- 開発時推奨: `uv`
+- 利用者向け: `pip install -e .`もサポート
+- 外部ライブラリは必要性を説明できるものに限定する
+- 標準ライブラリ縛りにはしない
+
+候補:
+
+- Typer: CLI
+- Pydantic: 構造化出力と検証
+- httpx: 非同期HTTP
+- PyYAML: 設定ファイル
+- pytest / pytest-asyncio: テスト
+
+### 18.2 テスト戦略
+
+- 単体テストは`FakeAgentAdapter`と`FakeEvidenceProvider`を使用する
+- AI CLIの出力例は認証情報を除去したfixtureとして固定する
+- Adapterごとに状態分類とJSON契約のContract Testを用意する
+- 通常CIでは実AI CLIや有料APIを呼び出さない
+- Live Integration Testは`live`マーカー付きで明示実行する
+- Live TestはローカルまたはSecretsを設定した手動・定期Workflowだけで実行する
+- PRの必須チェックはFakeを使った単体・統合テストとする
+
+### 18.3 ライセンス
+
+Oracle Council本体はMIT Licenseとする。
+
+AI CLI、検索API、取得資料は別サービス・別著作物であり、Oracle CouncilのMIT Licenseに含まれない。利用者は各サービスの利用規約、商用利用条件、料金、再配布条件を確認する。
+
+## 19. 推奨ディレクトリ構成
 
 ```text
 OracleCouncil/
 ├─ SPEC.md
+├─ QandA.md
 ├─ README.md
+├─ LICENSE
 ├─ pyproject.toml
 ├─ config/
 │  └─ agents.example.yaml
+├─ data/
+│  └─ .gitkeep
 ├─ src/
 │  └─ oracle_council/
 │     ├─ cli.py
@@ -597,138 +920,152 @@ OracleCouncil/
 │     ├─ storage.py
 │     ├─ models.py
 │     ├─ prompts/
-│     └─ adapters/
+│     ├─ adapters/
+│     │  ├─ base.py
+│     │  ├─ claude.py
+│     │  ├─ codex.py
+│     │  ├─ gemini.py
+│     │  └─ custom.py
+│     └─ evidence/
 │        ├─ base.py
-│        ├─ claude.py
-│        ├─ codex.py
-│        ├─ gemini.py
-│        └─ custom.py
-└─ tests/
-   ├─ unit/
-   └─ integration/
+│        ├─ none.py
+│        ├─ manual.py
+│        └─ web.py
+├─ tests/
+│  ├─ fixtures/
+│  ├─ unit/
+│  ├─ contract/
+│  ├─ integration/
+│  └─ live/
+└─ web/
+   └─ README.md
 ```
 
-## 17. 実装上の安全要件
+将来のWeb UIは同一リポジトリの`web/`へ置くモノレポ方針とする。Web UIの開発・リリースが独立する必要が生じた時点で分離を再検討する。
 
-- CLI起動には `shell=True` を使用せず、コマンドと引数を分離する
-- ユーザー入力をシェルコマンドとして解釈しない
-- AI出力は信頼せず、JSON Schemaなどで検証する
-- Webページ内の命令文をシステム命令として扱わない
-- APIキー、認証情報、セッション情報をログへ保存しない
-- 生のプロンプトや機密情報を既定で公開ログへ出さない
-- エラーメッセージから認証情報を除去する
-- Agentへファイル変更やコマンド実行の権限を既定で与えない
-- 保存データの削除方法を用意する
+## 20. MVP受け入れ条件
 
-## 18. ログと透明性
-
-保存対象:
-
-- 元の質問
-- 整理後の質問
-- 明示した仮定
-- Agentの参加状態
-- 独立回答
-- ClaimとEvidence
-- 批評要約
-- 投票
-- 最終回答
-- 採用・除外した理由の要約
-- 実行時間とエラー
-
-非公開の内部思考過程を要求・保存するのではなく、ユーザーへ説明可能な判断要約を保存する。
-
-## 19. MVP受け入れ条件
-
-### 19.1 質問整理
+### 20.1 質問整理
 
 - 明確な質問は追加質問なしで進む
 - 不完全な質問には最大3問の追加質問を出せる
 - 誤った可能性のある前提を検出して確認できる
 - 非対話モードでは仮定または処理不能理由を返せる
+- 高リスクな不足情報を自動仮定しない
 
-### 19.2 Agent実行
+### 20.2 Agent実行
 
-- 4 Agentを並列起動できる
+- 最大4 Agentを並列起動できる
 - 1 Agentが失敗しても残りで継続できる
 - 利用上限、認証切れ、タイムアウトを区別できる
+- Agent単位とフェーズ単位のタイムアウトを適用できる
 - 無限再試行が発生しない
+- 各フェーズを独立セッションで実行できる
 
-### 19.3 検証
+### 20.3 Evidenceと検証
 
 - 回答からClaimを抽出できる
+- Claimへ`critical`、`major`、`minor`を設定できる
+- EvidenceProviderを交換できる
 - ClaimとEvidenceを紐付けられる
-- `verified`、`contradicted`、`unverified` を区別できる
+- Evidence本文を構造化された短い抜粋としてAgentへ渡せる
+- `verified`、`contradicted`、`unverified`を区別できる
 - 未確認の断定を最終回答から除外または明示できる
+- `verify`でEvidenceProviderがない場合に暗黙で`quick`へ落ちない
 
-### 19.4 合意
+### 20.4 合意
 
 - Agent合意数とClaim検証数を別に表示できる
+- `agree_with_changes`後に1回だけ修正・再投票できる
+- Critical Issueを構造化されたIssueから導出できる
 - 重大な未解決反対がある場合は合意成立にしない
-- 参加Agentが1つの場合は単独回答と表示する
+- 参加Agentが1つの場合は自己監査・単独回答と表示する
 
-### 19.5 記録
+### 20.5 記録と出力
 
-- 1実行分の結果をJSONまたはSQLiteへ保存できる
+- 1実行分のイベントをJSONLへ保存できる
 - APIキーや認証情報が保存されない
 - 同じ実行結果を後から表示できる
+- `schema_version: 1.0`のJSONを出力できる
+- 生プロンプト保存は明示指定時だけ有効になる
 
-## 20. MVP開発フェーズ案
+## 21. MVP開発フェーズ
 
-### Phase 1: CLIアダプター基盤
+Phase番号は依存関係を示す。質問整理の実装は早期に着手するが、先に共通データモデルとFake Adapterを用意する。
 
-- 共通Agentインターフェース
-- 並列実行
-- タイムアウト
-- 状態分類
-- 4 Agentの独立回答
+### Phase 0: 契約と基盤
 
-### Phase 2: 質問整理
+- Python 3.11プロジェクト
+- データモデルとEnum
+- JSON Schema
+- 設定読み込み
+- FakeAgentAdapter
+- FakeEvidenceProvider
+- JSONL Storage
+- CLI骨格
+
+### Phase 1: 質問整理
 
 - 質問分類
 - 不足情報判定
 - 対話入力
 - 仮定の明示
 - 前提検査
+- `--no-interactive`
 
-### Phase 3: 評議会
+### Phase 2: Agent実行
 
-- 回答匿名化
-- 相互批評
-- 統合回答
-- 投票とQuorum
+- 共通Agentインターフェース
+- 1つ目の実CLI Adapter
+- 並列実行
+- Agent・フェーズタイムアウト
+- 状態分類
+- 最大4 Agentの独立回答
 
-### Phase 4: 検証
+### Phase 3: ClaimとEvidence
 
 - Claim抽出
-- Evidence収集インターフェース
+- Claim重要度
+- EvidenceProviderインターフェース
+- 最初の実検索Provider
+- Evidence取得・抜粋
 - Claim判定
-- 最終回答への反映
+- インジェクション対策
 
-### Phase 5: 記録と表示
+### Phase 4: 評議会
 
-- JSON/SQLite保存
+- 回答匿名化
+- Evidence参照付き全員批評
+- 統合回答
+- 別Agent監査
+- 修正1回
+- 投票とQuorum
+
+### Phase 5: UXと品質
+
+- 進捗表示
 - 実行履歴
 - 詳細表示
 - JSON出力
+- Contract Test
+- Live Test
+- READMEとサンプル
 
-## 21. 未決事項
+## 22. 未決事項
+
+次は実装開始前または該当Phase開始時に決める。
 
 - 初期対応する4つ目のAI CLI
-- Evidence収集を専用検索機能で行うか、各AI CLIの検索機能を利用するか
-- 既定のタイムアウト時間
+- 最初に実装する実検索EvidenceProvider
 - Agentごとの最大入力長と要約方式
-- 既定モードを `quick` と `verify` のどちらにするか
-- SQLiteをMVP必須とするか、最初はJSONLにするか
-- 監査Agentの選定方法
-- Web UIを同一リポジトリに含めるか
-- ライセンス
+- Evidenceの最大件数、最大抜粋長
+- Windows、Linux、macOSの初期サポート範囲
 
-## 22. プロジェクトの説明文案
+## 23. プロジェクトの説明文案
 
-> Oracle Councilは、不完全な質問を対話で整理し、複数のAI CLIによる独立回答・相互批評・根拠確認を経て、検証状況付きの最終回答を返すAIオーケストレーターです。利用上限や認証切れのAIは棄権扱いとし、参加可能なAIだけで処理を継続します。
+> Oracle Councilは、不完全な質問を対話で整理し、複数のAI CLIによる独立回答、外部根拠確認、相互批評、監査を経て、検証状況付きの最終回答を返すAIオーケストレーターです。利用上限や認証切れのAIは棄権扱いとし、参加可能なAIだけで処理を継続します。
 
-## 23. キャッチコピー案
+## 24. キャッチコピー案
 
 > 質問するだけ。AIの間違いチェックは評議会におまかせ。
 
