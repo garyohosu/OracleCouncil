@@ -1,6 +1,6 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.3.3
+- 文書バージョン: 0.3.4
 - ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
@@ -601,7 +601,15 @@ AuditorはSynthesizerとは異なる`agent_id`を使う。`approved`だけを回
 - Evidence由来のプロンプトインジェクションの影響が疑われる
 - 安全ポリシー違反
 
-AgentはIssueを提案し、OrchestratorがEnum、Claim状態、監査結果に基づいて未解決かを管理する。
+AgentはIssueを提案し、OrchestratorがEnum、Claim状態、監査結果に基づいて未解決かを管理する。IssueはMVPでは`open` / `resolved`の2値で追跡し、再監査で`open`が`resolved`になったかを確認する。
+
+`accepted_risk`（危険を承知の上で受容する状態）はMVPでは提供しない。将来導入する場合も次を必須とする。
+
+- `critical` severityには設定できない
+- 安全違反、捏造引用、プロンプトインジェクション影響には設定できない
+- 公開可否判定上、`resolved`と同一扱いにしない
+- 誰が、どの理由で受容したかを記録する
+- 自動設定せず、明示的なユーザー操作または管理操作に限定する
 
 ### 11.3 回答公開条件
 
@@ -811,10 +819,12 @@ MVPはJSONLのみを実装する。
 
 遷移は`pending -> running -> completed | partial | failed | cancelled`だけを許可する。終端状態からの遷移は禁止する。
 
-- `completed`: 全必須Phaseが`succeeded`または`degraded`、Auditorが`approved`、公開可能な回答がある
+- `completed`: 全必須Phaseが`succeeded`、`degraded`または`skipped`で、(a) Auditorが`approved`かつ公開可能な回答がある、または (b) §15.3第1段で`withheld`が確定し§11.5の検証結果開示を返した
 - `partial`: 監査済み回答があるが、Evidence予算切れ、非criticalなPhase劣化、または`major`未確認がある
-- `failed`: 必須Phaseが最低成功数を満たさない、`critical`未確認、監査未完了、または監査が`blocked`
+- `failed`: 必須Phaseが最低成功数を満たさない、監査未完了、または監査が`blocked`
 - `cancelled`: ユーザー中断または明示cancel
+
+`withheld`はRun失敗ではない（§13.4でexit 4をexit 1と分離）。§15.3第1段で`withheld`が確定した場合、以降の`criticize`、`synthesize`、`audit`は`skipped`とし、Runを`completed`として終了する。監査対象の統合回答を作らないため、未承認回答の漏えいは構造的に起きない。
 
 ### 15.3 result_classification
 
@@ -823,6 +833,26 @@ MVPはJSONLのみを実装する。
 - `unverified`
 - `conflicting`
 - `withheld`
+
+Run全体の分類は、AIの自由判断ではなくOrchestratorが二段判定で導出する。
+
+**第1段（公開可能かの安全判定）**: `verify` Phaseが完了し、全対象Claimの検証状態が確定した後、次のいずれかに該当すれば`withheld`とし、回答本文を公開せず§11.5の開示範囲だけを返す。
+
+1. `critical` Claimに`unverified`または`contradicted`が1件でもある
+2. `major` Claimに`contradicted`が1件でもある
+
+**第2段（公開可能な場合の分類）**: 上から順に最初に一致した行を採用する。
+
+| 条件 | 分類 |
+|---|---|
+| `critical`または`major`に`conflicting`がある | `conflicting` |
+| 主要Claim（critical＋major）が1件以上あり、その全てが`unverified` | `unverified` |
+| `major`に`unverified`がある | `partially_verified` |
+| `minor`に`unverified`、`conflicting`または`contradicted`がある | `partially_verified` |
+| 検証対象Claimが1件以上あり、その全てが`verified`または`supported` | `verified` |
+| 検証対象Claimが0件（全て`not_applicable`） | `unverified` |
+
+優先順位は`withheld` > `conflicting` > `unverified` > `partially_verified` > `verified`とする。安全判定を先に行うため、`withheld`と分類が混ざらない。
 
 ### 15.4 consensus_status
 
@@ -888,7 +918,7 @@ Ctrl+Cでは子process treeをterminateし、5秒後も残る場合はkillする
 以下は実行時（in-memory）モデルであり、そのまま永続化しない。永続化は保存区分に従う。
 
 - **metadata区分**: 既定で保存する。RunMetadataRecordと§17.1の項目に限る
-- **content区分**: `--store-content`指定時だけ保存する。Run.`original_question` / `refined_question` / `final_answer`、AgentExecution.`response`、Claim.`text` / `notes`、Evidence.`url` / `title` / `publisher` / `excerpt` / `notes`が該当する
+- **content区分**: `--store-content`指定時だけ保存する。Run.`original_question` / `refined_question` / `final_answer`、AgentExecution.`response`、Claim.`text` / `notes`、Evidence.`url` / `title` / `publisher` / `excerpt` / `notes`、AuditIssue.`comment`が該当する
 
 #### RunMetadataRecord（既定で永続化する唯一のRunレコード）
 
@@ -919,6 +949,40 @@ Ctrl+Cでは子process treeをterminateし、5秒後も残る場合はkillする
 - `consensus_status`
 - `elapsed_ms`
 
+#### Phase
+
+- `phase_id`
+- `run_id`
+- `phase`（`clarify` / `respond` / `claim_extract` / `evidence_collect` / `verify` / `criticize` / `synthesize` / `audit`）
+- `status`
+- `started_at`
+- `finished_at`
+- `minimum_success_count`
+- `success_count`
+- `error_code`（`PhaseErrorCode`。`evidence_collect`では`EvidenceErrorCode`も使用可能）
+- `error_summary`
+- `raw_diagnostic`（content区分）
+- `outcome`（EvidenceOutcome。`evidence_collect`のみ使用）
+
+`error_summary`はOracle Councilが生成した定型文のみをmetadata保存する。最大200文字、secret redaction済みとし、子CLIのstderr、例外本文、質問・回答・Evidence断片、コマンド文字列、ファイルパスを直接保存しない。「Responder timed out after one retry.」は保存してよいが、コマンド文字列や質問全文を含むエラーは保存してはならない。生のstderr・例外を残す場合は`raw_diagnostic`へ分離し、redaction済みかつ`--store-content`時のみ保存する。同じ規則はAgentExecutionの`error_summary`と`raw_diagnostic`にも適用する。`raw_diagnostic`以外のPhaseフィールドはmetadata区分とする。
+
+`PhaseErrorCode`は`MINIMUM_SUCCESS_NOT_MET` / `PHASE_TIMEOUT` / `PHASE_CANCELLED` / `BUDGET_EXCEEDED`とする。`evidence_collect`ではM-4で確定した`EvidenceErrorCode`も使用できる。自由文字列を`error_code`へ保存しない。
+
+#### AuditIssue
+
+- `issue_id`
+- `run_id`
+- `audit_execution_id`
+- `issue_type`
+- `severity`
+- `claim_id`
+- `status`（MVPでは`open` / `resolved`）
+- `comment`（content区分）
+- `created_at`
+- `resolved_at`
+
+AuditIssueは`comment`以外をmetadata区分とする。
+
 #### AgentExecution
 
 - `execution_id`
@@ -933,6 +997,7 @@ Ctrl+Cでは子process treeをterminateし、5秒後も残る場合はkillする
 - `response`
 - `error_code`
 - `error_summary`
+- `raw_diagnostic`（content区分）
 
 #### Claim
 

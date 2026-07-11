@@ -1,6 +1,6 @@
-# FIX_PLAN — SPEC v0.3.3 反映版
+# FIX_PLAN — SPEC v0.3.4 反映版
 
-> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → 2026-07-11 R-1・M-4・S-1・U-1確定（v0.3.3、TESTCASE BLOCKED解除）後の状態。
+> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → 2026-07-11 R-1・M-4・S-1・U-1確定（v0.3.3） → S-2・T-5確定（v0.3.4、状態遷移図の前提が全て確定）後の状態。
 
 ## 0-1. v0.3.3で解消済み
 
@@ -10,6 +10,13 @@
 | M-4 | `evidence_collect` Phaseと2軸モデル（PhaseStatus × EvidenceOutcome、EvidenceErrorCode） | SPEC §15.7、CLASS.md Enum、SEQUENCE §1 |
 | S-1 | Provider内部委譲（Orchestrator → EvidenceProvider → SafeHttpFetcher） | SPEC §10.2、CLASS.md依存線、SEQUENCE §1 |
 | U-1 | withheld開示境界（final_answer非公開、Claim検証結果は「確認状態→確認対象→扱い」で開示） | SPEC §11.5、TESTCASE IT-E2E-36 |
+
+## 0-2. v0.3.4で解消済み
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-2 | Phase / AuditIssue正式モデル（AuditIssue.statusはMVPでopen/resolvedの2値、accepted_riskは制約付き将来対応。error_summaryは定型文のみmetadata、raw_diagnostic/commentはcontent） | SPEC §11.2・§15.8、CLASS.md §2・§4 |
+| T-5 | Run分類の二段判定（1. 公開可能か → 2. どの分類か。withheld確定時はcriticize以降skipped・Run completed・exit 4） | SPEC §15.2・§15.3、TESTCASE IT-E2E-15/16/17/36 |
 
 ## 0. v0.3.1で解消済み
 
@@ -28,9 +35,10 @@
 3. SEQUENCE.md の作成と承認（済）
 4. TESTCASE.mdの正式テスト仕様化とT-1〜T-5レビュー（済）
 5. R-1・M-4・S-1・U-1の確定とSPEC v0.3.3反映（済）
-6. **残る実装開始前ブロッカーの回答とSPEC反映** ← 現在地（S-2、S-3、S-7、T-1が次の優先）
-7. 状態遷移図の作成（Run / Phase / AgentExecution / Evidence。残る前提はS-2、T-5）
-8. CLASS.md の修正と再レビュー（S-2〜S-10を反映。S-1は反映済み）
+6. S-2・T-5の確定とSPEC v0.3.4反映（済）
+7. **状態遷移図の作成**（Run / Phase / AgentExecution / Claim / AuditIssue。前提は全て確定済み） ← 現在地
+   - 要件: withheld確定でsynthesize/auditをskipする経路でも、U-1用のClaim検証結果が生成済みであること（verify Phase完了がwithheld終端の前提）を図へ明示する
+8. S-3・S-7・T-1の確定（Fake実装移行のゲート）とCLASS.md残反映（S-4〜S-10）
 9. 全文書の横断レビュー
 10. L-4 Adapter spike（実装開始のゲート）
 11. Phase 0実装開始
@@ -52,13 +60,11 @@
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
 | **S-7** | TokenBudgetの原子性 | 並列予約の排他制御、Reservationオブジェクト設計 | 予算超過・並列予約テスト |
 | **S-8** | CLI終了コードの分離 | `processExitCode` と `oracleExitCode` のフィールド分離 | CLI / Adapter Contract Test |
-| **S-2** | Phase / AuditIssue正式モデル | 状態集約と監査Issue追跡の永続化区分 | 状態遷移・履歴テスト |
 | **S-3** | StorageBackend Contract | append/load/delete/purge、sequence、障害契約 | 永続化Contract Test |
 | **T-1** | TokenBudget予約不足時 | reserve失敗後のRun状態、公開可否、予約精算 | 予算超過テスト |
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 | **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
-| **T-5** | Run全体の結果分類 | Claim状態からresult_classificationを導出する表 | Claim/Evidence結合・JSONテスト |
 
 ---
 
@@ -102,14 +108,12 @@
 
 | 未決ID | 先に確定する内容 | 解除されるテスト領域 |
 |---|---|---|
-| S-2 | Phase / AuditIssue属性、metadata/content区分 | 状態遷移、監査再実行、履歴イベントテスト |
 | S-3 | StorageBackendの操作・sequence・例外Contract | JSONL/SQLite互換Contract、破損・同時書込テスト |
 | T-1 | reserve失敗後のRun状態と予約精算 | TokenBudget超過、12回上限テスト |
 | T-2 | cancel伝播期限・冪等性・残留判定 | Ctrl+C、process tree、cancel競合テスト |
 | T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
 | T-4 | append失敗時のRun/CLI挙動 | disk full、permission、途中保存失敗テスト |
-| T-5 | Claim集合からRun分類への決定表 | contradicted/conflicting/unverified、JSON結果テスト |
 
-R-1、M-4、S-1、U-1の行はv0.3.3確定により削除した（解除済みテスト領域は§0-1を参照）。
+R-1、M-4、S-1、U-1（v0.3.3）とS-2、T-5（v0.3.4）の行は確定により削除した（解除済みテスト領域は§0-1、§0-2を参照）。
 
 依存IDが未回答のケースは削除せず、TESTCASE.mdで`BLOCKED: QandA <ID>`として収集する。仕様確定前に仮の期待値でpassさせない。
