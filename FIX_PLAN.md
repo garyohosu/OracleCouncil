@@ -52,6 +52,7 @@
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 | **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
 | **T-5** | Run全体の結果分類 | Claim状態からresult_classificationを導出する表 | Claim/Evidence結合・JSONテスト |
+| **U-1** | `withheld`時の開示範囲 | 統合回答の公開ゲートとClaim検証結果の開示ゲートを分離 | withheld表示・JSON公開境界テスト |
 
 ---
 
@@ -105,5 +106,6 @@
 | T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
 | T-4 | append失敗時のRun/CLI挙動 | disk full、permission、途中保存失敗テスト |
 | T-5 | Claim集合からRun分類への決定表 | contradicted/conflicting/unverified、JSON結果テスト |
+| U-1 | withheld時の開示範囲と公開ゲート分離 | withheld表示、JSON公開境界、履歴復元境界テスト |
 
 依存IDが未回答のケースは削除せず、TESTCASE.mdで`BLOCKED: QandA <ID>`として収集する。仕様確定前に仮の期待値でpassさせない。
