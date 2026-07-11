@@ -28,7 +28,7 @@ def test_stage1_withholds(importance, status):
     [
         # major conflicting -> conflicting
         ([claim("major", "conflicting"), claim("major", "verified", "c2")], ResultClassification.CONFLICTING),
-        # critical conflicting resolved like major conflicting (hikitsugi §5)
+        # critical conflicting matches the principal-conflicting row (SPEC v0.3.6)
         ([claim("critical", "conflicting")], ResultClassification.CONFLICTING),
         # all principals unverified -> unverified
         ([claim("major", "unverified"), claim("major", "unverified", "c2")], ResultClassification.UNVERIFIED),
@@ -39,6 +39,8 @@ def test_stage1_withholds(importance, status):
         ([claim("major", "verified"), claim("minor", "contradicted", "c2")], ResultClassification.PARTIALLY_VERIFIED),
         # all principals verified/supported -> verified
         ([claim("critical", "verified"), claim("major", "supported", "c2")], ResultClassification.VERIFIED),
+        # minors-only, all confirmed -> verified (SPEC row: all verifiable confirmed)
+        ([claim("minor", "verified"), claim("minor", "supported", "c2")], ResultClassification.VERIFIED),
         # nothing verifiable -> unverified
         ([], ResultClassification.UNVERIFIED),
         ([claim("major", "not_applicable")], ResultClassification.UNVERIFIED),

@@ -1338,4 +1338,17 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-11 — M-3・S-3・S-7・T-1・T-4確定、SPEC v0.3.6へ反映。既回答55問、未回答29問。*
+## W. 実装レビュー
+
+### W-1. §15.3決定表のfall-throughと実装の整合
+
+**重要度**: Major
+**箇所**: SPEC §15.3 第2段決定表 / `src/oracle_council/classification.py` / hikitsugi.md §5
+**疑問**: Phase 0実装（`classify()`）の作成中に、決定表に次のfall-through候補が見つかった。(1) `critical`の`conflicting`がどの行にも一致しない、(2) `minor`の`contradicted`が第2段row4に含まれない、(3) どの行にも一致しない場合の既定値が未定義。
+**検証結果**: (1)(2)はSPEC v0.3.5/v0.3.6の改訂で解消済みであることを確認した。row1は「`critical`または`major`に`conflicting`」、row4は「`minor`に`unverified`、`conflicting`または`contradicted`」になっており、row5も「検証対象Claimが1件以上あり、その全てが`verified`または`supported`」へ拡張済み。この結果、第1段通過後の表は網羅的であり、(3)の未一致は発生しない。
+**実装への影響**: 逆に実装側がv0.3.4時点の表を前提にしており、「検証対象が`minor`のみで全て`verified`/`supported`」の場合に仕様の`verified`ではなく`partially_verified`を返す齟齬があった。実装をv0.3.6の表へ修正し、防御的な既定値`partially_verified`（到達不能だが断定を避ける安全側）はコメント付きで残した。テストへminorのみ確認済み→`verified`のケースを追加。
+**回答**: 確定。SPECは変更不要（v0.3.6の表が正）。実装とテストをv0.3.6へ整合させた。教訓として、実装は必ずSPECの最新版を参照し、hikitsugi等の中間メモを仕様の代わりにしないことをレビュー観点へ加える。
+
+---
+
+*最終更新: 2026-07-12 — W-1（決定表と実装の整合）確定。既回答56問、未回答29問。*

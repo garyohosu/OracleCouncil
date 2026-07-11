@@ -4,13 +4,12 @@ The final classification is derived by the Orchestrator with a two-stage
 deterministic rule, never by an agent:
 
 Stage 1 (safety gate): decide whether the answer may be published at all.
-Stage 2 (classification): pick the classification for a publishable answer.
+Stage 2 (classification): pick the classification for a publishable answer,
+first matching row wins.
 
-Fall-through cases not covered verbatim by the SPEC table are resolved on
-the safe side (see hikitsugi.md §5): a `conflicting` critical claim is
-treated like a conflicting major claim, a `contradicted` minor claim
-degrades the run to partially_verified, and anything else unmatched
-defaults to partially_verified rather than verified.
+The SPEC v0.3.6 table is exhaustive after stage 1, so the trailing default
+is unreachable; it stays as a defensive fallback that avoids overstating
+certainty (QandA W-1).
 """
 
 from __future__ import annotations
@@ -59,6 +58,6 @@ def classify(claims: Iterable[Claim]) -> ResultClassification:
         for c in minors
     ):
         return ResultClassification.PARTIALLY_VERIFIED
-    if principals and all(c.status in _CONFIRMED for c in principals):
+    if all(c.status in _CONFIRMED for c in verifiable):
         return ResultClassification.VERIFIED
     return ResultClassification.PARTIALLY_VERIFIED

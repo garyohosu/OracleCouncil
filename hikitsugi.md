@@ -44,13 +44,11 @@
 6. **Clarification Engine**（Phase 1）: 決定的ルール→§7.2ステータス。J-4（2ラウンド目のClarifier）が未回答
 7. **L-4 spike**: 実CLI接続前に`docs/adapter-spike.md`を作る（実装開始のゲート、未実施）
 
-## 5. 実装中に見つけた仕様の穴（レビュアーへ確認したい）
+## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
-§15.3第2段の決定表に次のfall-throughがある。実装では安全側に倒した。次の設計レビューでQandAへ正式登録すること。
+実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。
 
-- **criticalのconflicting**: 第1段はcriticalのunverified/contradictedのみ、第2段row1は「majorにconflicting」のみ。criticalがconflictingの場合どの行にも一致しない → 実装では主要Claim（critical+major）のconflictingをrow1で拾う
-- **minorのcontradicted**: 第2段row4は「minorのunverified/conflicting」のみ → 実装ではcontradictedも同row（partially_verified）で拾う
-- **どの行にも一致しない場合**: 実装では`partially_verified`を既定とした（断定を避ける安全側）
+**教訓**: 実装は必ずSPECの最新版を参照する。本書のような中間メモを仕様の代わりにしない。
 
 ## 6. 未回答ブロッカー（FIX_PLAN §2-3の要約）
 
