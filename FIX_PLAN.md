@@ -65,6 +65,9 @@
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 | **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
+| **V-1** | 実行前停止時のRun生成・終端状態 | exit 2/3のCLI結果とRunStatus/保存有無の分離 | Run状態遷移・CLI Contract Test |
+| **V-2** | completed / partial競合時の優先順位 | Phase劣化・major未確認時のRunStatus決定順 | Run状態遷移・分類結合テスト |
+| **V-3** | Evidence予算切れコードの名称統一 | §10.2とEvidenceErrorCode Enumの不一致解消 | EvidenceProvider / Phase Contract Test |
 
 ---
 

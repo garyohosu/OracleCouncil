@@ -1288,6 +1288,54 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 **テストへの影響**: `withheld`時に`final_answer`が公開されない、Claim検証結果は表示される、Evidence本文や秘密情報は表示されない、`--json`でも同じ公開境界を守る、履歴表示でも`content_saved`設定を越えて本文を復元しない、の各ケースが必要。
 **回答**: 確定。選択肢2＋上記表示規則を採用する。SPEC.md §11.5へ反映。TESTCASE.mdへ開示境界ケースを追加する。
 
+
 ---
 
-*最終更新: 2026-07-11 — S-2・T-5確定、SPEC v0.3.4へ反映。既回答47問、未回答34問（既存25＋クラス設計5＋テスト設計4）*
+## V. 状態遷移図レビューで判明した未決事項
+
+### V-1. 実行前停止時のRun生成・終端状態
+
+**重要度**: Major
+**箇所**: SPEC §7.4、§12.3、§13.4、§15.2 / SEQUENCE §2・§3 / CLASS RunStatus
+**疑問**: `needs_clarification`、`strict_required`、`verification_unavailable`、`insufficient_agents`等はCLIの`result.status`と終了コードが確定している一方、Runレコードを生成・保存するか、生成する場合にどの`Run.status`で終端するかが定義されていない。`Run.status`の正式Enumにはこれらの値がなく、すべてを`failed`へ寄せると入力待ちと実行障害を区別できない。
+**選択肢**:
+1. 実行前停止ではRunを生成せず、CLI結果だけを返す
+2. Runを生成し、`failed`で終端して停止理由を別フィールドへ保存する
+3. Runを生成し、`partial`で終端して停止理由を別フィールドへ保存する
+4. RunStatusへ入力待ち・環境待ちの新しい状態を追加する
+**推奨案**: 選択肢1。AI実行またはEvidence処理を開始していない停止をRun履歴へ混ぜず、CLIの構造化結果だけで理由を返す。質問整理自体を履歴化する要件が後から必要になった場合は、Runとは別のRequestAttemptモデルを検討する。
+**実装への影響**: `OracleCLI`がRun生成前に行うvalidation、clarification、mode/evidence availability判定の順序と、Storage呼出し有無が確定する。
+**テストへの影響**: exit 2/3の各ケースでRun保存イベントが0件か、特定のRun終端イベントがあるかをassertできる。
+**回答**: 未回答。
+
+### V-2. completedとpartialが重なる場合の優先順位
+
+**重要度**: Major
+**箇所**: SPEC §15.2 / CLASS RunStatus / TESTCASE Run状態遷移ケース
+**疑問**: `completed`は「全必須Phaseが`succeeded`、`degraded`または`skipped`」の場合を許容する一方、`partial`は「非criticalなPhase劣化」または「major未確認」を条件に含む。同じ公開可能Runが両方の条件を満たす場合、どちらを選ぶかが一意でない。
+**選択肢**:
+1. `partial`を優先し、`completed`はpartial条件に該当しない場合だけ使う
+2. `completed`を優先し、`partial`を廃止する
+3. Phase劣化は`completed`、major未確認だけ`partial`とする
+**推奨案**: 選択肢1。`partial`を`completed`の具体的な縮退終端として先に判定すれば、既存Enumと利用者への劣化表示を維持できる。判定順を`cancelled/failed -> withheld completed -> partial -> completed`として明記する。
+**実装への影響**: OrchestratorのRun終端決定表と、`result_classification`から独立したRunStatus算出順が確定する。
+**テストへの影響**: Phase degraded、major unverified、両方同時、minorのみunverifiedの各RunStatus期待値を一意にassertできる。
+**回答**: 未回答。
+
+### V-3. Evidence予算切れコードの名称統一
+
+**重要度**: Major
+**箇所**: SPEC §10.2、§15.7 / CLASS EvidenceErrorCode / STATE evidence_collect
+**疑問**: Evidence検索停止条件では`EVIDENCE_BUDGET_EXHAUSTED`を記録すると記載される一方、M-4で確定した`EvidenceErrorCode` Enumは`BUDGET_EXHAUSTED`である。同じ事象に二つの識別子が存在する。
+**選択肢**:
+1. 正式Enumの`BUDGET_EXHAUSTED`へ統一する
+2. Enumを`EVIDENCE_BUDGET_EXHAUSTED`へ改名する
+3. 両方を別コードとして残す
+**推奨案**: 選択肢1。`EvidenceErrorCode`型の文脈でEvidence由来は明白であり、M-4・CLASS・既存テストとの変更量が最小になる。
+**実装への影響**: EvidenceProvider、Phase.error_code、JSON Schemaで単一のEnum値を使用できる。
+**テストへの影響**: 予算切れContract Testで期待する文字列を一意にできる。
+**回答**: 未回答。
+
+---
+
+*最終更新: 2026-07-11 — S-2・T-5確定、SPEC v0.3.4へ反映。既回答47問、未回答37問（既存25＋クラス設計5＋テスト設計4＋状態遷移3）*
