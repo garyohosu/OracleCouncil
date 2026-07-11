@@ -1,6 +1,6 @@
 # Oracle Council 状態遷移図
 
-- 対象仕様: `SPEC.md` v0.3.4
+- 対象仕様: `SPEC.md` v0.3.5
 - 参照順: SPEC → QandA確定回答 → SEQUENCE → CLASS → TESTCASE → FIX_PLAN
 - 対象範囲: MVPのRun、Phase、AgentExecution、AuditIssue、公開可否・結果分類
 - 原則: 処理状態、公開可否、結果分類、CLI終了コードを別軸として扱う
@@ -33,8 +33,9 @@ stateDiagram-v2
     }
 
     note right of preflight
-      Runを生成・保存するか、生成時の終端状態は未確定。
-      BLOCKED: QandA V-1
+      Runは生成・保存しない。run_id=null。
+      JSONへstatus / exit_code / messageを必ず返す。
+      history showの対象外。--no-storeでも保存しない。
     end note
     note right of failed
       Storage障害の終端は BLOCKED: QandA S-3, T-4
@@ -43,12 +44,11 @@ stateDiagram-v2
     note left of completed
       completedでもwithheld / exit 4になり得る。
       Run.statusと公開可否・終了コードは別軸。
-      公開Runでcompletedとpartialが重なる場合の優先順位は
-      BLOCKED: QandA V-2
+      verified / conflicting / unverifiedの公開回答はexit 0。
     end note
 ```
 
-許可するRunStatus遷移は`pending -> running -> completed | partial | failed | cancelled`だけであり、終端状態から再遷移しない。`partially_verified`、`conflicting`、`unverified`は`ResultClassification`でありRunStatusではない。
+許可するRunStatus遷移は`pending -> running -> completed | partial | failed | cancelled`だけであり、終端状態から再遷移しない。`partially_verified`、`conflicting`、`unverified`は`ResultClassification`でありRunStatusではない。終端判定順は`cancelled -> failed -> withheldを伴うcompleted -> partial -> completed`。`partial`はAuditor承認済みの公開可能な回答があり、分類が`partially_verified`の場合だけ使用する。
 
 ## 2. Phase状態遷移
 
@@ -73,10 +73,12 @@ stateDiagram-v2
     state "evidence_collectの二軸判定" as evidence_collect {
         [*] --> evidence_processing
         evidence_processing --> evidence_ok_none: 検索正常 / 資料0件
-        evidence_processing --> evidence_partial: 一部処理 / Run上限または時間切れ
+        evidence_processing --> evidence_budget: 一部処理 / 収集上限到達
+        evidence_processing --> evidence_timeout: 一部処理 / 90秒到達
         evidence_processing --> evidence_broken: 検索・取得機能が実行中に全断
         evidence_ok_none --> [*]: Phase=succeeded<br/>Outcome=no_evidence
-        evidence_partial --> [*]: Phase=degraded<br/>Outcome=partial_evidence<br/>Error=BUDGET_EXHAUSTED
+        evidence_budget --> [*]: Phase=degraded<br/>Outcome=partial_evidence<br/>Error=BUDGET_EXHAUSTED
+        evidence_timeout --> [*]: Phase=degraded<br/>Outcome=partial_evidence<br/>Error=EVIDENCE_TIMEOUT
         evidence_broken --> [*]: Phase=failed<br/>EvidenceErrorCodeを記録
     }
 
@@ -84,7 +86,8 @@ stateDiagram-v2
       Phase.statusは処理成否、EvidenceOutcomeは根拠の結果。
       evidence_found / conflicting_evidenceもPhase成功と両立する。
       evidence_collectはAgentExecutionを生成しない。
-      予算切れコード名は BLOCKED: QandA V-3
+      未処理Claimはunverified。
+      AI/token予算不足のBUDGET_EXCEEDEDとは別コード。
     end note
     note left of skipped
       verify完了後にwithheld確定:
@@ -184,11 +187,12 @@ stateDiagram-v2
     publishable --> verified: 検証対象1件以上<br/>全てverified/supported
     publishable --> unverified: Claim 0件または全not_applicable
 
-    conflicting --> audited_answer: contradicted Claimは不採用
-    unverified --> audited_answer: 未確認を明示
-    partially_verified --> audited_answer: 未確認を明示
-    verified --> audited_answer
-    audited_answer --> [*]: Auditor approved時だけfinal_answer公開 / exit 0
+    conflicting --> completed_public: Auditor approved / exit 0
+    unverified --> completed_public: Auditor approved / exit 0
+    verified --> completed_public: Auditor approved / exit 0
+    partially_verified --> partial_public: Auditor approved / exit 0
+    completed_public --> [*]: Run.status=completed<br/>final_answer公開
+    partial_public --> [*]: Run.status=partial<br/>final_answer公開
 
     note right of safety_gate
       優先順位:
@@ -213,6 +217,3 @@ stateDiagram-v2
 |---|---|---|
 | S-3 / T-4 | Storage障害時のRun終端・イベント保証 | Run図へBLOCKED注記。遷移は確定しない |
 | S-7 / T-1 | TokenBudget予約不足時のRun終端・予約精算 | Run/AgentExecution図へBLOCKED注記。遷移は確定しない |
-| V-1 | exit 2/3の事前停止時にRunを生成・保存するか | CLI結果終端として分離。RunStatusへ割り当てない |
-| V-2 | 公開Runがcompletedとpartialの両条件を満たす場合の優先順位 | 両遷移を示し、優先順位は確定しない |
-| V-3 | Evidence予算切れコードの二重命名 | 正式EnumのBUDGET_EXHAUSTEDを図示するが、名称確定まで実装しない |

@@ -1,6 +1,6 @@
-# FIX_PLAN — SPEC v0.3.4 反映版
+# FIX_PLAN — SPEC v0.3.5 反映版
 
-> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → 2026-07-11 R-1・M-4・S-1・U-1確定（v0.3.3） → S-2・T-5確定（v0.3.4、状態遷移図の前提が全て確定）後の状態。
+> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → R-1・M-4・S-1・U-1確定（v0.3.3） → S-2・T-5確定（v0.3.4） → V-1〜V-3確定（v0.3.5）後の状態。
 
 ## 0-1. v0.3.3で解消済み
 
@@ -17,6 +17,14 @@
 |---|---|---|
 | S-2 | Phase / AuditIssue正式モデル（AuditIssue.statusはMVPでopen/resolvedの2値、accepted_riskは制約付き将来対応。error_summaryは定型文のみmetadata、raw_diagnostic/commentはcontent） | SPEC §11.2・§15.8、CLASS.md §2・§4 |
 | T-5 | Run分類の二段判定（1. 公開可能か → 2. どの分類か。withheld確定時はcriticize以降skipped・Run completed・exit 4） | SPEC §15.2・§15.3、TESTCASE IT-E2E-15/16/17/36 |
+
+## 0-3. v0.3.5で解消済み
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| V-1 | 事前停止はRunを生成・保存せず、`run_id: null`のCLI結果を返す | SPEC §14・§15.1、STATE §1、TESTCASE CLI境界 |
+| V-2 | `partial`は公開可能な`partially_verified`だけ。withheldは`completed + exit 4` | SPEC §15.2、STATE §1・§5、TESTCASE UT-ORCH-14 |
+| V-3 | 収集上限=`BUDGET_EXHAUSTED`、90秒=`EVIDENCE_TIMEOUT`、AI予算=`BUDGET_EXCEEDED` | SPEC §10.2・§15.7、STATE §2、TESTCASE UT-EP-06 |
 
 ## 0. v0.3.1で解消済み
 
@@ -36,12 +44,13 @@
 4. TESTCASE.mdの正式テスト仕様化とT-1〜T-5レビュー（済）
 5. R-1・M-4・S-1・U-1の確定とSPEC v0.3.3反映（済）
 6. S-2・T-5の確定とSPEC v0.3.4反映（済）
-7. **状態遷移図の作成**（Run / Phase / AgentExecution / Claim / AuditIssue。前提は全て確定済み） ← 現在地
+7. 状態遷移図の作成（Run / Phase / AgentExecution / Claim / AuditIssue）（済）
    - 要件: withheld確定でsynthesize/auditをskipする経路でも、U-1用のClaim検証結果が生成済みであること（verify Phase完了がwithheld終端の前提）を図へ明示する
-8. S-3・S-7・T-1の確定（Fake実装移行のゲート）とCLASS.md残反映（S-4〜S-10）
-9. 全文書の横断レビュー
-10. L-4 Adapter spike（実装開始のゲート）
-11. Phase 0実装開始
+8. V-1〜V-3の確定とSPEC v0.3.5反映（済）
+9. **S-3・S-7・T-1の確定**（Fake実装移行のゲート）とCLASS.md残反映（S-4〜S-10） ← 現在地
+10. 全文書の横断レビュー
+11. L-4 Adapter spike（実装開始のゲート）
+12. Phase 0実装開始
 
 ---
 
@@ -65,9 +74,6 @@
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 | **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
-| **V-1** | 実行前停止時のRun生成・終端状態 | exit 2/3のCLI結果とRunStatus/保存有無の分離 | Run状態遷移・CLI Contract Test |
-| **V-2** | completed / partial競合時の優先順位 | Phase劣化・major未確認時のRunStatus決定順 | Run状態遷移・分類結合テスト |
-| **V-3** | Evidence予算切れコードの名称統一 | §10.2とEvidenceErrorCode Enumの不一致解消 | EvidenceProvider / Phase Contract Test |
 
 ---
 
@@ -117,6 +123,6 @@
 | T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
 | T-4 | append失敗時のRun/CLI挙動 | disk full、permission、途中保存失敗テスト |
 
-R-1、M-4、S-1、U-1（v0.3.3）とS-2、T-5（v0.3.4）の行は確定により削除した（解除済みテスト領域は§0-1、§0-2を参照）。
+R-1、M-4、S-1、U-1（v0.3.3）、S-2、T-5（v0.3.4）、V-1〜V-3（v0.3.5）の行は確定により削除した（解除済みテスト領域は§0-1〜§0-3を参照）。
 
 依存IDが未回答のケースは削除せず、TESTCASE.mdで`BLOCKED: QandA <ID>`として収集する。仕様確定前に仮の期待値でpassさせない。
