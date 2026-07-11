@@ -1,6 +1,6 @@
 # Oracle Council 状態遷移図
 
-- 対象仕様: `SPEC.md` v0.3.5
+- 対象仕様: `SPEC.md` v0.3.6
 - 参照順: SPEC → QandA確定回答 → SEQUENCE → CLASS → TESTCASE → FIX_PLAN
 - 対象範囲: MVPのRun、Phase、AgentExecution、AuditIssue、公開可否・結果分類
 - 原則: 処理状態、公開可否、結果分類、CLI終了コードを別軸として扱う
@@ -13,11 +13,13 @@
 stateDiagram-v2
     [*] --> pending: Run生成
     pending --> running: 実行開始
+    pending --> failed: 初回保存失敗<br/>STORAGE_WRITE_FAILED / exit 1
 
     running --> completed: 全必須Phaseが許容終端<br/>公開回答あり
     running --> completed: verify完了後にwithheld確定<br/>final_answer非公開 / exit 4
     running --> partial: 監査済み回答あり<br/>非critical劣化またはmajor未確認 / exit 0
     running --> failed: 必須Phase最低成功数未達<br/>監査未完了またはaudit blocked / exit 1
+    running --> failed: 保存有効時のappend失敗<br/>final_answer非公開 / exit 1
     running --> cancelled: SIGINTまたは明示cancel / exit 130
 
     completed --> [*]
@@ -38,8 +40,9 @@ stateDiagram-v2
       history showの対象外。--no-storeでも保存しない。
     end note
     note right of failed
-      Storage障害の終端は BLOCKED: QandA S-3, T-4
-      予算不足後のRun終端は BLOCKED: QandA S-7, T-1
+      保存失敗は初回・途中・最終の全てでfail closed。
+      STORAGE_WRITE_FAILED。以後のappendなし。
+      予算不足は承認済み回答なしならfailed / exit 1。
     end note
     note left of completed
       completedでもwithheld / exit 4になり得る。
@@ -48,7 +51,7 @@ stateDiagram-v2
     end note
 ```
 
-許可するRunStatus遷移は`pending -> running -> completed | partial | failed | cancelled`だけであり、終端状態から再遷移しない。`partially_verified`、`conflicting`、`unverified`は`ResultClassification`でありRunStatusではない。終端判定順は`cancelled -> failed -> withheldを伴うcompleted -> partial -> completed`。`partial`はAuditor承認済みの公開可能な回答があり、分類が`partially_verified`の場合だけ使用する。
+許可するRunStatus遷移は`pending -> running -> completed | partial | failed | cancelled`と、初回保存失敗時の`pending -> failed`だけであり、終端状態から再遷移しない。`partially_verified`、`conflicting`、`unverified`は`ResultClassification`でありRunStatusではない。終端判定順は`cancelled -> failed -> withheldを伴うcompleted -> partial -> completed`。`partial`はAuditor承認済みの公開可能な回答があり、分類が`partially_verified`の場合だけ使用する。
 
 ## 2. Phase状態遷移
 
@@ -136,8 +139,8 @@ stateDiagram-v2
     end note
     note right of compact_pending
       縮約後も収まらなければBUDGET_EXCEEDED。
-      予算予約・精算とRun終端は
-      BLOCKED: QandA S-7, T-1
+      承認済み回答あり: partial / exit 0。
+      承認済み回答なし: failed / exit 1。
     end note
 ```
 
@@ -211,9 +214,30 @@ stateDiagram-v2
 
 公開可能な分類でも、Auditorが`approved`でなければ`final_answer`を公開しない。`changes_required`は修正と再監査を1回だけ行い、再監査でも未解決Critical Issueが残る場合は`blocked`としてRunを`failed`へ送る。
 
-## 6. 未確定境界
+## 6. BudgetReservation状態遷移
 
-| QandA | 状態図への影響 | 本書での扱い |
-|---|---|---|
-| S-3 / T-4 | Storage障害時のRun終端・イベント保証 | Run図へBLOCKED注記。遷移は確定しない |
-| S-7 / T-1 | TokenBudget予約不足時のRun終端・予約精算 | Run/AgentExecution図へBLOCKED注記。遷移は確定しない |
+```mermaid
+stateDiagram-v2
+    [*] --> reserved: reserve成功<br/>tokenとcall slotを原子的に確保
+    reserved --> released: 子process生成前に中止・起動失敗
+    reserved --> committed: 子process生成後に終端
+    committed --> committed: 同一commit再呼出し / 冪等
+    released --> released: 同一release再呼出し / 冪等
+    committed --> [*]
+    released --> [*]
+
+    note right of reserved
+      retry / 代替Agentは別Execution・別予約。
+      12回上限もreserveと同じlockで判定。
+    end note
+    note right of committed
+      success / failed / timeout / cancelを含む。
+      usage不明でも予約推定量をcommit。
+      committed -> releasedは禁止。
+    end note
+    note right of released
+      released -> committedは禁止。
+    end note
+```
+
+reserve失敗ではReservationを作らず、新しいAgent呼出しを開始しない。Auditor承認済み回答がある場合だけ`Run.partial + partially_verified + exit 0`で公開し、なければ`Run.failed + BUDGET_EXCEEDED + exit 1`で非公開とする。

@@ -1,7 +1,7 @@
 # Oracle Council クラス図
 
 - 対象シーケンス: `SEQUENCE.md`
-- 対象仕様: `SPEC.md` v0.3.4
+- 対象仕様: `SPEC.md` v0.3.6
 - 対象範囲: MVPの`verify`モード、履歴、キャンセル
 - 方針: シーケンスの参加オブジェクトをクラス責務へ割り当て、SPECで定義済みの型だけを確定要素として扱う
 
@@ -66,19 +66,59 @@ classDiagram
 
     class StorageBackend {
         <<interface>>
-        +append(runId, event) void
-        +load(runId) RunEvent[]
-        +delete(runId) void
-        +purge() void
+        +append(runId, eventWithoutSequence) RunEvent
+        +load(runId) StorageLoadResult
+        +delete(runId) DeleteResult
+        +purge() PurgeResult
     }
 
     class JSONLStorage
+    class InMemoryStorageBackend
+    class StorageLoadResult {
+        +events RunEvent[]
+        +warnings StorageWarning[]
+    }
+    class DeleteResult {
+        +deleted bool
+    }
+    class PurgeResult {
+        +deletedCount int
+    }
+
     class TokenBudget {
-        +inputUsed int
-        +outputUsed int
-        +callCount int
-        +reserve(request) bool
-        +record(result) void
+        +reserve(request) BudgetReservation
+        +commit(reservationId, actualUsage) BudgetReservation
+        +release(reservationId) BudgetReservation
+        +snapshot() BudgetSnapshot
+    }
+    class BudgetRequest {
+        +runId str
+        +executionId str
+        +phase AgentPhase
+        +estimatedInputTokens int
+        +estimatedOutputTokens int
+    }
+    class BudgetReservation {
+        +reservationId str
+        +runId str
+        +executionId str
+        +phase AgentPhase
+        +estimatedInputTokens int
+        +estimatedOutputTokens int
+        +reservedCallCount int
+        +status BudgetReservationStatus
+        +actualInputTokens int
+        +actualOutputTokens int
+        +createdAt datetime
+        +finishedAt datetime
+    }
+    class BudgetSnapshot {
+        +reservedInputTokens int
+        +committedInputTokens int
+        +reservedOutputTokens int
+        +committedOutputTokens int
+        +reservedCallCount int
+        +committedCallCount int
     }
 
     OracleCLI --> Orchestrator : commands
@@ -94,10 +134,20 @@ classDiagram
     EvidenceProvider <|.. NoneEvidenceProvider
     EvidenceProvider <|.. ManualEvidenceProvider
     StorageBackend <|.. JSONLStorage
+    StorageBackend <|.. InMemoryStorageBackend
+    StorageBackend --> StorageLoadResult
+    StorageBackend --> DeleteResult
+    StorageBackend --> PurgeResult
+    TokenBudget --> BudgetRequest
+    TokenBudget --> BudgetReservation
+    TokenBudget --> BudgetSnapshot
+    BudgetReservation --> BudgetReservationStatus
 
     WebEvidenceProvider --> SafeHttpFetcher : delegates fetch (DI)
 
     note for SafeHttpFetcher "S-1確定: HTTPクライアントを直接保持するのはSafeHttpFetcherのみ。OrchestratorはEvidenceProviderだけを見る"
+    note for StorageBackend "S-3確定: sequence採番とappend原子性はStorage所有。no-storeでは呼出し0回。保存失敗はfail closed"
+    note for TokenBudget "S-7確定: 入出力tokenとcall countを同一lockで予約。retryは別予約。開始前release、開始後commit"
 ```
 
 ## 2. 実行時ドメインモデル
@@ -399,6 +449,26 @@ classDiagram
         BUDGET_EXCEEDED
     }
 
+    class BudgetReservationStatus {
+        <<enumeration>>
+        reserved
+        committed
+        released
+    }
+
+    class StorageErrorCode {
+        <<enumeration>>
+        STORAGE_WRITE_FAILED
+        STORAGE_CORRUPTED
+        STORAGE_LOCK_FAILED
+        STORAGE_NOT_FOUND
+    }
+
+    class StorageWarning {
+        <<enumeration>>
+        TRUNCATED_TAIL
+    }
+
     class ClaimImportance {
         <<enumeration>>
         critical
@@ -462,12 +532,11 @@ classDiagram
 - `Vote`と`Voter`はMVPで生成しないため図から除外する
 - `AgentPhase`はAgentExecution用（AI呼び出しのみ）、`RunPhase`はPhaseレコード用（`evidence_collect`を含む）として分離する
 - Run全体の`result_classification`はOrchestratorの二段判定（SPEC §15.3）で導出し、AIに決めさせない
-- 状態遷移図の前提（R-1、M-4、S-2、T-5）はすべて確定済み。次工程で作成する
+- StorageBackendとTokenBudgetの状態・所有権はS-3/S-7/T-1/T-4で確定し、JSONL/InMemory/Fakeが同じContractへ従う
 
 ## 6. 未確定箇所
 
-- S-3: `StorageBackend`のイベント追記・読込・削除Contract
 - K-4: 1つのEvidenceDocumentを複数Claimで共有する場合の関連
 - L-5: フェーズ別`structured_output`のschema
 
-S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3で、S-2（Phase / AuditIssue正式モデル）、T-5（Run分類の二段判定）はSPEC v0.3.4で確定し、本書へ反映済み。
+S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6で確定し、本書へ反映済み。

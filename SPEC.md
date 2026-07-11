@@ -1,6 +1,6 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.3.5
+- 文書バージョン: 0.3.6
 - ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
@@ -360,6 +360,30 @@ estimated_tokens = max(Unicode code point数, ceil(UTF-8 byte数 / 4))
 5. 回答の正規化上限を3,000文字から2,000文字へ下げる
 
 `critical` Claimとその反証Evidenceは削除しない。上限内に収まらなければ`BUDGET_EXCEEDED`とする。
+
+### 8.7 TokenBudget Contract
+
+`TokenBudget`はRun単位で生成し、推定入力token、推定出力token、AI呼び出し回数を同じ排他制御下で予約・精算する。公開メソッドは次とする。
+
+- `reserve(request: BudgetRequest) -> BudgetReservation | BudgetExceededError`
+- `commit(reservation_id, actual_usage: Usage | null) -> BudgetReservation`
+- `release(reservation_id) -> BudgetReservation`
+- `snapshot() -> BudgetSnapshot`
+
+`BudgetReservation`の正式フィールドは`reservation_id`、`run_id`、`execution_id`、`phase`、`estimated_input_tokens`、`estimated_output_tokens`、`reserved_call_count`（常に1）、`status`（`reserved` / `committed` / `released`）、`actual_input_tokens`、`actual_output_tokens`、`created_at`、`finished_at`とする。
+
+`reserve`は入力・出力・call countの「committed済み＋reserved中＋今回要求」が各上限以下の場合だけ成功する。判定と予約追加は単一のlock/transaction内で原子的に行う。上限不足時は予約を作らず`BudgetExceededError`を返す。12回上限も同じ予約処理で判定し、別カウンタとの競合を作らない。
+
+予約の所有者はOrchestratorとし、各Executionについて必ず次のどちらかを呼ぶ。
+
+- 子CLIプロセスの生成前に中止、起動失敗、cancelされた場合: `release`
+- 子CLIプロセス生成後に成功、失敗、timeout、cancelとなった場合: `commit`
+
+usage不明のtimeout・強制終了は`actual_usage=null`で`commit`し、予約した推定量を予算消費量として維持する。usageが得られた場合も、予算判定用の消費量は予約した推定量で確定し、実測値は観測情報として別フィールドへ記録する。実測値で過去の予算判定を遡及変更しない。
+
+retryと代替Agent実行は必ず別の`execution_id`と別の`BudgetReservation`を作る。元予約を再利用しない。`committed -> released`、`released -> committed`は禁止する。同じ終端操作の再呼び出しは状態と数値を変えず同じ結果を返す冪等動作とし、異なる終端操作は`InvalidReservationTransition`を返す。
+
+存在しない`reservation_id`は`ReservationNotFound`を返す。同一commitを異なる`actual_usage`で再呼び出しても初回結果を変更せず、初回の`actual_usage`を返す。Run終端時に`reserved`を残してはならず、Orchestratorはfinally相当の処理で全Reservationが`committed`または`released`であることをassertする。
 
 ## 9. 評議会の処理フロー
 
@@ -820,9 +844,34 @@ MVPはJSONLのみを実装する。
 - 完了時に`run_completed`イベントへ最終スナップショットを含める。既定（metadata保存）ではRunMetadataRecordのみを含め、content区分フィールドは`--store-content`指定時だけ含める
 - ストレージは`StorageBackend`インターフェースで抽象化する
 - SQLiteはデータモデルが安定した後に追加する
-- `--no-store`ではRun終了後にRunディレクトリを残さない
+- `--no-store`ではStorageBackendを呼び出さず、Runディレクトリを作成しない
 
 Runは、引数・設定検証、質問整理、mode判定、EvidenceProvider利用可否、最低Agent数の事前検査が全て通過し、最初のPhaseを開始する直前に生成する。`needs_clarification`、`strict_required`、`verification_unavailable`、`insufficient_agents`等で事前停止する場合はRunを生成せず、履歴へ保存しない。`--no-store`では事前停止結果も保存せず、Run生成後のイベントも永続化しない。
+
+#### StorageBackend Contract
+
+公開メソッドは次とする。
+
+- `append(run_id, event_without_sequence) -> RunEvent`
+- `load(run_id) -> StorageLoadResult`
+- `delete(run_id) -> DeleteResult`
+- `purge() -> PurgeResult`
+
+`sequence`はStorageBackendが所有する。`append`は同一Runの排他lock/transaction内で、既存の最大sequenceを検証し、`max + 1`（初回は1）を採番し、schema-validなJSON 1行を追記して永続媒体へflushした後、採番済み`RunEvent`を返す。採番、追記、可視化は1回の原子的操作であり、失敗時に完全行を成功扱いしない。同一Runへのthread/process間同時書込みでもsequenceの重複・欠番・行の混在を許さない。異なるRunは独立して書き込める。
+
+`load`はsequence昇順のイベントとwarningを持つ`StorageLoadResult`を返す。末尾の改行されていない不完全な1行だけは`TRUNCATED_TAIL` warningとして無視し、それ以前の完全行を返す。中間の不正JSON、schema違反、sequence重複・欠番・逆転は`StorageCorruptionError`とし、破損行を飛ばして正常履歴として返さない。破損Runへの追加appendも拒否する。MVPでは中断Runを再開せず、完全行までの履歴閲覧だけを許す。
+
+存在しない`run_id`の`load`は空配列ではなく`StorageNotFoundError`を返す。これにより「履歴なし」と「イベント0件のRun」を混同しない。
+
+`delete`は指定Runの全metadata/content/一時ファイルを削除し、対象なしでも成功する冪等操作とする。`purge`は全Runを同じ規則で削除し、削除件数を返す。実行中Runと競合した場合はlock取得に失敗させ、書込み中のデータを削除しない。
+
+保存モード境界はOrchestratorが適用する。metadata-onlyではcontent区分キーをStorageへ渡さず、`--store-content`時だけredaction済みcontentを渡す。`--no-store`ではStorageBackendを生成・参照・呼び出さず、`append/load/delete/purge`の呼び出し回数は0とする。
+
+保存が有効なRunで`append`が失敗した場合はfail closedとする。初回`run_created`、途中イベント、最終`run_completed`のどの失敗でも、以後のappendを停止し、in-memory Runを`failed`、`error_code=STORAGE_WRITE_FAILED`、final_answer非公開、oracleExitCode=1とする。保存失敗を記録するための再帰的appendは行わず、redaction済みstderrだけで通知する。最終回答生成後の保存失敗でも回答を公開しない。`--no-store`だけは保存なしを選択済みの正常経路であり、この規則の対象外とする。
+
+`load`の`StorageCorruptionError`は対象履歴の表示を失敗させ、`STORAGE_CORRUPTED`を返す。他のRunや新規Runの処理は継続できる。
+
+`StorageErrorCode`は`STORAGE_WRITE_FAILED` / `STORAGE_CORRUPTED` / `STORAGE_LOCK_FAILED` / `STORAGE_NOT_FOUND`とし、自由文字列をerror_codeに使わない。末尾切断はエラーではなく`StorageWarning.TRUNCATED_TAIL`とする。
 
 ### 15.2 Run.status
 
@@ -833,7 +882,7 @@ Runは、引数・設定検証、質問整理、mode判定、EvidenceProvider利
 - `failed`
 - `cancelled`
 
-遷移は`pending -> running -> completed | partial | failed | cancelled`だけを許可する。終端状態からの遷移は禁止する。
+遷移は`pending -> running -> completed | partial | failed | cancelled`と、初回保存失敗時の`pending -> failed`だけを許可する。終端状態からの遷移は禁止する。
 
 - `completed`: (a) Auditorが`approved`した公開可能な回答があり`result_classification`が`verified`、`conflicting`または`unverified`、または (b) §15.3第1段で`withheld`が確定し§11.5の検証結果開示を返した
 - `partial`: Auditorが`approved`した公開可能な回答があり、品質劣化を示す`result_classification=partially_verified`である場合だけ使用する
@@ -843,6 +892,21 @@ Runは、引数・設定検証、質問整理、mode判定、EvidenceProvider利
 RunStatusは処理終端、result_classificationは検証品質であり混同しない。判定順は`cancelled`、`failed`、`withheldを伴うcompleted`、`partial`、`completed`とする。Phaseが`degraded`でも公開可能な回答がなければ`partial`にせず`failed`とする。Evidence収集の一部不足等がClaimの未確認として残り、監査済みの公開可能な部分回答がある場合は`partial + partially_verified + exit 0`とする。
 
 `withheld`はRun失敗ではない（§13.4でexit 4をexit 1と分離）。§15.3第1段で`withheld`が確定した場合、以降の`criticize`、`synthesize`、`audit`は`skipped`とし、`completed + withheld + exit 4`で終了する。監査対象の統合回答を作らないため、未承認回答の漏えいは構造的に起きない。
+
+#### 保存・予算障害の終端決定表
+
+| 発生イベント | Storage操作・結果 | BudgetReservation操作 | Phase.status | Run.status | result_classification | final_answer | CLI | 保存イベント |
+|---|---|---|---|---|---|---|---:|---|
+| 初回保存失敗 | `append(run_created)`失敗 | 未予約なら操作なし。予約済み未開始はrelease | 未開始Phaseは`cancelled` | `failed` | `unverified` | 非公開 | 1 | 追加保存なし。stderrに`STORAGE_WRITE_FAILED` |
+| Run途中の保存失敗 | event append失敗 | 未開始予約はrelease。開始済みExecutionはcommit | 実行中Phaseは`failed` | `failed` | その時点の分類を公開結果に使わない | 非公開 | 1 | 失敗したappend以後は保存なし |
+| 最終保存だけ失敗 | `append(run_completed)`失敗 | 全予約は既に終端 | 完了済みPhaseは変更しない | `failed` | 内部値は保持するが公開結果に使わない | 非公開 | 1 | 再帰的保存なし。stderrに`STORAGE_WRITE_FAILED` |
+| reserve失敗・Auditor承認済み回答あり | `budget_exceeded`をappend。成功必須 | 予約は作られない | 次の未開始Phaseは`skipped` | `partial` | `partially_verified`へ保守的に設定 | 公開 | 0 | `budget_exceeded`、`run_partial` |
+| reserve失敗・承認済み回答なし | `budget_exceeded`をappend。成功必須 | 予約は作られない | 対象Phaseは`failed` | `failed` | `unverified` | 非公開 | 1 | `budget_exceeded`、`phase_failed`、`run_failed` |
+| Claim検証で安全保留 | 通常append | 全予約を規則どおり終端 | criticize以降`skipped` | `completed` | `withheld` | 非公開。Claim検証結果は公開 | 4 | `claims_classified`、skipped Phase、`run_completed` |
+
+reserve失敗後は新しいAgent呼び出し、retry、代替Agent実行を開始しない。`partial`を許す「Auditor承認済み回答」は、現在のRunでAuditorが`approved`を返したschema-validなfinal_answerに限る。未監査回答、`changes_required`中の回答、過去Runの回答は使用しない。予算不足による`partial`は、未実行の必須処理が残った品質劣化を明示するため`result_classification=partially_verified`とする。
+
+`BUDGET_EXCEEDED`はAI呼び出し・token・コンテキスト予算に限定する。Evidence収集上限の`EvidenceErrorCode.BUDGET_EXHAUSTED`、Evidence時間上限の`EVIDENCE_TIMEOUT`とは別である。
 
 ### 15.3 result_classification
 

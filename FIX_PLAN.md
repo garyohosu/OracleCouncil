@@ -1,6 +1,6 @@
-# FIX_PLAN — SPEC v0.3.5 反映版
+# FIX_PLAN — SPEC v0.3.6 反映版
 
-> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → R-1・M-4・S-1・U-1確定（v0.3.3） → S-2・T-5確定（v0.3.4） → V-1〜V-3確定（v0.3.5）後の状態。
+> 設計レビュー、USECASE/SEQUENCE/CLASS/TESTCASE/STATE作成、R-1・M-4・S-1・U-1（v0.3.3）、S-2・T-5（v0.3.4）、V-1〜V-3（v0.3.5）、M-3・S-3・S-7・T-1・T-4（v0.3.6）確定後の状態。
 
 ## 0-1. v0.3.3で解消済み
 
@@ -26,6 +26,15 @@
 | V-2 | `partial`は公開可能な`partially_verified`だけ。withheldは`completed + exit 4` | SPEC §15.2、STATE §1・§5、TESTCASE UT-ORCH-14 |
 | V-3 | 収集上限=`BUDGET_EXHAUSTED`、90秒=`EVIDENCE_TIMEOUT`、AI予算=`BUDGET_EXCEEDED` | SPEC §10.2・§15.7、STATE §2、TESTCASE UT-EP-06 |
 
+## 0-4. v0.3.6で解消済み
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| M-3 / S-3 | StorageBackend Contract、Storage採番、原子的append、同時書込み、破損規則 | SPEC §15.1、CLASS §1、TESTCASE UT-SB/CT-SB |
+| S-7 | BudgetReservationの3状態、原子的reserve、開始前release、開始後commit、retry別予約 | SPEC §8.7、CLASS §1・§4、STATE §6、TESTCASE UT-TB |
+| T-1 | reserve失敗後のpartial/failed分岐、公開条件、exit 0/1 | SPEC §15.2、STATE §1・§6、TESTCASE UT-TB-09/IT-E2E-22 |
+| T-4 | 保存有効時のappend失敗は全時点でfail closed、`--no-store`だけ呼出し0回 | SPEC §15.1・§15.2、TESTCASE UT-SB/IT-E2E-25 |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |
@@ -47,10 +56,10 @@
 7. 状態遷移図の作成（Run / Phase / AgentExecution / Claim / AuditIssue）（済）
    - 要件: withheld確定でsynthesize/auditをskipする経路でも、U-1用のClaim検証結果が生成済みであること（verify Phase完了がwithheld終端の前提）を図へ明示する
 8. V-1〜V-3の確定とSPEC v0.3.5反映（済）
-9. **S-3・S-7・T-1の確定**（Fake実装移行のゲート）とCLASS.md残反映（S-4〜S-10） ← 現在地
-10. 全文書の横断レビュー
-11. L-4 Adapter spike（実装開始のゲート）
-12. Phase 0実装開始
+9. S-3・S-7・T-1の確定（Fake実装移行のゲート）（済）
+10. **Phase 0実装開始**（InMemoryStorageBackend / TokenBudget / Fake Adapter・Provider / verify 7回フロー） ← 現在地
+11. 残るモジュール別ブロッカーを各Phase開始前に解消
+12. L-4 Adapter spike（実CLI実装のゲート）
 
 ---
 
@@ -67,13 +76,9 @@
 | **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
 | **S-5** | Agent選定・代替表現 | 複数担当・代替候補アロケーションのクラス表現 | Agent選定単体テスト |
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
-| **S-7** | TokenBudgetの原子性 | 並列予約の排他制御、Reservationオブジェクト設計 | 予算超過・並列予約テスト |
 | **S-8** | CLI終了コードの分離 | `processExitCode` と `oracleExitCode` のフィールド分離 | CLI / Adapter Contract Test |
-| **S-3** | StorageBackend Contract | append/load/delete/purge、sequence、障害契約 | 永続化Contract Test |
-| **T-1** | TokenBudget予約不足時 | reserve失敗後のRun状態、公開可否、予約精算 | 予算超過テスト |
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
-| **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
 
 ---
 
@@ -87,7 +92,6 @@
 | **L-3** | 構造化出力失敗時の回復 | Phase 2 (Adapter実装) | Adapter例外・復帰テスト |
 | **O-2** | 認証情報マスキングの境界 | Phase 2 (Adapter実装) | secret redactionテスト |
 | **R-4** | `probe()`の実行方式とカウント | Phase 2 (Adapter実装) | Probe・カウント検証テスト |
-| **M-3** | JSONL破損・同時実行・ディスクフル | Phase 0〜1 (Storage) | Storage Backend 障害テスト |
 | **N-3** | 障害注入テストの契約 | Phase 2〜3 | ネットワーク・遅延障害テスト |
 | **K-2** | Web取得で扱える資料範囲 | Phase 3 (Evidence) | WebEvidenceProvider Contract Test |
 | **K-4** | Claim分割とEvidence多対多 | Phase 3 (Evidence) | Evidence共有・マッピングテスト |
@@ -117,12 +121,9 @@
 
 | 未決ID | 先に確定する内容 | 解除されるテスト領域 |
 |---|---|---|
-| S-3 | StorageBackendの操作・sequence・例外Contract | JSONL/SQLite互換Contract、破損・同時書込テスト |
-| T-1 | reserve失敗後のRun状態と予約精算 | TokenBudget超過、12回上限テスト |
 | T-2 | cancel伝播期限・冪等性・残留判定 | Ctrl+C、process tree、cancel競合テスト |
 | T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
-| T-4 | append失敗時のRun/CLI挙動 | disk full、permission、途中保存失敗テスト |
 
-R-1、M-4、S-1、U-1（v0.3.3）、S-2、T-5（v0.3.4）、V-1〜V-3（v0.3.5）の行は確定により削除した（解除済みテスト領域は§0-1〜§0-3を参照）。
+R-1、M-4、S-1、U-1（v0.3.3）、S-2、T-5（v0.3.4）、V-1〜V-3（v0.3.5）、M-3、S-3、S-7、T-1、T-4（v0.3.6）の行は確定により削除した（解除済み領域は§0-1〜§0-4を参照）。
 
 依存IDが未回答のケースは削除せず、TESTCASE.mdで`BLOCKED: QandA <ID>`として収集する。仕様確定前に仮の期待値でpassさせない。
