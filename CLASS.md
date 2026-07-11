@@ -1,7 +1,7 @@
 # Oracle Council クラス図
 
 - 対象シーケンス: `SEQUENCE.md`
-- 対象仕様: `SPEC.md` v0.3.2
+- 対象仕様: `SPEC.md` v0.3.3
 - 対象範囲: MVPの`verify`モード、履歴、キャンセル
 - 方針: シーケンスの参加オブジェクトをクラス責務へ割り当て、SPECで定義済みの型だけを確定要素として扱う
 
@@ -95,10 +95,9 @@ classDiagram
     EvidenceProvider <|.. ManualEvidenceProvider
     StorageBackend <|.. JSONLStorage
 
-    WebEvidenceProvider ..> SafeHttpFetcher : intended dependency
-    Orchestrator ..> SafeHttpFetcher : current sequence
+    WebEvidenceProvider --> SafeHttpFetcher : delegates fetch (DI)
 
-    note for SafeHttpFetcher "fetch責務の所有者はQandA S-1で未確定"
+    note for SafeHttpFetcher "S-1確定: HTTPクライアントを直接保持するのはSafeHttpFetcherのみ。OrchestratorはEvidenceProviderだけを見る"
 ```
 
 ## 2. 実行時ドメインモデル
@@ -122,8 +121,10 @@ classDiagram
     }
 
     class Phase {
-        +phase AgentPhase
+        +phase RunPhase
         +status PhaseStatus
+        +outcome EvidenceOutcome
+        +errorCode EvidenceErrorCode
     }
 
     class AgentExecution {
@@ -198,6 +199,8 @@ classDiagram
         +payload object
     }
 
+    Phase --> EvidenceOutcome
+    Phase --> EvidenceErrorCode
     Run "1" *-- "1..*" Phase
     Run "1" *-- "0..*" AgentExecution
     Run "1" *-- "0..*" Claim
@@ -207,7 +210,7 @@ classDiagram
     Run ..> RunMetadataRecord : metadata snapshot
     RunMetadataRecord ..> RunEvent : persisted as
 
-    note for Phase "正式フィールドと永続化要否はQandA S-2で未確定"
+    note for Phase "M-4確定: outcome/errorCodeはevidence_collectのみ使用。他の正式フィールドと永続化要否はQandA S-2で未確定"
     note for AuditIssue "正式モデルはQandA S-2で未確定"
     note for Evidence "複数Claimとの共有方法は既存QandA K-4で未確定"
 ```
@@ -340,6 +343,36 @@ classDiagram
         audit
     }
 
+    class RunPhase {
+        <<enumeration>>
+        clarify
+        respond
+        claim_extract
+        evidence_collect
+        verify
+        criticize
+        synthesize
+        audit
+    }
+
+    class EvidenceOutcome {
+        <<enumeration>>
+        evidence_found
+        partial_evidence
+        no_evidence
+        conflicting_evidence
+        not_applicable
+    }
+
+    class EvidenceErrorCode {
+        <<enumeration>>
+        SEARCH_UNAVAILABLE
+        ALL_FETCH_BLOCKED
+        EVIDENCE_TIMEOUT
+        BUDGET_EXHAUSTED
+        FETCH_FAILED
+    }
+
     class ClaimImportance {
         <<enumeration>>
         critical
@@ -395,15 +428,15 @@ classDiagram
 - Claim状態はVerifierの自由判断ではなく、Verifierが返すEvidence分類をOrchestratorが決定規則へ適用して確定する
 - `Run`はin-memoryモデル、`RunMetadataRecord`は既定永続化モデルとして分離する
 - `Vote`と`Voter`はMVPで生成しないため図から除外する
-- 状態遷移そのものはR-1とM-4の確定後に状態遷移図へ分離する
+- `AgentPhase`はAgentExecution用（AI呼び出しのみ）、`RunPhase`はPhaseレコード用（`evidence_collect`を含む）として分離する
+- R-1とM-4は確定済み（SPEC v0.3.3）。状態遷移図はS-2、T-5の確定を待って作成する
 
 ## 6. 未確定箇所
 
-- S-1: `EvidenceProvider.fetch()`と`SafeHttpFetcher`の責務境界
 - S-2: `Phase`と`AuditIssue`の正式な属性・永続化区分
 - S-3: `StorageBackend`のイベント追記・読込・削除Contract
 - K-4: 1つのEvidenceDocumentを複数Claimで共有する場合の関連
 - L-5: フェーズ別`structured_output`のschema
-- M-4: Evidence検索・取得・分類を表す状態モデル
-- R-1: CLI終了コード
+
+S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3で確定し、本書へ反映済み。
 

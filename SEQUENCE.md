@@ -1,6 +1,6 @@
 # Oracle Council シーケンス図
 
-- 対象仕様: `SPEC.md` v0.3.2
+- 対象仕様: `SPEC.md` v0.3.3
 - 対象ユースケース: `USECASE.md`
 - 対象範囲: MVPの`verify`モードと周辺操作
 - Agent役割の割当は§8.1の`role_priority`設定例に基づく一例。実際の割当は§6.2の決定的ルールによる
@@ -8,7 +8,7 @@
 ## 前提
 
 - `quick`の実行グラフはQandA J-3が未回答のため、本書では図示しない
-- CLI終了コードはQandA R-1が未回答のため、§7.5で確定済みの終了コード2のみ図中で使う
+- CLI終了コードはSPEC §13.4の対応表（0 / 1 / 2 / 3 / 4 / 130）に従う
 - ユーザー応答待ちと全体タイムアウトの関係はQandA R-3が未回答のため、図では応答待ちを時間計測外として仮置きする
 
 ## 1. 正常系: `verify`（対話モード・監査一発承認・AI呼び出し7回）
@@ -48,15 +48,19 @@ sequenceDiagram
     O->>B: execute(claim_extract)（AI呼び出し3）
     B-->>O: Claim一覧＋重要度案
 
+    Note over O: evidence_collect Phase開始（AgentExecutionなし・Phaseレコードのみ）
     loop 主要Claim最大5件（検索10回・fetch12文書・90秒のRun上限内）
         O->>EP: search(中立クエリ)
         EP-->>O: 上位5件
         O->>EP: search(反証クエリ)
         EP-->>O: 上位5件
-        O->>F: fetch(候補URL)
+        O->>EP: fetch(SearchResult)
+        EP->>F: fetch(候補URL)（必ず委譲・直接HTTP禁止）
         F->>F: https:443限定・DNS/IP検証・2MB上限
-        F-->>O: EvidenceDocument（Claimごと成功3文書まで）
+        F-->>EP: 取得本文
+        EP-->>O: EvidenceDocument（Claimごと成功3文書まで）
     end
+    Note over O: Phase.status（処理の成否）とEvidenceOutcome（根拠の結果）を分離記録
 
     O->>B: execute(verify)（AI呼び出し4）
     B-->>O: Evidence分類（authority / directness / stance / freshness）
@@ -264,9 +268,9 @@ sequenceDiagram
 
 - J-3: `quick`の実行グラフ（未回答のため図なし）
 - J-4: 追加質問2ラウンド目のClarifier再呼び出しの有無
-- M-4: Evidence収集をPhaseとして状態機械に載せるか（図1のEvidence収集失敗時の遷移が未確定）
 - M-5: 代替Agent実行と絶対上限12回の関係（図4bは代替なしの既定2 Agent構成のみ）
-- R-1: 終了コード一覧（`strict_required`、`verification_unavailable`、`failed`等の値）
 - R-2: `--json`時の進捗表示の出力先
 - R-3: ユーザー応答待ち時間と全体タイムアウトの関係
 - R-4: `probe()`の実行方式（AI呼び出しに数えるか）
+
+M-4（`evidence_collect` Phaseと2軸モデル）、R-1（終了コード表）、S-1（Provider内部委譲）はSPEC v0.3.3で確定し、本書へ反映済み。

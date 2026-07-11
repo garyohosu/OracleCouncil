@@ -1,6 +1,15 @@
-# FIX_PLAN — SPEC v0.3.2 およびクラス・テスト設計レビュー反映版
+# FIX_PLAN — SPEC v0.3.3 反映版
 
-> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（REQUEST_CHANGES: S-4〜S-10追加） → TESTCASE.md初版およびテスト設計疑問（T-1〜T-4追加）反映後の状態。
+> 2026-07-10 v0.3.0レビュー → レビュアー回答反映（v0.3.1） → ユースケースQ-1〜Q-3反映（v0.3.2） → USECASE.md承認・SEQUENCE.md作成 → CLASS.md設計レビュー（S-4〜S-10追加） → TESTCASE.md初版（T-1〜T-5追加） → 2026-07-11 R-1・M-4・S-1・U-1確定（v0.3.3、TESTCASE BLOCKED解除）後の状態。
+
+## 0-1. v0.3.3で解消済み
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| R-1 | oracleExitCode対応表（0/1/2/3/4/130、withheld=4独立） | SPEC §13.4、TESTCASE全CLI境界ケース |
+| M-4 | `evidence_collect` Phaseと2軸モデル（PhaseStatus × EvidenceOutcome、EvidenceErrorCode） | SPEC §15.7、CLASS.md Enum、SEQUENCE §1 |
+| S-1 | Provider内部委譲（Orchestrator → EvidenceProvider → SafeHttpFetcher） | SPEC §10.2、CLASS.md依存線、SEQUENCE §1 |
+| U-1 | withheld開示境界（final_answer非公開、Claim検証結果は「確認状態→確認対象→扱い」で開示） | SPEC §11.5、TESTCASE IT-E2E-36 |
 
 ## 0. v0.3.1で解消済み
 
@@ -18,12 +27,13 @@
 2. Q-1〜Q-3の回答とUSECASE.mdの確定（済）
 3. SEQUENCE.md の作成と承認（済）
 4. TESTCASE.mdの正式テスト仕様化とT-1〜T-5レビュー（済）
-5. **実装開始前ブロッカーの回答とSPEC反映** ← 現在地
-6. 状態遷移図の作成（Run / Phase / AgentExecution / Evidence。R-1、M-4、S-2、T-5が前提）
-7. CLASS.md の修正と再レビュー（S-1〜S-10を反映）
-8. 全文書の横断レビュー
-9. L-4 Adapter spike（実装開始のゲート）
-10. Phase 0実装開始
+5. R-1・M-4・S-1・U-1の確定とSPEC v0.3.3反映（済）
+6. **残る実装開始前ブロッカーの回答とSPEC反映** ← 現在地（S-2、S-3、S-7、T-1が次の優先）
+7. 状態遷移図の作成（Run / Phase / AgentExecution / Evidence。残る前提はS-2、T-5）
+8. CLASS.md の修正と再レビュー（S-2〜S-10を反映。S-1は反映済み）
+9. 全文書の横断レビュー
+10. L-4 Adapter spike（実装開始のゲート）
+11. Phase 0実装開始
 
 ---
 
@@ -35,11 +45,8 @@
 |---|---|---|---|
 | **J-3** | `quick`の実行グラフ | フェーズ一覧・呼び出し数・出力の確定 | `quick`結合テスト |
 | **L-5** | フェーズ別の構造化出力スキーマ | 6フェーズ分のJSON Schema | 各Adapter / JSON Schema Contract Test |
-| **M-4** | Evidence収集フェーズの状態モデル | Phase enumへの追加、全断時の挙動定義 | Evidence結合テスト |
 | **M-5** | 代替Agent選定と再試行・12回上限 | 呼び出し上限と代替選定の競合解消 | Agent呼び出し上限テスト |
 | **O-6** | stdin限定と一時ファイル許可の矛盾 | セキュリティ隔離と一時ディレクトリ要件の整理 | Adapterセキュリティテスト |
-| **R-1** | CLI終了コード一覧 | 各種停止・エラー状態での oracleExitCode 確定 | CLI Contract Test |
-| **S-1** | fetchの責務境界 | `EvidenceProvider`と`SafeHttpFetcher`の依存方向 | EvidenceProvider / SafeHttpFetcher Contract Test |
 | **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
 | **S-5** | Agent選定・代替表現 | 複数担当・代替候補アロケーションのクラス表現 | Agent選定単体テスト |
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
@@ -52,7 +59,6 @@
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 | **T-4** | Storage障害時の製品挙動 | fail closedか縮退継続か | Storage障害テスト |
 | **T-5** | Run全体の結果分類 | Claim状態からresult_classificationを導出する表 | Claim/Evidence結合・JSONテスト |
-| **U-1** | `withheld`時の開示範囲 | 統合回答の公開ゲートとClaim検証結果の開示ゲートを分離 | withheld表示・JSON公開境界テスト |
 
 ---
 
@@ -96,9 +102,6 @@
 
 | 未決ID | 先に確定する内容 | 解除されるテスト領域 |
 |---|---|---|
-| R-1 | `oracleExitCode`対応表 | CLI Contract、非対話停止、cancel、Agent不足 |
-| M-4 | Evidence検索・取得・分類のPhase/状態 | Evidence部分成功・全断・timeout結合テスト |
-| S-1 | fetchの唯一の所有者とSafeHttpFetcher委譲 | EvidenceProvider / SafeHttpFetcher Contract |
 | S-2 | Phase / AuditIssue属性、metadata/content区分 | 状態遷移、監査再実行、履歴イベントテスト |
 | S-3 | StorageBackendの操作・sequence・例外Contract | JSONL/SQLite互換Contract、破損・同時書込テスト |
 | T-1 | reserve失敗後のRun状態と予約精算 | TokenBudget超過、12回上限テスト |
@@ -106,6 +109,7 @@
 | T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
 | T-4 | append失敗時のRun/CLI挙動 | disk full、permission、途中保存失敗テスト |
 | T-5 | Claim集合からRun分類への決定表 | contradicted/conflicting/unverified、JSON結果テスト |
-| U-1 | withheld時の開示範囲と公開ゲート分離 | withheld表示、JSON公開境界、履歴復元境界テスト |
+
+R-1、M-4、S-1、U-1の行はv0.3.3確定により削除した（解除済みテスト領域は§0-1を参照）。
 
 依存IDが未回答のケースは削除せず、TESTCASE.mdで`BLOCKED: QandA <ID>`として収集する。仕様確定前に仮の期待値でpassさせない。
