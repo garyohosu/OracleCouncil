@@ -18,9 +18,10 @@
 | `budget.py` | 済: S-7契約どおり（原子的reserve、commit/release、call上限12、assert_settled） |
 | `storage.py` | 済: S-3/M-3/T-4契約どおり（Storage採番、fsync、lockfile、TRUNCATED_TAIL警告、破損検出） |
 | `fakes.py` | 済: ScriptedAgentAdapter、FakeEvidenceProvider |
-| `orchestrator.py` | 骨格のみ→**今回T-5二段判定・withheld短絡・exit 4を統合** |
-| `classification.py` | **今回新規**: §15.3の二段判定の実装 |
-| `tests/` | **今回新規**: budget / storage / orchestrator の単体テスト |
+| `orchestrator.py` | 済: T-5二段判定・withheld短絡・exit 4、複数Agent対応（V-1準拠のpreflight） |
+| `classification.py` | 済: §15.3の二段判定（W-1でv0.3.6と整合済み） |
+| `assignment.py` | 済: §6.2〜§6.4の決定的Agent割当（Responder 2分離、Synthesizer≠Auditor、insufficient_agents） |
+| `tests/` | 済: budget / storage / classification / assignment / orchestrator、47ケース全パス |
 
 ## 3. 今回のセッションで完了したこと（2026-07-12）
 
@@ -36,7 +37,7 @@
 
 ## 4. 次セッション以降の残タスク（優先順）
 
-1. **Responder 2 Agent分離**: 現orchestratorは単一adapterで7回呼んでいる。§6.3の「異なる2 AgentがResponder」「SynthesizerとAuditorは別agent_id」を満たすadapter割当（S-5確定前の暫定は設定順の決定的割当でよい）
+1. ~~Responder 2 Agent分離~~ 済（2026-07-12、`assignment.py`）。確認ポイント7点（2 Agent必須・insufficient_agents・Synthesizer≠Auditor・role_priority＋設定順・同一入力同一割当・脱落後の再選定も決定的・暗黙の自己監査なし）をテストで固定済み。insufficient_agentsはV-1準拠でRun生成前に停止（exit 3）
 2. **修正・再監査1回**: audit `changes_required`→synthesize修正→再audit（§11.1、AI呼び出し+2、上限10回）。現状はapproved以外を即failedにしている
 3. **再試行**: 一時エラー（TIMEOUT等）の同一Execution 1回・Run全体2回・retry_of（§8.3）。予約はretry別予約（S-7）
 4. **Phase/AgentExecutionレコードの正式化**: 現在イベントpayloadは簡易。§15.8のPhase（minimum_success_count等）とAgentExecutionのフィールドへ合わせ、RunMetadataRecordを`run_completed`スナップショットへ入れる（O-5）

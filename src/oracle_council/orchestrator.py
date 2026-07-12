@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from itertools import count
+from typing import Sequence
 from uuid import uuid4
 
+from .assignment import AssignmentPlan, RegisteredAgent, plan_assignments
 from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .models import (
@@ -17,10 +19,11 @@ from .models import (
 from .storage import StorageBackend, StorageWriteError
 
 # oracleExitCode (SPEC §13.4). Only the codes reachable from the phase-0
-# flow are mapped here; input/environment stops (2/3) and cancel (130)
+# flow are mapped here; the remaining input/environment stops and cancel
 # join once the CLI layer exists.
 EXIT_OK = 0
 EXIT_FAILED = 1
+EXIT_INSUFFICIENT_AGENTS = 3
 EXIT_WITHHELD = 4
 
 _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
@@ -30,20 +33,39 @@ _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
 class Orchestrator:
     PHASES = _VERIFY_PHASES + _PUBLISH_PHASES
 
-    def __init__(self, adapter, evidence_provider, budget: TokenBudget, storage: StorageBackend | None) -> None:
-        self._adapter = adapter
+    def __init__(
+        self,
+        agents: Sequence[RegisteredAgent],
+        evidence_provider,
+        budget: TokenBudget,
+        storage: StorageBackend | None,
+    ) -> None:
+        self._agents = tuple(agents)
         self._evidence_provider = evidence_provider
         self._budget = budget
         self._storage = storage
 
     def run_verify(self, question: str) -> RunResult:
+        # Pre-flight (V-1): assignment failures such as insufficient_agents
+        # stop before a Run exists, so nothing is persisted and the error
+        # propagates to the CLI layer with its own status and exit code.
+        plan = plan_assignments(self._agents)
+
         run_id = str(uuid4())
         sequence = count(1)
         state = _RunState(question)
         try:
-            self._append(run_id, "run_created", {"mode": "verify"})
+            self._append(
+                run_id,
+                "run_created",
+                {"mode": "verify", "participants": [a.agent_id for a in self._agents]},
+            )
+            respond_index = 0
             for phase in _VERIFY_PHASES:
-                failure = self._execute_phase(run_id, phase, sequence, state)
+                agent = plan.adapter_for(phase, respond_index)
+                if phase == "respond":
+                    respond_index += 1
+                failure = self._execute_phase(run_id, phase, agent, sequence, state)
                 if failure is not None:
                     return failure
 
@@ -63,7 +85,9 @@ class Orchestrator:
                 )
 
             for phase in _PUBLISH_PHASES:
-                failure = self._execute_phase(run_id, phase, sequence, state)
+                failure = self._execute_phase(
+                    run_id, phase, plan.adapter_for(phase), sequence, state
+                )
                 if failure is not None:
                     return failure
 
@@ -86,7 +110,9 @@ class Orchestrator:
         finally:
             self._budget.assert_settled()
 
-    def _execute_phase(self, run_id: str, phase: str, sequence, state: _RunState) -> RunResult | None:
+    def _execute_phase(
+        self, run_id: str, phase: str, agent: RegisteredAgent, sequence, state: _RunState
+    ) -> RunResult | None:
         execution_id = f"exec-{next(sequence)}"
         try:
             reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
@@ -101,7 +127,7 @@ class Orchestrator:
                 "claims": [c.__dict__ for c in state.claims],
                 "evidence": state.evidence,
             }
-            result = self._adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
+            result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
         except Exception:
@@ -122,7 +148,11 @@ class Orchestrator:
             state.final_answer = output["answer"]
         elif phase == "audit":
             state.auditor_approved = output.get("status") == "approved"
-        self._append(run_id, "agent_execution_succeeded", {"phase": phase, "execution_id": execution_id})
+        self._append(
+            run_id,
+            "agent_execution_succeeded",
+            {"phase": phase, "execution_id": execution_id, "agent_id": agent.agent_id},
+        )
         return None
 
     def _budget_failure(self, run_id: str, state: _RunState) -> RunResult:
@@ -163,3 +193,14 @@ class _RunState:
         self.final_answer: str | None = None
         self.auditor_approved = False
         self.calls = 0
+
+
+__all__ = [
+    "AssignmentPlan",
+    "EXIT_FAILED",
+    "EXIT_INSUFFICIENT_AGENTS",
+    "EXIT_OK",
+    "EXIT_WITHHELD",
+    "Orchestrator",
+    "RegisteredAgent",
+]
