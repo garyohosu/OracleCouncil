@@ -1,5 +1,9 @@
 """Formal Phase / AgentExecution / RunMetadataRecord tests (SPEC §15.8, O-5)."""
 
+import itertools
+from datetime import datetime, timedelta, timezone
+
+import oracle_council.orchestrator as orchestrator_module
 from oracle_council.models import AgentFailure, PhaseStatus, ResultClassification
 from oracle_council.storage import InMemoryStorageBackend
 
@@ -26,6 +30,27 @@ def test_happy_path_phase_and_execution_counts_match():
     assert phases["evidence_collect"].outcome == "evidence_found"
     assert all(p.started_at is not None and p.finished_at is not None for p in result.phases)
     assert all(e.elapsed_ms >= 0 for e in result.executions)
+
+
+def test_phase_finished_at_reflects_the_phase_own_completion_not_run_end(monkeypatch):
+    """Regression (found reviewing real metrics 2026-07-13): finished_at was
+    only ever set on success via _finish()'s catch-all, which backfilled the
+    Run's single overall end time onto every phase — so an early phase like
+    `respond` showed an elapsed_ms that silently included every phase after
+    it. Uses a deterministic fake clock (one tick per utc_now() call, no
+    real sleep) so the fix can be verified without timing flakiness."""
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ticks = (base + timedelta(seconds=i) for i in itertools.count())
+    monkeypatch.setattr(orchestrator_module, "utc_now", lambda: next(ticks))
+
+    orchestrator, _, _ = build()
+    result = orchestrator.run_verify("q")
+
+    phases = phase_by_name(result)
+    ordered = [phases[name].finished_at for name in
+               ("respond", "claim_extract", "verify", "criticize", "synthesize", "audit")]
+    assert ordered == sorted(ordered)  # each phase finishes no later than the next
+    assert len(set(ordered)) == len(ordered)  # none collapsed onto a shared Run-end timestamp
 
 
 def test_retry_adds_execution_but_not_phase():

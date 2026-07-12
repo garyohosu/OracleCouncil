@@ -1498,4 +1498,15 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-8、K-2、X-1、X-2確定。実機2 Agent完走達成。既回答66問、未回答27問。*
+### W-9. Phase.finished_atが自身の完了時刻ではなくRun全体の終了時刻になっていた
+
+**重要度**: Major
+**箇所**: `orchestrator.py` `_execute_phase` / `_finish`
+**背景**: W-8修正後のmetrics再実行（quota回復、成功）で`phases[].elapsed_ms`を確認したところ、`respond: 89734ms`、`claim_extract: 65785ms`、`verify: 47385ms`…`audit: 8546ms`と開始順に単調減少していた。`executions[].elapsed_ms`（個別呼び出しの実測）は正常（respondの2呼び出しは10542msと13406ms）で、Phase集計側だけが異常だった。
+**原因**: `_execute_phase`は成功パスで`record.finished_at`を一度も設定しておらず、`_finish()`の「まだNoneなRun.finished_atで埋める」というフォールバックが全成功Phaseへ適用されていた。結果、各Phaseの`elapsed_ms`は「そのPhase開始からRun全体終了まで」となり、後続する全Phaseの所要時間を含んでしまっていた（最後に実行されるauditだけが正しい値に近かった）。
+**回答**: 確定。`_execute_phase`の成功パスで、呼び出し成功のたびに`record.finished_at = utc_now()`を更新するよう修正した。`respond`（最低成功数2）や`audit`（W-2の再監査で2回呼ばれ得る）のような複数回呼ばれるPhaseでも、最後の成功呼び出しの時刻が残るため、Phaseの実際の所要時間（開始〜最終成功）が正しく求まる。回帰テストは決定的な擬似時計（`utc_now`をmonkeypatch）で検証し、実時間sleepを使わない。既存のAgentExecution単位の時間は元々正しく、影響を受けていなかった。
+**検証**: quota回復後の実機再実行で確認した成功条件4点はすべて満たされた——`participants: ["claude-code", "codex-cli"]`、`agent_call_count: 7`（7フェーズ完走）、全呼び出しが180秒設定内（最長22,105ms）、metrics JSONLは期待スキーマどおり。125テスト全パス。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-9、K-2、X-1、X-2確定。実機2 Agent完走達成、metrics成功条件4点クリア。既回答67問、未回答27問。*

@@ -231,6 +231,15 @@ class Orchestrator:
                     run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
                 )
             record.success_count += 1
+            # Set on every successful call, not just once: for multi-call
+            # phases (respond needs 2; audit gets a second call on revision,
+            # W-2) this naturally ends up as the *last* success's timestamp,
+            # so elapsed_ms = this phase's own span, not "start of this
+            # phase to end of the whole run." Found reviewing real metrics
+            # (2026-07-13): every phase but the last showed a duration that
+            # included every phase after it, because _finish()'s fallback
+            # was the only place finished_at ever got set on success.
+            record.finished_at = utc_now()
             self._apply_output(run_id, phase, result.output, state)
             self._append(
                 run_id,

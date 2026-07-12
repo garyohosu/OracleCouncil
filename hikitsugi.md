@@ -65,21 +65,26 @@
 
 **W-8（2026-07-13）**: 上記JSONLで`participants: ["fake-claude"]`と、実Adapter実行なのにFake時代の識別子が残っていることが判明。`config/agents.yaml`の`id`を`claude-code`/`codex-cli`へ修正済み（124テスト全パス確認）。次回のmetrics実行ではこの識別子が反映される。
 
-**quota回復後にやること（この順で、間に他の作業を挟まない）**:
-1. 同じ1問で`scripts/collect_metrics.py`を再実行し、次を確認: Claude+Codex両方参加、7フェーズ完走、180秒設定でtimeoutしない、`participants`が`claude-code`/`codex-cli`になっている
-2. 成功したらWebSearch Spike（独立スクリプト、本線コードは変更しない）: `--tools WebSearch`が受理されるか、ファイル変更/シェル実行が起きないか、url/title/snippet相当を構造化出力できるか、SafeHttpFetcherで再取得できるか、取得不能URLをverified根拠にしないか
-3. 失敗したら検索へ進まず、通常Adapter経路の原因を先に潰す
+**quota回復後の再実行（2026-07-13、成功）**: `scripts/collect_metrics.py`を再実行し、4条件すべて確認できた——`participants: ["claude-code", "codex-cli"]`（W-8修正が反映）、`agent_call_count: 7`（7フェーズ完走）、全呼び出しが180秒設定内（最長22,105ms、W-7が効いている）、metrics JSONLは期待スキーマどおり。**metricsの検証条件は達成**。
 
-## 4-4. CliSearchProvider Spike（X-2、レビュアー方針転換）
+**W-9（同じ実行結果から発見）**: `phases[].elapsed_ms`が開始順に単調減少する異常値だった（respond: 89734ms、audit: 8546ms）。`_execute_phase`の成功パスで`record.finished_at`を設定しておらず、`_finish()`のフォールバックでRun全体の終了時刻が全成功Phaseへ埋まっていたのが原因。修正済み（`record.finished_at = utc_now()`を成功のたびに更新）、決定的な擬似時計での回帰テストを追加、125テスト全パス。`executions[].elapsed_ms`（個別呼び出し）は元から正常だった。
+
+## 4-4. CliSearchProvider Spike（X-2、レビュアー方針転換）— 次はこれ
 
 外部検索API契約より先に、Claude/CodexのCLI内蔵検索能力を`CliSearchProvider`として使えるかSpikeする方針にレビュアーが転換。ヘルプ出力調査（API呼び出しなし）の結果:
 
 - **Codex**: `codex features list`でWeb検索系フィーチャーがすべて`removed`/`under development(false)`/`deprecated(false)`。**候補外**
-- **Claude**: `--tools`は実在し個別ツール名を許可できるが、`WebSearch`という名前がヘルプの例に載っておらず**live呼び出しでの実在確認が未実施**（次のlive予算消費として保留）
+- **Claude**: `--tools`は実在し個別ツール名を許可できるが、`WebSearch`という名前がヘルプの例に載っておらず**live呼び出しでの実在確認が未実施**
+
+metrics成功条件を満たしたので、次はこのSpike（独立スクリプト、本線コード非変更）に進んでよい。確認項目:
+- `WebSearch`ツール名が実際に受理される
+- ファイル変更や任意シェル実行が起きない
+- URL、title、snippet相当を構造化出力できる
+- URLをSafeHttpFetcherで再取得できる
+- 取得不能URLはverified根拠にしない
 
 ## 4-5. 未決定（レビュアー判断待ち）
 
-- **Claude quota回復待ち**: 2026-07-13時点で再枯渇中。回復後は上記「quota回復後にやること」の順で進める
 - **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが機能しない場合の代替として維持
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
