@@ -6,6 +6,7 @@ import subprocess
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
+from .base import validate_phase_output
 
 
 class ClaudeAdapter:
@@ -89,7 +90,7 @@ class ClaudeAdapter:
                 raise AgentFailure("EXECUTION_ERROR", err_text)
 
             try:
-                output = json.loads(res.stdout.strip())
+                output = validate_phase_output(request.phase, json.loads(res.stdout.strip()))
                 return AgentResult(output, Usage(100, 20))
             except json.JSONDecodeError as exc:
                 raise AgentFailure(

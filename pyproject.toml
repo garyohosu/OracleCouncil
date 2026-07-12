@@ -24,5 +24,6 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
   "live: opt-in tests that invoke an installed external CLI or service",
+  "expensive: opt-in tests with high latency or external cost",
 ]
 pythonpath = ["src"]

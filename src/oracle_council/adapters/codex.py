@@ -7,6 +7,7 @@ import tempfile
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
+from .base import validate_phase_output
 
 
 class CodexAdapter:
@@ -202,7 +203,7 @@ class CodexAdapter:
                         f"Failed to extract JSON from: {stdout_text}",
                     ) from exc
 
-            return AgentResult(output, Usage(100, 20))
+            return AgentResult(validate_phase_output(request.phase, output), Usage(100, 20))
 
         finally:
             try:
