@@ -47,11 +47,11 @@
 
 ## 4-2. 実機接続後の優先順（2026-07-12レビュー合意）
 
-1. **Claude復活後に2 Agent実機E2E完走**: `$env:ORACLE_COUNCIL_LIVE="1"; python -m pytest -m "live and expensive" -vv`
+1. ~~Claude復活後に2 Agent実機E2E完走~~ **達成**（2026-07-12、W-6）。`test_real_two_agent_council`が実機PASS（7フェーズ、約180秒）。過程で見つけた5件のAdapterバグ（quota誤分類、Claude封筒未展開、Claim enum未検証、Codex verify schema enum欠落、Codex audit schema OpenAI厳格モード違反）はすべて修正済み・回帰テスト追加済み
 2. ~~Manual Evidence付きE2E~~ 済（`--evidence-file`＋ManualEvidenceProvider、既定スイートで検証）
 3. 実検索関数の接続（`WebEvidenceProvider`のsearcher実装、K-2未回答に注意）
 4. SafeHttpFetcher経由の実Web Evidence
-5. 実質問での評価指標収集: 総所要時間 / Agent呼び出し回数 / 各Phase所要時間 / quota欠席率 / verified・partially_verified・withheld率 / JSON Schema失敗率（P-1〜P-4の実験計画とnote記事の実測値になる）
+5. 実質問での評価指標収集: 総所要時間 / Agent呼び出し回数 / 各Phase所要時間 / quota欠席率 / verified・partially_verified・withheld率 / JSON Schema失敗率（P-1〜P-4の実験計画とnote記事の実測値になる）。180秒/7回という実測値が既に1件取れている
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 

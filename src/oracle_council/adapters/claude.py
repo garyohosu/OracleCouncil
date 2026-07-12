@@ -2,11 +2,81 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
-from .base import validate_phase_output
+from .base import classify_cli_error, validate_phase_output
+
+# Claude Code has no --output-schema flag (unlike Codex). The model must be
+# told in the prompt what shape to answer in, and `--output-format json`
+# wraps whatever text it produces in a CLI metadata envelope
+# (`{"type":"result","result":"<answer text>",...}`) rather than emitting
+# the phase JSON at the top level. Found via live testing (QandA W-5
+# follow-up): parsing the envelope itself against the phase schema failed
+# with "missing field: answer" even on a successful call.
+_PHASE_SCHEMA_HINT = {
+    "respond": '{"answer": "<your answer as a string>"}',
+    "claim_extract": (
+        '{"claims": [{"claim_id": "<string>", '
+        '"importance": "critical|major|minor", "status": "unverified", "text": "<string>"}]}'
+    ),
+    "verify": (
+        '{"claims": [{"claim_id": "<string>", "importance": "critical|major|minor", '
+        '"status": "verified|supported|contradicted|conflicting|unverified|not_applicable"}]}'
+    ),
+    "criticize": '{"critique": "<string>"}',
+    "synthesize": '{"answer": "<string>"}',
+    "audit": (
+        '{"status": "approved|changes_required|blocked", '
+        '"issues": [{"issue_id": "<string>", "issue_type": "<string>", '
+        '"severity": "<string>", "claim_id": "<string>"}]}'
+    ),
+}
+
+# Extra constraint lines for fields the model has been observed to drift on
+# (e.g. returning importance="high" instead of a schema member). The "|"
+# notation in _PHASE_SCHEMA_HINT reads as an example placeholder to a model
+# rather than a strict enum, so phases with an `importance` field get a
+# blunt, unambiguous restatement of the allowed values.
+_EXTRA_CONSTRAINTS = {
+    "claim_extract": 'The "importance" field must be EXACTLY one of these three strings, nothing else: "critical", "major", "minor".',
+    "verify": 'The "importance" field must be EXACTLY one of these three strings, nothing else: "critical", "major", "minor".',
+}
+
+
+def _build_prompt(phase: str, question: str) -> str:
+    hint = _PHASE_SCHEMA_HINT.get(phase)
+    if not hint:
+        return question
+    parts = [
+        question,
+        "",
+        "Respond with ONLY a single valid JSON object matching this shape, "
+        f"no markdown code fences and no other text: {hint}",
+    ]
+    constraint = _EXTRA_CONSTRAINTS.get(phase)
+    if constraint:
+        parts.append(constraint)
+    return "\n".join(parts)
+
+
+def _extract_json_object(text: str) -> Any:
+    """Parse a JSON object out of model text that may be wrapped in markdown
+    fences or preceded/followed by prose despite the prompt instruction."""
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
+    if fenced:
+        return json.loads(fenced.group(1))
+    brace_match = re.search(r"\{.*\}", stripped, re.DOTALL)
+    if brace_match:
+        return json.loads(brace_match.group(0))
+    raise json.JSONDecodeError("no JSON object found", stripped, 0)
 
 
 class ClaudeAdapter:
@@ -56,11 +126,12 @@ class ClaudeAdapter:
         question = request.payload.get("question", "")
         if not question:
             question = json.dumps(request.payload)
+        prompt = _build_prompt(request.phase, question)
 
         cmd = [
             "claude",
             "-p",
-            question,
+            prompt,
             "--tools",
             "",
             "--output-format",
@@ -86,20 +157,28 @@ class ClaudeAdapter:
                 shell=False,
             )
             err_text = res.stderr + "\n" + res.stdout
-            if "session limit" in err_text.lower() or "quota" in err_text.lower():
-                raise AgentFailure("QUOTA_EXCEEDED", err_text)
-            if "auth" in err_text.lower() or "login" in err_text.lower():
-                raise AgentFailure("AUTH_REQUIRED", err_text)
+            error_code = classify_cli_error(res.stdout, res.stderr)
+            if error_code:
+                raise AgentFailure(error_code, err_text)
             if res.returncode != 0:
                 raise AgentFailure("EXECUTION_ERROR", err_text)
 
             try:
-                output = validate_phase_output(request.phase, json.loads(res.stdout.strip()))
+                envelope = json.loads(res.stdout.strip())
+            except json.JSONDecodeError as exc:
+                raise AgentFailure(
+                    "INVALID_OUTPUT", f"Failed to parse CLI envelope: {res.stdout}"
+                ) from exc
+            # --output-format json always wraps the model's text in a CLI
+            # metadata envelope; the phase JSON is inside envelope["result"].
+            result_text = envelope.get("result", "") if isinstance(envelope, dict) else res.stdout
+            try:
+                output = validate_phase_output(request.phase, _extract_json_object(result_text))
                 return AgentResult(output, Usage(100, 20))
             except json.JSONDecodeError as exc:
                 raise AgentFailure(
                     "INVALID_OUTPUT",
-                    f"Failed to parse JSON: {res.stdout}",
+                    f"Failed to parse phase JSON from model text: {result_text}",
                 ) from exc
 
         except FileNotFoundError:

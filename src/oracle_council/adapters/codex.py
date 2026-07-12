@@ -8,7 +8,17 @@ import os
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
-from .base import validate_phase_output
+from .base import classify_cli_error, validate_phase_output
+
+# SPEC §10.4 / §10.5 enums. Must match adapters/base.py's
+# _CLAIM_IMPORTANCE_VALUES / _CLAIM_STATUS_VALUES exactly: a schema that
+# omits the enum still produces syntactically valid JSON that Adapter-layer
+# validation must then reject, but constraining it here means the model
+# self-corrects instead of burning a call on a doomed response.
+_CLAIM_IMPORTANCE_ENUM = ["critical", "major", "minor"]
+_CLAIM_STATUS_ENUM = [
+    "verified", "supported", "contradicted", "conflicting", "unverified", "not_applicable",
+]
 
 
 class CodexAdapter:
@@ -80,9 +90,12 @@ class CodexAdapter:
                                 "claim_id": {"type": "string"},
                                 "importance": {
                                     "type": "string",
-                                    "enum": ["critical", "major", "minor"],
+                                    "enum": _CLAIM_IMPORTANCE_ENUM,
                                 },
-                                "status": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": _CLAIM_STATUS_ENUM,
+                                },
                                 "text": {"type": "string"},
                             },
                             "required": ["claim_id", "importance", "status", "text"],
@@ -101,8 +114,14 @@ class CodexAdapter:
                             "type": "object",
                             "properties": {
                                 "claim_id": {"type": "string"},
-                                "importance": {"type": "string"},
-                                "status": {"type": "string"},
+                                "importance": {
+                                    "type": "string",
+                                    "enum": _CLAIM_IMPORTANCE_ENUM,
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": _CLAIM_STATUS_ENUM,
+                                },
                             },
                             "required": ["claim_id", "importance", "status"],
                         },
@@ -138,13 +157,23 @@ class CodexAdapter:
                                 "issue_id": {"type": "string"},
                                 "issue_type": {"type": "string"},
                                 "severity": {"type": "string"},
-                                "claim_id": {"type": "string"},
+                                # Not every issue references one specific claim,
+                                # but OpenAI's strict structured-output mode
+                                # requires every property to be listed in
+                                # `required` once additionalProperties=false is
+                                # set (added by _strict_schema below) — an
+                                # optional field must be nullable instead of
+                                # merely absent from `required`. Found live:
+                                # omitting non-issue_id keys from `required`
+                                # made every audit call fail with
+                                # invalid_json_schema before the model ever ran.
+                                "claim_id": {"type": ["string", "null"]},
                             },
-                            "required": ["issue_id"],
+                            "required": ["issue_id", "issue_type", "severity", "claim_id"],
                         },
                     },
                 },
-                "required": ["status"],
+                "required": ["status", "issues"],
             }
 
         temp_schema_fd, temp_schema_path = tempfile.mkstemp(suffix=".json")
@@ -180,10 +209,9 @@ class CodexAdapter:
             )
 
             err_text = res.stderr + "\n" + res.stdout
-            if "quota" in err_text.lower() or "limit" in err_text.lower():
-                raise AgentFailure("QUOTA_EXCEEDED", err_text)
-            if "auth" in err_text.lower() or "login" in err_text.lower():
-                raise AgentFailure("AUTH_REQUIRED", err_text)
+            error_code = classify_cli_error(res.stdout, res.stderr)
+            if error_code:
+                raise AgentFailure(error_code, err_text)
             if res.returncode != 0:
                 raise AgentFailure("EXECUTION_ERROR", err_text)
 

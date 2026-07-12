@@ -1389,4 +1389,22 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-12 — W-1〜W-5確定。既回答60問、未回答29問。*
+### W-6. 実機2 Agent完走までに見つかった5件のAdapter実装バグ
+
+**重要度**: Critical
+**箇所**: `adapters/base.py` / `adapters/claude.py` / `adapters/codex.py`
+**背景**: W-5でprobe/execute乖離とlive test分割を確定した後、Claude利用上限が一時的に解け、`test_real_two_agent_council`を反復実行しながら実機のみで踏める障害を1つずつ修正した。設計上の穴ではなく、すべて実装のバグ。
+**発見と修正**:
+
+1. **429「out of usage credits」が`EXECUTION_ERROR`に誤分類**: `classify_cli_error`の文字列一致が「quota」「session limit」を含まない実際のエラー文言を拾えなかった。構造化JSON（`api_error_status`）を優先的にパースする方式へ変更し、`QUOTA_EXCEEDED`/`RATE_LIMITED`/`AUTH_REQUIRED`を判定するよう修正（`base.py`）
+2. **Claude Adapterがフェーズschemaを一切指示していなかった**: `claude`CLIに`--output-schema`相当の機能がなく、`--output-format json`の応答はCLIメタデータの封筒（`{"type":"result","result":"<回答文>",...}`）でラップされる。Adapterは封筒全体をフェーズschemaとして直接パースしており、成功時でも`missing field: answer`で失敗していた。フェーズごとのJSON形式指示をプロンプトへ追加し、`envelope["result"]`からフェーズJSONを抽出する処理を追加（`claude.py`）
+3. **Adapter層がClaim enumを検証していなかった**: `validate_phase_output`は`claims`が配列であることしか見ておらず、`importance: "high"`のような不正値がOrchestrator内部の`Claim.from_dict`まで届いて未捕捉の`ValueError`となり、`internal_error`として現れていた（SPEC §8.5「Orchestratorへ返す前にschema検証を行う」違反）。`_validate_claims`を追加し、Adapter境界で`INVALID_OUTPUT`として止めるよう修正（`base.py`）
+4. **Codexの`verify`フェーズschemaにenum制約がなかった**: `claim_extract`スキーマは`importance`にenumがあったが、`verify`スキーマは`{"type": "string"}`のみで、Codex自身の構造化出力がenumを守れなかった（3の症状の実際の原因）。`verify`にも`claim_extract`と同じenumを追加（`codex.py`）
+5. **Codexの`audit`フェーズschemaがOpenAI厳格モード違反**: `additionalProperties: false`を再帰付与する`_strict_schema`と、`required`に全プロパティを含めていなかった`issues.items`（`issue_id`のみrequired）およびトップレベル（`status`のみrequired）が衝突し、`invalid_json_schema`でモデル実行前にAPIが拒否していた。全プロパティをrequiredへ追加し、意味的に任意な`claim_id`はnullable型（`["string","null"]`）にして対応（`codex.py`）
+
+**結果**: 5件すべて修正後、`test_real_two_agent_council`が実機で完走（`status: completed`、7フェーズ、約180秒）。既定スイート108件は無傷。
+**教訓**: Contract Test（Fake経由）は「入出力の形」は検証できるが、「モデルが実際にその形を守るか」「CLI固有のラッパー形式」「外部APIのschema制約」はFakeでは再現できない。L-4 spikeの目的（実装開始前にAdapter capabilityを確認する）が、実際には実装後の実機テストでしか埋まらない種類の欠陥だったことも分かった。
+
+---
+
+*最終更新: 2026-07-12 — W-1〜W-6確定。実機2 Agent完走達成。既回答61問、未回答29問。*

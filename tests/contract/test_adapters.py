@@ -4,8 +4,46 @@ from unittest.mock import patch
 import pytest
 
 from oracle_council.adapters import ClaudeAdapter, CodexAdapter
+from oracle_council.adapters.base import validate_phase_output
 from oracle_council.cli import FakeAgentAdapter
 from oracle_council.models import AgentFailure, AgentRequest, AgentResult
+
+
+class TestValidatePhaseOutputClaimEnums:
+    """Regression coverage for the live-testing finding (QandA W-5 follow-up):
+    a real model returned importance="high", an unhandled ValueError crashed
+    downstream in Claim.from_dict(), and the run surfaced as an uncontrolled
+    internal_error instead of the SPEC §8.5 fail-closed INVALID_OUTPUT path."""
+
+    def test_out_of_enum_importance_is_rejected(self):
+        with pytest.raises(AgentFailure) as excinfo:
+            validate_phase_output(
+                "claim_extract",
+                {"claims": [{"claim_id": "c1", "importance": "high", "status": "unverified"}]},
+            )
+        assert excinfo.value.error_code == "INVALID_OUTPUT"
+
+    def test_out_of_enum_status_is_rejected(self):
+        with pytest.raises(AgentFailure):
+            validate_phase_output(
+                "verify",
+                {"claims": [{"claim_id": "c1", "importance": "major", "status": "probably_true"}]},
+            )
+
+    def test_missing_status_is_allowed_and_defaults_downstream(self):
+        # claim_extract may omit status; Claim.from_dict defaults to unverified.
+        output = validate_phase_output(
+            "claim_extract", {"claims": [{"claim_id": "c1", "importance": "minor"}]}
+        )
+        assert output["claims"][0]["importance"] == "minor"
+
+    def test_missing_claim_id_is_rejected(self):
+        with pytest.raises(AgentFailure):
+            validate_phase_output("claim_extract", {"claims": [{"importance": "major"}]})
+
+    def test_valid_claims_pass_through_unchanged(self):
+        claims = [{"claim_id": "c1", "importance": "critical", "status": "verified"}]
+        assert validate_phase_output("verify", {"claims": claims})["claims"] == claims
 
 
 def verify_adapter_contract(adapter):
