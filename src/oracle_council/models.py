@@ -133,6 +133,21 @@ class AgentResult:
     usage: Usage | None = None
 
 
+class AgentExecutionStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+
+
+class PhaseStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class AgentFailure(RuntimeError):
     """A structured agent-execution failure carrying the SPEC §8.2 error code."""
 
@@ -173,6 +188,71 @@ class Claim:
 
 
 @dataclass(frozen=True)
+class AgentExecutionRecord:
+    """One attempt of one agent call (SPEC §15.8). Retries never replace the
+    failed record; they reference it via retry_of."""
+
+    execution_id: str
+    run_id: str
+    agent_id: str
+    phase: str
+    status: AgentExecutionStatus
+    started_at: datetime
+    finished_at: datetime
+    elapsed_ms: int
+    exit_code: int | None = None
+    error_code: str | None = None
+    error_summary: str | None = None
+    raw_diagnostic: str | None = None
+    retry_of: str | None = None
+
+
+@dataclass
+class PhaseRecord:
+    """One phase of one run (SPEC §15.8). Re-audit and revision add executions
+    to the existing synthesize/audit phase; they never create a second
+    instance (minimum success counts are per phase name, STATE §5)."""
+
+    phase_id: str
+    run_id: str
+    phase: str
+    minimum_success_count: int
+    status: PhaseStatus | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    success_count: int = 0
+    error_code: str | None = None
+    error_summary: str | None = None
+    outcome: str | None = None  # EvidenceOutcome; evidence_collect only
+
+
+@dataclass(frozen=True)
+class RunMetadataRecord:
+    """The metadata snapshot fixed at run termination (SPEC §15.8, O-5).
+    This snapshot is the source of truth; consumers must not re-aggregate
+    it from the event log."""
+
+    run_id: str
+    created_at: datetime
+    mode: str
+    status: RunStatus
+    result_classification: ResultClassification
+    consensus_status: str
+    participant_count: int
+    claim_count: int
+    evidence_count: int
+    error_codes: tuple[str, ...]
+    elapsed_ms: int
+    content_saved: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["created_at"] = self.created_at.isoformat()
+        value["error_codes"] = list(self.error_codes)
+        return value
+
+
+@dataclass(frozen=True)
 class RunResult:
     run_id: str
     status: RunStatus
@@ -182,4 +262,7 @@ class RunResult:
     exit_code: int
     claims: tuple[Claim, ...] = ()
     audit_issues: tuple[AuditIssue, ...] = ()
+    phases: tuple[PhaseRecord, ...] = ()
+    executions: tuple[AgentExecutionRecord, ...] = ()
+    metadata: RunMetadataRecord | None = None
 

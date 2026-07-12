@@ -8,16 +8,22 @@ from .assignment import AssignmentPlan, RegisteredAgent, plan_assignments
 from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .models import (
+    AgentExecutionRecord,
+    AgentExecutionStatus,
     AgentFailure,
     AgentRequest,
     AuditIssue,
     AuditIssueStatus,
     BudgetRequest,
     Claim,
+    PhaseRecord,
+    PhaseStatus,
     ResultClassification,
     RunEvent,
+    RunMetadataRecord,
     RunResult,
     RunStatus,
+    utc_now,
 )
 from .storage import StorageBackend, StorageWriteError
 
@@ -39,6 +45,28 @@ _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
 _RETRYABLE_ERROR_CODES = frozenset({"TIMEOUT", "RATE_LIMITED"})
 _MAX_RUN_RETRIES = 2
 
+_UNAVAILABLE_ERROR_CODES = frozenset(
+    {"AUTH_REQUIRED", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "UNSUPPORTED_VERSION", "UNSAFE_CAPABILITY"}
+)
+
+_MINIMUM_SUCCESS = {
+    "respond": 2,
+    "claim_extract": 1,
+    "evidence_collect": 0,
+    "verify": 1,
+    "criticize": 1,
+    "synthesize": 1,
+    "audit": 1,
+}
+
+
+def _execution_status(error_code: str) -> AgentExecutionStatus:
+    if error_code == "TIMEOUT":
+        return AgentExecutionStatus.TIMED_OUT
+    if error_code in _UNAVAILABLE_ERROR_CODES:
+        return AgentExecutionStatus.UNAVAILABLE
+    return AgentExecutionStatus.FAILED
+
 
 class Orchestrator:
     PHASES = _VERIFY_PHASES + _PUBLISH_PHASES
@@ -49,11 +77,13 @@ class Orchestrator:
         evidence_provider,
         budget: TokenBudget,
         storage: StorageBackend | None,
+        store_content: bool = False,
     ) -> None:
         self._agents = tuple(agents)
         self._evidence_provider = evidence_provider
         self._budget = budget
         self._storage = storage
+        self._store_content = store_content
 
     def run_verify(self, question: str) -> RunResult:
         # Pre-flight (V-1): assignment failures such as insufficient_agents
@@ -84,6 +114,9 @@ class Orchestrator:
             # run still counts as completed (withheld is not a failure).
             if is_withheld(state.claims):
                 for phase in _PUBLISH_PHASES:
+                    record = state.phase(run_id, phase)
+                    record.status = PhaseStatus.SKIPPED
+                    record.finished_at = utc_now()
                     self._append(run_id, "phase_skipped", {"phase": phase, "reason": "withheld"})
                 return self._finish(
                     run_id,
@@ -157,12 +190,17 @@ class Orchestrator:
     ) -> RunResult | None:
         """Run one phase with at most one retry (SPEC §8.3). Returns a terminal
         RunResult on failure, or None when the phase succeeded."""
+        record = state.phase(run_id, phase)
         retry_of: str | None = None
         while True:
             execution_id = f"exec-{next(sequence)}"
             try:
                 result = self._attempt(run_id, phase, agent, execution_id, retry_of, state)
             except BudgetExceededError:
+                record.status = PhaseStatus.FAILED
+                record.error_code = "BUDGET_EXCEEDED"
+                record.error_summary = _summary(phase, "BUDGET_EXCEEDED")
+                record.finished_at = utc_now()
                 return self._budget_failure(run_id, state)
             except AgentFailure as failure:
                 self._append(
@@ -185,10 +223,15 @@ class Orchestrator:
                     state.run_retries_used += 1
                     retry_of = execution_id
                     continue
+                record.status = PhaseStatus.FAILED
+                record.error_code = failure.error_code
+                record.error_summary = _summary(phase, failure.error_code)
+                record.finished_at = utc_now()
                 return self._finish(
                     run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
                 )
-            self._apply_output(phase, result.output, state)
+            record.success_count += 1
+            self._apply_output(run_id, phase, result.output, state)
             self._append(
                 run_id,
                 "agent_execution_succeeded",
@@ -204,6 +247,7 @@ class Orchestrator:
     def _attempt(self, run_id, phase, agent, execution_id, retry_of, state: _RunState):
         # A retry is a new execution with its own reservation (S-7).
         reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
+        started_at = utc_now()
         started = False
         try:
             started = True
@@ -216,23 +260,65 @@ class Orchestrator:
             result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
+            state.executions.append(
+                self._execution_record(
+                    run_id, phase, agent, execution_id, retry_of, started_at,
+                    AgentExecutionStatus.SUCCEEDED,
+                )
+            )
             return result
+        except AgentFailure as failure:
+            # The call may have consumed provider resources: commit on the
+            # safe side so the attempt still counts against the limits.
+            state.calls += 1
+            self._budget.commit(reservation.reservation_id, None)
+            state.executions.append(
+                self._execution_record(
+                    run_id, phase, agent, execution_id, retry_of, started_at,
+                    _execution_status(failure.error_code),
+                    error_code=failure.error_code,
+                    raw_diagnostic=str(failure) if self._store_content else None,
+                )
+            )
+            raise
         except Exception:
             if started:
-                # The call may have consumed provider resources: commit on the
-                # safe side so the attempt still counts against the limits.
                 state.calls += 1
                 self._budget.commit(reservation.reservation_id, None)
             else:
                 self._budget.release(reservation.reservation_id)
             raise
 
-    def _apply_output(self, phase: str, output: dict, state: _RunState) -> None:
+    def _execution_record(
+        self, run_id, phase, agent, execution_id, retry_of, started_at, status,
+        error_code=None, raw_diagnostic=None,
+    ) -> AgentExecutionRecord:
+        finished_at = utc_now()
+        return AgentExecutionRecord(
+            execution_id=execution_id,
+            run_id=run_id,
+            agent_id=agent.agent_id,
+            phase=phase,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_ms=_elapsed_ms(started_at, finished_at),
+            error_code=error_code,
+            error_summary=_summary(phase, error_code) if error_code else None,
+            raw_diagnostic=raw_diagnostic,
+            retry_of=retry_of,
+        )
+
+    def _apply_output(self, run_id: str, phase: str, output: dict, state: _RunState) -> None:
         if phase == "respond":
             state.responses.append(output)
         elif phase == "claim_extract":
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
             state.evidence = self._evidence_provider.collect([c.__dict__ for c in state.claims])
+            record = state.phase(run_id, "evidence_collect")
+            record.status = PhaseStatus.SUCCEEDED
+            record.outcome = "evidence_found" if state.evidence else "no_evidence"
+            record.finished_at = utc_now()
         elif phase == "verify":
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
         elif phase == "synthesize":
@@ -286,13 +372,62 @@ class Orchestrator:
         )
 
     def _finish(self, run_id, status, classification, answer, state: _RunState, exit_code) -> RunResult:
+        finished_at = utc_now()
+        for record in state.phases.values():
+            if record.status is None:
+                record.status = (
+                    PhaseStatus.SUCCEEDED
+                    if record.success_count >= record.minimum_success_count
+                    else PhaseStatus.FAILED
+                )
+            if record.finished_at is None:
+                record.finished_at = finished_at
+
+        error_codes: list[str] = []
+        for execution in state.executions:
+            if execution.error_code and execution.error_code not in error_codes:
+                error_codes.append(execution.error_code)
+        for record in state.phases.values():
+            if record.error_code and record.error_code not in error_codes:
+                error_codes.append(record.error_code)
+
+        # O-5: the snapshot fixed here is the source of truth; it is never
+        # re-aggregated from the event log afterwards.
+        metadata = RunMetadataRecord(
+            run_id=run_id,
+            created_at=state.created_at,
+            mode="verify",
+            status=status,
+            result_classification=classification,
+            consensus_status="not_applicable",
+            participant_count=len(self._agents),
+            claim_count=len(state.claims),
+            evidence_count=len(state.evidence),
+            error_codes=tuple(error_codes),
+            elapsed_ms=_elapsed_ms(state.created_at, finished_at),
+            content_saved=self._store_content,
+        )
         result = RunResult(
-            run_id, status, classification, answer, state.calls, exit_code, state.claims, tuple(state.issues)
+            run_id,
+            status,
+            classification,
+            answer,
+            state.calls,
+            exit_code,
+            state.claims,
+            tuple(state.issues),
+            tuple(state.phases.values()),
+            tuple(state.executions),
+            metadata,
         )
         self._append(
             run_id,
             f"run_{status.value}",
-            {"status": status.value, "result_classification": classification.value},
+            {
+                "status": status.value,
+                "result_classification": classification.value,
+                "metadata": metadata.to_dict(),
+            },
         )
         return result
 
@@ -301,9 +436,20 @@ class Orchestrator:
             self._storage.append(run_id, RunEvent(run_id, event_type, payload))
 
 
+def _elapsed_ms(started_at, finished_at) -> int:
+    return int((finished_at - started_at).total_seconds() * 1000)
+
+
+def _summary(phase: str, error_code: str) -> str:
+    """Fixed template only (SPEC §15.8): never raw stderr, exception text,
+    question fragments, or paths. Bounded well under the 200-char limit."""
+    return f"{phase} execution ended with {error_code}."[:200]
+
+
 class _RunState:
     def __init__(self, question: str) -> None:
         self.question = question
+        self.created_at = utc_now()
         self.responses: list[dict] = []
         self.claims: tuple[Claim, ...] = ()
         self.evidence: list[dict] = []
@@ -314,6 +460,19 @@ class _RunState:
         self.issues: list[AuditIssue] = []
         self.calls = 0
         self.run_retries_used = 0
+        self.phases: dict[str, PhaseRecord] = {}
+        self.executions: list[AgentExecutionRecord] = []
+
+    def phase(self, run_id: str, name: str) -> PhaseRecord:
+        if name not in self.phases:
+            self.phases[name] = PhaseRecord(
+                phase_id=f"phase-{len(self.phases) + 1}",
+                run_id=run_id,
+                phase=name,
+                minimum_success_count=_MINIMUM_SUCCESS.get(name, 1),
+                started_at=utc_now(),
+            )
+        return self.phases[name]
 
 
 __all__ = [

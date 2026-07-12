@@ -1371,4 +1371,13 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-12 — W-1〜W-3確定（W-3はSPEC変更なし）。既回答58問、未回答29問。*
+### W-4. Phase / AgentExecution正式レコード化の実装判断
+
+**重要度**: Major
+**箇所**: SPEC §15.8 / STATE.md §1・§4・§5 / `models.py` / `orchestrator.py`
+**疑問**: (1) 再監査・修正は同一Phase instanceへのExecution追加か、別Phase instanceか。(2) `evidence_collect`のレコード表現。(3) STATE.mdにW-2以前の「audit blocked→failed」が残っていた。
+**回答**: 確定。(1) **同一Phase instanceへのExecution追加**とする。STATE §5の最低成功数がphase名単位（`audit`=1）で定義されており、再監査で`success_count`が2になるのは正常。Phase instanceはRunにつきphase名ごとに1つ。(2) `evidence_collect`はAgentExecutionを作らずPhaseレコードのみ（M-4どおり）。`outcome`はFake実装では`evidence_found` / `no_evidence`の2値から開始。(3) STATE.md §1・§4・§5の「audit blocked→failed / exit 1」をW-2確定の「withheld終端（completed・exit 4）」へ修正した。あわせて`error_summary`は定型テンプレート（`"{phase} execution ended with {error_code}."`、200字以内、生テキスト混入なし）、`raw_diagnostic`は`--store-content`時のみ、RunMetadataRecordは終端時スナップショットを正本としイベントログから再集計しない（O-5）、を実装で固定した。
+
+---
+
+*最終更新: 2026-07-12 — W-1〜W-4確定。既回答59問、未回答29問。*

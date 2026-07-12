@@ -17,8 +17,9 @@ stateDiagram-v2
 
     running --> completed: 全必須Phaseが許容終端<br/>公開回答あり
     running --> completed: verify完了後にwithheld確定<br/>final_answer非公開 / exit 4
+    running --> completed: 監査不承認によるwithheld<br/>初回blockedまたは再監査不承認 / exit 4
     running --> partial: 監査済み回答あり<br/>非critical劣化またはmajor未確認 / exit 0
-    running --> failed: 必須Phase最低成功数未達<br/>監査未完了またはaudit blocked / exit 1
+    running --> failed: 必須Phase最低成功数未達<br/>または監査を完了できない / exit 1
     running --> failed: 保存有効時のappend失敗<br/>final_answer非公開 / exit 1
     running --> cancelled: SIGINTまたは明示cancel / exit 130
 
@@ -157,7 +158,8 @@ stateDiagram-v2
 
     note right of open
       未解決open Critical Issueが残れば公開不可。
-      再監査後もopenならaudit blocked、Run failed。
+      再監査後もopenならwithheld終端（W-2）。
+      final_answer非公開、Run completed、exit 4。
     end note
     note right of resolved
       MVP Enumはopen / resolvedのみ。
@@ -212,7 +214,7 @@ stateDiagram-v2
     end note
 ```
 
-公開可能な分類でも、Auditorが`approved`でなければ`final_answer`を公開しない。`changes_required`は修正と再監査を1回だけ行い、再監査でも未解決Critical Issueが残る場合は`blocked`としてRunを`failed`へ送る。
+公開可能な分類でも、Auditorが`approved`でなければ`final_answer`を公開しない。`changes_required`は修正と再監査を1回だけ行う。再監査でも未承認の場合と初回`blocked`は、`failed`ではなく`withheld`終端とする（W-2、SPEC v0.3.7 §11.1。`final_answer`非公開、Run `completed`、exit 4）。Auditorを確保できない場合だけ`failed`とする。
 
 ## 6. BudgetReservation状態遷移
 

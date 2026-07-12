@@ -8,7 +8,7 @@ from oracle_council.orchestrator import EXIT_FAILED, EXIT_OK, EXIT_WITHHELD, Orc
 from oracle_council.storage import InMemoryStorageBackend
 
 
-def build_raw(a_script, b_script, budget=None, storage=None):
+def build_raw(a_script, b_script, budget=None, storage=None, store_content=False):
     adapter_a = ScriptedAgentAdapter(a_script)
     adapter_b = ScriptedAgentAdapter(b_script)
     orchestrator = Orchestrator(
@@ -16,6 +16,7 @@ def build_raw(a_script, b_script, budget=None, storage=None):
         FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
         budget or TokenBudget(input_limit=10**6, output_limit=10**6),
         storage,
+        store_content=store_content,
     )
     return orchestrator, adapter_a, adapter_b
 
