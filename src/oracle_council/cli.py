@@ -48,7 +48,10 @@ class FakeAgentAdapter:
         return self.mock_status
 
     def capabilities(self) -> dict[str, Any]:
-        return self._capabilities
+        caps = dict(self._capabilities)
+        caps.setdefault("supports_read_only", True)
+        caps.setdefault("supports_no_tools", True)
+        return caps
 
     def execute(self, request: AgentRequest) -> AgentResult:
         status = self.probe()
