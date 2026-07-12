@@ -301,13 +301,37 @@ def cmd_ask(args) -> int:
                 )
             )
 
+    # Pre-flight availability (§6.4, V-1): agents whose probe fails are absent
+    # for this run. Quota exhaustion is NOT probe-detectable (a version probe
+    # succeeds while execute() fails), so mid-run quota failures still follow
+    # M-2: respond phase failed -> run failed.
+    available_agents = []
+    unavailable = []
+    for agent in agents:
+        try:
+            probe_status = agent.adapter.probe()
+        except Exception:
+            probe_status = "EXECUTION_ERROR"
+        if probe_status == "OK":
+            available_agents.append(agent)
+        else:
+            unavailable.append(f"{agent.agent_id}={probe_status}")
+    if len(available_agents) < 2:
+        detail = ", ".join(unavailable) if unavailable else "agents configured: 0"
+        return exit_stop(
+            "insufficient_agents",
+            3,
+            f"参加可能なAgentが2未満です（利用不能: {detail}）",
+            args.json,
+        )
+
     if args.no_store:
         storage = None
     else:
         storage = JSONLStorageBackend(Path("data"))
 
     orchestrator = Orchestrator(
-        agents=agents,
+        agents=available_agents,
         evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
         budget=TokenBudget(input_limit=10**6, output_limit=10**6),
         storage=storage,

@@ -85,6 +85,22 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert data["answer"]["result_classification"] == "verified"
 
 
+def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, capsys, monkeypatch):
+    """Deterministic counterpart of the live insufficient-agents E2E: one of
+    two agents fails its availability probe, so the CLI must stop pre-flight
+    with insufficient_agents / exit 3 instead of skipping or half-running."""
+    monkeypatch.setenv("ORACLE_MOCK_PROBE_CLAUDE", "QUOTA_EXCEEDED")
+    exit_code = main(["ask", "What is the height of Fuji?", "--json", "--no-store"])
+    assert exit_code == 3
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["status"] == "insufficient_agents"
+    assert data["run_id"] is None  # V-1: no Run is created for a pre-flight stop
+    assert data["exit_code"] == 3
+
+
 def test_cli_ask_high_risk_strict_trigger_non_interactive(temp_config, capsys):
     exit_code = main(["ask", "high_risk trigger test", "--no-interactive"])
     assert exit_code == 2

@@ -47,31 +47,37 @@ def test_codex_adapter_live_probe():
 
 @pytest.mark.live
 def test_claude_adapter_live_execute():
+    """Skips (not fails) while Claude is quota-limited, so the suite result
+    shows exactly what is usable right now."""
     adapter = ClaudeAdapter("claude-test")
     status = adapter.probe()
-    if status not in ("OK", "QUOTA_EXCEEDED"):
-        pytest.skip(f"Claude Code is not in usable status: {status}")
+    if status != "OK":
+        pytest.skip(f"Claude Code unavailable at probe: {status}")
 
     req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
     try:
         res = adapter.execute(req)
-        assert isinstance(res, AgentResult)
-        assert isinstance(res.output, dict)
     except AgentFailure as e:
-        assert e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "EXECUTION_ERROR")
+        if e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "RATE_LIMITED"):
+            pytest.skip(f"Claude Code unusable right now: {e.error_code}")
+        raise
+    assert isinstance(res, AgentResult)
+    assert isinstance(res.output, dict)
 
 
 @pytest.mark.live
 def test_codex_adapter_live_execute():
     adapter = CodexAdapter("codex-test")
     status = adapter.probe()
-    if status not in ("OK", "QUOTA_EXCEEDED"):
-        pytest.skip(f"Codex CLI is not in usable status: {status}")
+    if status != "OK":
+        pytest.skip(f"Codex CLI unavailable at probe: {status}")
 
     req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
     try:
         res = adapter.execute(req)
-        assert isinstance(res, AgentResult)
-        assert "answer" in res.output
     except AgentFailure as e:
-        assert e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "EXECUTION_ERROR")
+        if e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "RATE_LIMITED"):
+            pytest.skip(f"Codex CLI unusable right now: {e.error_code}")
+        raise
+    assert isinstance(res, AgentResult)
+    assert "answer" in res.output

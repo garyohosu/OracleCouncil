@@ -1380,4 +1380,13 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-12 — W-1〜W-4確定。既回答59問、未回答29問。*
+### W-5. 実機E2Eの分割とprobeで検出できない利用上限の扱い
+
+**重要度**: Major
+**箇所**: SPEC §6.4・§8.2・§18.2 / M-2 / R-4 / `cli.py` / `tests/contract/test_adapters.py` / `tests/e2e/`
+**疑問**: (1) 実機E2Eが全体skipになる設計は「何が動き、何が未達か」を隠す。(2) liveテストが既定スイートで実CLIを起動していた（§18.2違反）。(3) 実機検証で「`probe()`は正常でも`execute()`でQUOTA_EXCEEDED」という実挙動が判明。probe（`--version`）では利用上限を検出できない。
+**回答**: 確定。(1) liveテストを4分割した: `test_codex_adapter_live_execute`（Codex正常時pass）、`test_claude_adapter_live_execute`（quota時skip）、`test_real_two_agent_council`（quota時skip）、`test_real_insufficient_agents_when_claude_unavailable`（Claude probe不能環境でpass）。テスト結果だけで可動状況が分かる。(2) `addopts = -q -m "not live"`で既定スイートからliveを除外（`-m "live and expensive"`の明示実行でのみ起動）。(3) CLIへpre-flight probeフィルタを追加: probeがOKでないAgentは欠席とし、参加可能2未満は`insufficient_agents`/exit 3で停止（Run生成なし、V-1準拠）。probeで検出できない利用上限は実行中の`QUOTA_EXCEEDED`となり、M-2どおりrespond Phase failed→Run failed。「Claude不在でskipではなくinsufficient_agentsを返す」検証は、Fakeのprobe環境変数（`ORACLE_MOCK_PROBE_CLAUDE`）を使う決定的な既定スイートテストとして常時実行する。probe（`--version`）はAI呼び出しに数えない（R-4の部分回答）。
+
+---
+
+*最終更新: 2026-07-12 — W-1〜W-5確定。既回答60問、未回答29問。*
