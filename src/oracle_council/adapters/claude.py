@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import Any
 
-from ..models import AgentFailure, AgentRequest, AgentResult, Usage
+from ..models import AgentFailure, AgentRequest, AgentResult, SearchError, SearchResult, Usage, utc_now
 from .base import classify_cli_error, validate_phase_output
 
 # Claude Code has no --output-schema flag (unlike Codex). The model must be
@@ -193,3 +193,117 @@ class ClaudeAdapter:
             raise AgentFailure("COMMAND_NOT_FOUND", "claude command not found")
         except subprocess.TimeoutExpired as exc:
             raise AgentFailure("TIMEOUT", "claude command timed out") from exc
+
+
+# SPEC §10.2 X-1 SearchProvider Contract, X-2/X-3: confirmed live 2026-07-13
+# that "WebSearch" is accepted as a --tools value, the empty temp cwd stays
+# empty (no file writes / shell execution), the model can return structured
+# url/title/snippet JSON, and every returned URL was independently
+# fetchable via SafeHttpFetcher. Reuses AgentFailure's error_code vocabulary
+# (classify_cli_error) rather than duplicating detection logic, then maps
+# onto the SearchError codes X-1 defines.
+_SEARCH_ERROR_MAP = {
+    "AUTH_REQUIRED": "SEARCH_AUTH_REQUIRED",
+    "QUOTA_EXCEEDED": "SEARCH_QUOTA_EXCEEDED",
+    "RATE_LIMITED": "SEARCH_RATE_LIMITED",
+    "COMMAND_NOT_FOUND": "SEARCH_UNAVAILABLE",
+    "UNSUPPORTED_VERSION": "SEARCH_UNAVAILABLE",
+    "UNSAFE_CAPABILITY": "SEARCH_UNAVAILABLE",
+    "EXECUTION_ERROR": "SEARCH_UNAVAILABLE",
+}
+
+_SEARCH_PROMPT_TEMPLATE = (
+    "Search the web for sources relevant to this query: {query!r}\n\n"
+    "Respond with ONLY a single valid JSON object, no markdown code fences, "
+    "no other text, matching this shape: "
+    '{{"sources": [{{"url": "<string>", "title": "<string>", "snippet": "<string>"}}]}}. '
+    "Include up to {limit} sources with real URLs found via search."
+)
+
+
+class CliSearchProvider:
+    """SearchProvider (SPEC §10.2 X-1) backed by Claude Code's built-in
+    WebSearch tool. Returns candidate URLs only — it never fetches document
+    bodies itself. SafeHttpFetcher remains the sole component that opens an
+    HTTP connection (S-1); Oracle Council must independently retrieve and
+    verify each URL this returns before it counts as evidence (§10.1)."""
+
+    def __init__(self, timeout_s: int = 180) -> None:
+        self.timeout_s = timeout_s
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        prompt = _SEARCH_PROMPT_TEMPLATE.format(query=query, limit=limit)
+        cmd = [
+            "claude",
+            "-p",
+            prompt,
+            "--tools",
+            "WebSearch",
+            "--output-format",
+            "json",
+            "--no-session-persistence",
+            "--safe-mode",
+        ]
+        env = dict(os.environ)
+
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout_s,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                shell=False,
+            )
+        except FileNotFoundError as exc:
+            raise SearchError("SEARCH_UNAVAILABLE", "claude command not found") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise SearchError("SEARCH_TIMEOUT", "claude command timed out") from exc
+
+        err_text = res.stderr + "\n" + res.stdout
+        error_code = classify_cli_error(res.stdout, res.stderr)
+        if error_code:
+            raise SearchError(_SEARCH_ERROR_MAP.get(error_code, "SEARCH_UNAVAILABLE"), err_text)
+        if res.returncode != 0:
+            raise SearchError("SEARCH_UNAVAILABLE", err_text)
+
+        try:
+            envelope = json.loads(res.stdout.strip())
+        except json.JSONDecodeError as exc:
+            raise SearchError(
+                "INVALID_SEARCH_RESPONSE", f"failed to parse CLI envelope: {res.stdout}"
+            ) from exc
+        result_text = envelope.get("result", "") if isinstance(envelope, dict) else res.stdout
+
+        try:
+            payload = _extract_json_object(result_text)
+        except json.JSONDecodeError as exc:
+            raise SearchError(
+                "INVALID_SEARCH_RESPONSE", f"no JSON object in model text: {result_text}"
+            ) from exc
+
+        raw_sources = payload.get("sources") if isinstance(payload, dict) else None
+        if not isinstance(raw_sources, list):
+            raise SearchError("INVALID_SEARCH_RESPONSE", "missing or invalid 'sources' array")
+
+        retrieved_at = utc_now().isoformat()
+        results: list[SearchResult] = []
+        for rank, item in enumerate(raw_sources, start=1):
+            if len(results) >= limit:
+                break
+            if not isinstance(item, dict) or not item.get("url"):
+                continue  # skip a malformed entry rather than failing the whole search
+            results.append(
+                SearchResult(
+                    url=item["url"],
+                    title=item.get("title", ""),
+                    snippet=item.get("snippet", ""),
+                    rank=rank,
+                    source="claude-code-websearch",
+                    retrieved_at=retrieved_at,
+                )
+            )
+        return results

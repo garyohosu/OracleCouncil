@@ -1537,4 +1537,19 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProvider Spike成功。既回答69問、未回答27問。*
+### X-4. CliSearchProviderの実装
+
+**重要度**: Major
+**箇所**: `adapters/claude.py` `CliSearchProvider`
+**回答**: 確定。Spike（X-3）のロジックを本実装へ引き継いだ。`adapters/claude.py`へ`CliSearchProvider`を追加（`adapters/`配下——`evidence.py`へは依存させず、Protocolの構造的型付けだけで`SearchProvider`を満たす）。
+
+- `search(query, limit) -> list[SearchResult]`は`claude -p <prompt> --tools WebSearch --output-format json --no-session-persistence --safe-mode`を実行し、既存の`classify_cli_error`・`_extract_json_object`を再利用してenvelopeを展開する
+- エラーは`AgentFailure`のerror_code語彙をSearchError Enum（X-1）へ写像する専用マップ（`_SEARCH_ERROR_MAP`）で変換。`AUTH_REQUIRED→SEARCH_AUTH_REQUIRED`、`QUOTA_EXCEEDED→SEARCH_QUOTA_EXCEEDED`、`RATE_LIMITED→SEARCH_RATE_LIMITED`、未知のCLI状態は`SEARCH_UNAVAILABLE`、JSON解析失敗は`INVALID_SEARCH_RESPONSE`
+- `rank`は1始まりの出現順、`source`は`"claude-code-websearch"`固定、`retrieved_at`は取得時刻。`url`欠落など不正なエントリはRun全体を失敗させずスキップする
+- `WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())`で接続可能。CLI呼び出し部分のみ本文取得は行わず、S-1の責務分離を維持する
+
+**テスト**: `subprocess.run`をモックした11ケース（正常系のSearchResult構築・rank・limit切り詰め・不正エントリのスキップ、異常系の7エラーコード対応、`--tools WebSearch`が実際にコマンドへ渡ることの確認）。CIは実CLIを呼ばない（SPEC §18.2）。137テスト全パス。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProvider実装完了。既回答70問、未回答27問。*

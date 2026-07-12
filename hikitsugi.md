@@ -83,13 +83,21 @@
 ## 4-5. 次: CliSearchProvider本実装
 
 Spike成功により候補確定。残作業:
-1. `evidence.py`へ`CliSearchProvider`（`SearchProvider` Protocol実装）を追加。Adapterではなく`WebEvidenceProvider`の`searcher`として差し込む
-2. `claude.py`へ`search`用のフェーズ指示（`_PHASE_SCHEMA_HINT`と同型、Spikeで使ったプロンプトを土台にする）を追加するか、Spike専用ロジックを`CliSearchProvider`内に閉じるか判断
-3. 取得不能URL（否定ケース）のテスト——Fakeで模擬するか、意図的に無効なURLを混ぜたlive再実行で確認するか
+~~1〜3~~ 済（2026-07-13、X-4確定）。`CliSearchProvider`は`evidence.py`ではなく`adapters/claude.py`へ追加した（`claude`バイナリを呼ぶ他のロジックと同居させ、Protocolの構造的型付けだけで`SearchProvider`を満たす。`evidence.py`→`adapters`の依存は作らない）。Spikeのプロンプト・envelope展開ロジックをそのまま引き継ぎ、`classify_cli_error`のerror_code語彙を`SearchError` Enum（X-1）へ写像する`_SEARCH_ERROR_MAP`を追加。取得不能URL（否定ケース）はFakeで検証済み（`test_evidence.py`の`fetch_error`系）——live再実行での否定ケース確認はまだ。137テスト全パス。
+
+`WebEvidenceProvider`への接続例:
+```python
+from oracle_council.adapters.claude import CliSearchProvider
+from oracle_council.evidence import SafeHttpFetcher, WebEvidenceProvider
+
+provider = WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())
+```
+CLIやOrchestratorへはまだ配線していない（`cli.py`は依然`FakeEvidenceProvider`/`ManualEvidenceProvider`のみ）。
 
 ## 4-6. 未決定（レビュアー判断待ち）
 
-- **CliSearchProviderの実装着手**: Spikeスクリプトのロジックをどこまで本実装へ引き継ぐか
+- **CLIへの実接続**: `oracle ask`から`CliSearchProvider`＋`WebEvidenceProvider`を選べるようにするか（`--evidence-file`と並ぶ`--evidence-provider cli-search`のようなオプションが必要）
+- **否定ケースのlive確認**: 意図的に見つかりにくいクエリで検索させ、取得不能URLの扱いを実機で確認するか
 - **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが安定しない場合の代替として維持
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
