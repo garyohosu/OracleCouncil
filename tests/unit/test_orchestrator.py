@@ -3,9 +3,21 @@ import pytest
 from oracle_council.assignment import InsufficientAgentsError, RegisteredAgent
 from oracle_council.budget import TokenBudget
 from oracle_council.fakes import FakeEvidenceProvider, ScriptedAgentAdapter
-from oracle_council.models import ResultClassification, RunStatus
+from oracle_council.models import AgentFailure, ResultClassification, RunStatus
 from oracle_council.orchestrator import EXIT_FAILED, EXIT_OK, EXIT_WITHHELD, Orchestrator
 from oracle_council.storage import InMemoryStorageBackend
+
+
+def build_raw(a_script, b_script, budget=None, storage=None):
+    adapter_a = ScriptedAgentAdapter(a_script)
+    adapter_b = ScriptedAgentAdapter(b_script)
+    orchestrator = Orchestrator(
+        [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        budget or TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    )
+    return orchestrator, adapter_a, adapter_b
 
 
 def claims_output(status, importance="major"):
@@ -243,6 +255,93 @@ def test_single_agent_stops_preflight_without_creating_a_run():
         orchestrator.run_verify("q")
     assert storage.purge() == 0  # V-1: no Run, nothing persisted
     assert budget.snapshot().committed_call_count == 0
+
+
+def test_timeout_is_retried_once_with_new_execution_and_history_kept():
+    storage = InMemoryStorageBackend()
+    orchestrator, adapter_a, _ = build_raw(
+        [
+            AgentFailure("TIMEOUT"),  # respond #1, first attempt
+            {"answer": "A"},  # respond #1, retry
+            claims_output("unverified"),
+            claims_output("verified"),
+            {"critique": "ok"},
+            {"answer": "final"},
+        ],
+        [{"answer": "B"}, {"status": "approved"}],
+        storage=storage,
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.exit_code == EXIT_OK
+    assert result.call_count == 8  # 7 phases + 1 failed attempt (safe-side commit)
+    assert [r.phase for r in adapter_a.requests][:2] == ["respond", "respond"]  # same agent, same phase
+
+    events = storage.load(result.run_id).events
+    failed = [e for e in events if e.event_type == "agent_execution_failed"]
+    assert len(failed) == 1  # original failure stays in history
+    assert failed[0].payload["error_code"] == "TIMEOUT"
+    retried = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and "retry_of" in e.payload
+    ]
+    assert len(retried) == 1
+    assert retried[0].payload["retry_of"] == failed[0].payload["execution_id"]
+    assert retried[0].payload["execution_id"] != failed[0].payload["execution_id"]  # new execution
+
+
+def test_second_timeout_of_same_execution_terminates_run():
+    orchestrator, adapter_a, _ = build_raw(
+        [AgentFailure("TIMEOUT"), AgentFailure("TIMEOUT")],
+        [{"answer": "B"}],
+    )
+    budget = orchestrator._budget
+
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert result.exit_code == EXIT_FAILED
+    assert len(adapter_a.requests) == 2  # one retry only
+    assert result.call_count == 2
+    assert budget.snapshot().reserved_call_count == 0
+
+
+def test_auth_required_is_not_retried():
+    storage = InMemoryStorageBackend()
+    orchestrator, adapter_a, _ = build_raw(
+        [AgentFailure("AUTH_REQUIRED")], [{"answer": "B"}], storage=storage
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert len(adapter_a.requests) == 1  # no retry for non-transient errors
+    events = storage.load(result.run_id).events
+    failed = [e for e in events if e.event_type == "agent_execution_failed"]
+    assert failed[0].payload["error_code"] == "AUTH_REQUIRED"
+
+
+def test_run_level_retry_budget_is_two():
+    orchestrator, adapter_a, _ = build_raw(
+        [
+            AgentFailure("TIMEOUT"),  # respond #1 -> retry 1
+            {"answer": "A"},
+            AgentFailure("RATE_LIMITED"),  # claim_extract -> retry 2
+            claims_output("unverified"),
+            AgentFailure("TIMEOUT"),  # verify -> run retry budget exhausted
+        ],
+        [{"answer": "B"}],
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert result.exit_code == EXIT_FAILED
+    phases = [r.phase for r in adapter_a.requests]
+    assert phases == ["respond", "respond", "claim_extract", "claim_extract", "verify"]
+    assert result.call_count == 6  # attempts: 2 + 1 + 2 + 1
 
 
 def test_no_store_run_touches_no_storage():

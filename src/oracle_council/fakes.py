@@ -15,7 +15,10 @@ class ScriptedAgentAdapter:
         self.requests.append(request)
         if not self._outputs:
             raise RuntimeError("script exhausted")
-        return AgentResult(self._outputs.popleft(), Usage(100, 20))
+        item = self._outputs.popleft()
+        if isinstance(item, BaseException):
+            raise item
+        return AgentResult(item, Usage(100, 20))
 
 
 class FakeEvidenceProvider:

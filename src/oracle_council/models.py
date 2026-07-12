@@ -133,6 +133,14 @@ class AgentResult:
     usage: Usage | None = None
 
 
+class AgentFailure(RuntimeError):
+    """A structured agent-execution failure carrying the SPEC §8.2 error code."""
+
+    def __init__(self, error_code: str, message: str = "") -> None:
+        super().__init__(message or error_code)
+        self.error_code = error_code
+
+
 class AuditIssueStatus(StrEnum):
     OPEN = "open"
     RESOLVED = "resolved"

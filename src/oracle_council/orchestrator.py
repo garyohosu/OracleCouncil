@@ -8,6 +8,7 @@ from .assignment import AssignmentPlan, RegisteredAgent, plan_assignments
 from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .models import (
+    AgentFailure,
     AgentRequest,
     AuditIssue,
     AuditIssueStatus,
@@ -30,6 +31,13 @@ EXIT_WITHHELD = 4
 
 _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
 _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
+
+# SPEC §8.3: only transient timeouts and rate limits are retried, at most
+# once per execution and twice per run. INVALID_OUTPUT recovery is pending
+# QandA L-3 and substitute-agent selection is pending M-5, so every other
+# failure terminates the run deterministically.
+_RETRYABLE_ERROR_CODES = frozenset({"TIMEOUT", "RATE_LIMITED"})
+_MAX_RUN_RETRIES = 2
 
 
 class Orchestrator:
@@ -147,11 +155,55 @@ class Orchestrator:
     def _execute_phase(
         self, run_id: str, phase: str, agent: RegisteredAgent, sequence, state: _RunState
     ) -> RunResult | None:
-        execution_id = f"exec-{next(sequence)}"
-        try:
-            reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
-        except BudgetExceededError:
-            return self._budget_failure(run_id, state)
+        """Run one phase with at most one retry (SPEC §8.3). Returns a terminal
+        RunResult on failure, or None when the phase succeeded."""
+        retry_of: str | None = None
+        while True:
+            execution_id = f"exec-{next(sequence)}"
+            try:
+                result = self._attempt(run_id, phase, agent, execution_id, retry_of, state)
+            except BudgetExceededError:
+                return self._budget_failure(run_id, state)
+            except AgentFailure as failure:
+                self._append(
+                    run_id,
+                    "agent_execution_failed",
+                    {
+                        "phase": phase,
+                        "execution_id": execution_id,
+                        "agent_id": agent.agent_id,
+                        "error_code": failure.error_code,
+                        **({"retry_of": retry_of} if retry_of else {}),
+                    },
+                )
+                can_retry = (
+                    failure.error_code in _RETRYABLE_ERROR_CODES
+                    and retry_of is None  # at most one retry per execution
+                    and state.run_retries_used < _MAX_RUN_RETRIES
+                )
+                if can_retry:
+                    state.run_retries_used += 1
+                    retry_of = execution_id
+                    continue
+                return self._finish(
+                    run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
+                )
+            self._apply_output(phase, result.output, state)
+            self._append(
+                run_id,
+                "agent_execution_succeeded",
+                {
+                    "phase": phase,
+                    "execution_id": execution_id,
+                    "agent_id": agent.agent_id,
+                    **({"retry_of": retry_of} if retry_of else {}),
+                },
+            )
+            return None
+
+    def _attempt(self, run_id, phase, agent, execution_id, retry_of, state: _RunState):
+        # A retry is a new execution with its own reservation (S-7).
+        reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
         started = False
         try:
             started = True
@@ -164,13 +216,18 @@ class Orchestrator:
             result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
+            return result
         except Exception:
             if started:
+                # The call may have consumed provider resources: commit on the
+                # safe side so the attempt still counts against the limits.
+                state.calls += 1
                 self._budget.commit(reservation.reservation_id, None)
             else:
                 self._budget.release(reservation.reservation_id)
             raise
-        output = result.output
+
+    def _apply_output(self, phase: str, output: dict, state: _RunState) -> None:
         if phase == "respond":
             state.responses.append(output)
         elif phase == "claim_extract":
@@ -184,12 +241,6 @@ class Orchestrator:
             state.audit_status = output.get("status")
             state.auditor_approved = state.audit_status == "approved"
             state.last_audit_issues = output.get("issues", [])
-        self._append(
-            run_id,
-            "agent_execution_succeeded",
-            {"phase": phase, "execution_id": execution_id, "agent_id": agent.agent_id},
-        )
-        return None
 
     def _budget_failure(self, run_id: str, state: _RunState) -> RunResult:
         self._append(run_id, "budget_exceeded", {"error_code": "BUDGET_EXCEEDED"})
@@ -262,6 +313,7 @@ class _RunState:
         self.last_audit_issues: list[dict] = []
         self.issues: list[AuditIssue] = []
         self.calls = 0
+        self.run_retries_used = 0
 
 
 __all__ = [

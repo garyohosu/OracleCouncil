@@ -1361,4 +1361,14 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-12 — W-1・W-2確定、SPEC v0.3.7へ反映。既回答57問、未回答29問。*
+### W-3. 再試行対象エラーの固定
+
+**重要度**: Major
+**箇所**: SPEC §8.2 Agent状態 / §8.3 再試行 / `orchestrator.py` `_RETRYABLE_ERROR_CODES`
+**疑問**: どの`error_code`を再試行対象にするか。レビュー案は「TIMEOUT、RATE_LIMITED、一時的なEXECUTION_ERROR」だったが、SPEC正本と一致させる必要がある。INVALID_OUTPUTを1回だけ再試行する設計もあり得る。
+**検証結果**: SPEC §8.3の正本は「一時的なタイムアウトとレート制限は同一Executionにつき最大1回のみ」であり、EXECUTION_ERRORは列挙されていない。INVALID_OUTPUTの回復（AIへの修復再依頼を再試行に数えるか）はL-3が未回答。
+**回答**: 確定。SPEC正本どおり再試行対象は`TIMEOUT`と`RATE_LIMITED`のみとする。`EXECUTION_ERROR`は一時性を機械判定できないため対象外。`INVALID_OUTPUT`はL-3確定まで対象外とし、確定時に`_RETRYABLE_ERROR_CODES`だけを変更すれば済む実装にした。`AUTH_REQUIRED`/`QUOTA_EXCEEDED`等の非一時エラー後の代替Agent選定はM-5が未回答のため未実装で、現状は決定的にRun `failed`へ終端する（M-5確定時に代替選定を追加）。retryは同一Agent・同一phase・新execution_id・`retry_of`参照・別予約（S-7）・起動後失敗は安全側commitで呼び出し数に計上・元Executionの失敗履歴は保持、をテストで固定済み。
+
+---
+
+*最終更新: 2026-07-12 — W-1〜W-3確定（W-3はSPEC変更なし）。既回答58問、未回答29問。*
