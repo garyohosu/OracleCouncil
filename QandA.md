@@ -1351,4 +1351,14 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
-*最終更新: 2026-07-12 — W-1（決定表と実装の整合）確定。既回答56問、未回答29問。*
+### W-2. 修正・再監査フローの終端と「修正込み10回」の内訳
+
+**重要度**: Major
+**箇所**: SPEC §6.3 呼び出し上限 / §11.1 監査ゲート / §15.2 Run.status / IT-E2E-21
+**疑問**: (1) 「修正込み10回」は通常7回＋修正2回＝9回と合わない。10回目は何を指すか。(2) 再監査でも`approved`にならない場合、旧§11.1は`failed`としていたが、「保留は失敗ではない」（R-1のexit 4、U-1の開示境界）と整合するか。
+**検証結果**: (1) 10回＝条件付きClarifier(1)＋通常(7)＋修正(1)＋再監査(1)。Clarifierなしの修正フローは9回で、一時エラーの再試行は別枠（Run全体2回、絶対上限12回）。修正フローとretryの呼び出し上限は既に分離されており混在しない。
+**回答**: 確定。監査の終端を次へ改訂する（SPEC v0.3.7 §11.1）。初回`approved`→完了。初回`changes_required`→Synthesizer再実行1回→同じAuditorで再監査1回。再監査`approved`→公開。再監査`changes_required`/`blocked`→`withheld`（`final_answer`非公開、Run `completed`、exit 4）。初回`blocked`→修正へ進まず即`withheld`。Auditor確保不能のみ`failed`（環境問題であり保留ではない）。§15.2の「監査がblocked→failed」は削除。AuditIssueは初回`open`、再監査で解消確認されたものだけ`resolved`、未解消は`open`のまま。イベントは`revision_started`、`synthesis_revised`、`reaudit_started`、`reaudit_completed`を記録する。
+
+---
+
+*最終更新: 2026-07-12 — W-1・W-2確定、SPEC v0.3.7へ反映。既回答57問、未回答29問。*

@@ -9,6 +9,8 @@ from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .models import (
     AgentRequest,
+    AuditIssue,
+    AuditIssueStatus,
     BudgetRequest,
     Claim,
     ResultClassification,
@@ -84,25 +86,57 @@ class Orchestrator:
                     EXIT_WITHHELD,
                 )
 
-            for phase in _PUBLISH_PHASES:
+            for phase in ("criticize", "synthesize", "audit"):
                 failure = self._execute_phase(
                     run_id, phase, plan.adapter_for(phase), sequence, state
                 )
                 if failure is not None:
                     return failure
-
-            if not state.auditor_approved or state.final_answer is None:
-                return self._finish(
-                    run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
+            state.issues = [
+                AuditIssue(
+                    issue_id=raw.get("issue_id", f"issue-{index}"),
+                    issue_type=raw.get("issue_type", ""),
+                    severity=raw.get("severity", ""),
+                    claim_id=raw.get("claim_id"),
                 )
-            return self._finish(
+                for index, raw in enumerate(state.last_audit_issues, start=1)
+            ]
+
+            # Audit gate (§11.1, W-2): approved publishes, an initial blocked
+            # withholds immediately, changes_required earns exactly one
+            # revision cycle with the same synthesizer and auditor.
+            if state.audit_status == "approved":
+                return self._publish(run_id, state)
+            if state.audit_status != "changes_required":
+                return self._withheld_by_audit(run_id, state)
+
+            self._append(
                 run_id,
-                RunStatus.COMPLETED,
-                classify(state.claims),
-                state.final_answer,
-                state,
-                EXIT_OK,
+                "revision_started",
+                {"reason": "changes_required", "open_issues": [i.issue_id for i in state.issues]},
             )
+            failure = self._execute_phase(
+                run_id, "synthesize", plan.adapter_for("synthesize"), sequence, state
+            )
+            if failure is not None:
+                return failure
+            self._append(run_id, "synthesis_revised", {})
+            self._append(run_id, "reaudit_started", {})
+            failure = self._execute_phase(
+                run_id, "audit", plan.adapter_for("audit"), sequence, state
+            )
+            if failure is not None:
+                return failure
+            self._append(run_id, "reaudit_completed", {"status": state.audit_status})
+
+            reported = {raw.get("issue_id") for raw in state.last_audit_issues}
+            for issue in state.issues:
+                if state.audit_status == "approved" or issue.issue_id not in reported:
+                    issue.status = AuditIssueStatus.RESOLVED
+
+            if state.audit_status == "approved":
+                return self._publish(run_id, state)
+            return self._withheld_by_audit(run_id, state)
         except StorageWriteError:
             return RunResult(
                 run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state.calls, EXIT_FAILED
@@ -147,7 +181,9 @@ class Orchestrator:
         elif phase == "synthesize":
             state.final_answer = output["answer"]
         elif phase == "audit":
-            state.auditor_approved = output.get("status") == "approved"
+            state.audit_status = output.get("status")
+            state.auditor_approved = state.audit_status == "approved"
+            state.last_audit_issues = output.get("issues", [])
         self._append(
             run_id,
             "agent_execution_succeeded",
@@ -170,8 +206,38 @@ class Orchestrator:
             run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
         )
 
+    def _publish(self, run_id: str, state: _RunState) -> RunResult:
+        if state.final_answer is None:
+            return self._finish(
+                run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
+            )
+        for issue in state.issues:
+            issue.status = AuditIssueStatus.RESOLVED
+        return self._finish(
+            run_id,
+            RunStatus.COMPLETED,
+            classify(state.claims),
+            state.final_answer,
+            state,
+            EXIT_OK,
+        )
+
+    def _withheld_by_audit(self, run_id: str, state: _RunState) -> RunResult:
+        # W-2: an unapproved answer is withheld, not failed. The synthesized
+        # text stays unpublished; only claim results (§11.5) are disclosed.
+        return self._finish(
+            run_id,
+            RunStatus.COMPLETED,
+            ResultClassification.WITHHELD,
+            None,
+            state,
+            EXIT_WITHHELD,
+        )
+
     def _finish(self, run_id, status, classification, answer, state: _RunState, exit_code) -> RunResult:
-        result = RunResult(run_id, status, classification, answer, state.calls, exit_code, state.claims)
+        result = RunResult(
+            run_id, status, classification, answer, state.calls, exit_code, state.claims, tuple(state.issues)
+        )
         self._append(
             run_id,
             f"run_{status.value}",
@@ -192,6 +258,9 @@ class _RunState:
         self.evidence: list[dict] = []
         self.final_answer: str | None = None
         self.auditor_approved = False
+        self.audit_status: str | None = None
+        self.last_audit_issues: list[dict] = []
+        self.issues: list[AuditIssue] = []
         self.calls = 0
 
 

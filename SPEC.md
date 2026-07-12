@@ -1,6 +1,6 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.3.6
+- 文書バージョン: 0.3.7
 - ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
@@ -608,7 +608,16 @@ MVPではVoter、Quorum、再投票を実行しない。`consensus_status`は常
 - `result_classification`: Claimの検証状態
 - `verified_claims / total_claims`
 
-AuditorはSynthesizerとは異なる`agent_id`を使う。`approved`だけを回答公開可能とする。`changes_required`ではSynthesizerによる修正と再監査を1回だけ許可する。再監査でも`approved`にならない場合とAuditorを確保できない場合はRunを`failed`とする。
+AuditorはSynthesizerとは異なる`agent_id`を使う。`approved`だけを回答公開可能とする。監査結果ごとの遷移は次とする。
+
+- 初回`approved`: そのまま公開して完了する
+- 初回`changes_required`: Synthesizerを1回だけ再実行し、同じAuditorで再監査する。再監査は1回だけ
+- 再監査`approved`: 公開可能
+- 再監査`changes_required`または`blocked`: `withheld`とする。`final_answer`は公開せず、§11.5の開示範囲だけを返す。Runは`completed`、終了コードは4
+- 初回`blocked`: 修正フェーズへ進まず、即`withheld`とする（同上）
+- Auditorを確保できない場合: Runを`failed`とする（実行環境の問題であり保留ではない）
+
+修正と再監査はAI呼び出し2回を追加する（通常7回→9回、Clarifier込みで最大10回）。一時エラーの再試行はこれとは別枠で数え、絶対上限12回は変わらない。修正フローでは`revision_started`、`synthesis_revised`、`reaudit_started`、`reaudit_completed`をイベントとして記録する。AuditIssueは初回監査で`open`として作成し、再監査で解消が確認されたものだけを`resolved`へ遷移させる。解消されないIssueは`open`のまま残す。
 
 ### 11.2 Critical Issue
 
@@ -886,7 +895,7 @@ Runは、引数・設定検証、質問整理、mode判定、EvidenceProvider利
 
 - `completed`: (a) Auditorが`approved`した公開可能な回答があり`result_classification`が`verified`、`conflicting`または`unverified`、または (b) §15.3第1段で`withheld`が確定し§11.5の検証結果開示を返した
 - `partial`: Auditorが`approved`した公開可能な回答があり、品質劣化を示す`result_classification=partially_verified`である場合だけ使用する
-- `failed`: 必須Phaseが最低成功数を満たさない、監査未完了、または監査が`blocked`
+- `failed`: 必須Phaseが最低成功数を満たさない、または監査を完了できない（監査の`blocked`は`failed`ではなく`withheld`終端。§11.1）
 - `cancelled`: ユーザー中断または明示cancel
 
 RunStatusは処理終端、result_classificationは検証品質であり混同しない。判定順は`cancelled`、`failed`、`withheldを伴うcompleted`、`partial`、`completed`とする。Phaseが`degraded`でも公開可能な回答がなければ`partial`にせず`failed`とする。Evidence収集の一部不足等がClaimの未確認として残り、監査済みの公開可能な部分回答がある場合は`partial + partially_verified + exit 0`とする。

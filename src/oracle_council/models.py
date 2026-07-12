@@ -133,6 +133,20 @@ class AgentResult:
     usage: Usage | None = None
 
 
+class AuditIssueStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+@dataclass
+class AuditIssue:
+    issue_id: str
+    issue_type: str = ""
+    severity: str = ""
+    claim_id: str | None = None
+    status: AuditIssueStatus = AuditIssueStatus.OPEN
+
+
 @dataclass(frozen=True)
 class Claim:
     claim_id: str
@@ -159,4 +173,5 @@ class RunResult:
     call_count: int
     exit_code: int
     claims: tuple[Claim, ...] = ()
+    audit_issues: tuple[AuditIssue, ...] = ()
 

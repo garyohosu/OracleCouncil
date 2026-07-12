@@ -15,12 +15,15 @@ def claims_output(status, importance="major"):
 def build(
     verify_status="verified",
     importance="major",
-    audit_status="approved",
+    audits=None,
     verify_claims=None,
     budget=None,
     storage=None,
 ):
-    """Two agents: config order assigns agent-a everything except audit (agent-b)."""
+    """Two agents: config order assigns agent-a everything except audit (agent-b).
+
+    `audits` is the sequence of audit outputs; a second entry feeds the re-audit.
+    """
     adapter_a = ScriptedAgentAdapter(
         [
             {"answer": "A"},  # respond #1
@@ -28,13 +31,11 @@ def build(
             verify_claims or claims_output(verify_status, importance),  # verify
             {"critique": "ok"},  # criticize
             {"answer": "final"},  # synthesize
+            {"answer": "final-v2"},  # synthesize (revision, if reached)
         ]
     )
     adapter_b = ScriptedAgentAdapter(
-        [
-            {"answer": "B"},  # respond #2
-            {"status": audit_status},  # audit (must be a different agent)
-        ]
+        [{"answer": "B"}] + list(audits or [{"status": "approved"}])  # respond #2, audit(s)
     )
     orchestrator = Orchestrator(
         [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
@@ -134,12 +135,83 @@ def test_major_unverified_publishes_as_partially_verified_when_others_verified()
     assert result.exit_code == EXIT_OK
 
 
-def test_audit_not_approved_fails_run():
-    orchestrator, _, _ = build(audit_status="changes_required")
+def test_changes_required_then_approved_publishes_revised_answer():
+    storage = InMemoryStorageBackend()
+    orchestrator, adapter_a, adapter_b = build(
+        audits=[
+            {"status": "changes_required", "issues": [{"issue_id": "i1", "issue_type": "logic"}]},
+            {"status": "approved"},
+        ],
+        storage=storage,
+    )
+
     result = orchestrator.run_verify("q")
+
+    assert result.call_count == 9  # 7 + revision synthesize + re-audit
+    assert [r.phase for r in adapter_a.requests][-2:] == ["synthesize", "synthesize"]
+    assert [r.phase for r in adapter_b.requests] == ["respond", "audit", "audit"]
+    assert result.status is RunStatus.COMPLETED
+    assert result.final_answer == "final-v2"  # revised answer is published
+    assert result.exit_code == EXIT_OK
+    assert [i.status.value for i in result.audit_issues] == ["resolved"]
+
+    events = [e.event_type for e in storage.load(result.run_id).events]
+    revision = [t for t in events if t in (
+        "revision_started", "synthesis_revised", "reaudit_started", "reaudit_completed",
+    )]
+    assert revision == ["revision_started", "synthesis_revised", "reaudit_started", "reaudit_completed"]
+
+
+def test_reaudit_rejection_withholds_instead_of_failing():
+    orchestrator, _, _ = build(
+        audits=[
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}, {"issue_id": "i2"}]},
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}]},
+        ]
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.call_count == 9
+    assert result.status is RunStatus.COMPLETED  # W-2: withheld is not a failure
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.final_answer is None  # unapproved answer stays unpublished
+    assert result.exit_code == EXIT_WITHHELD
+    by_id = {i.issue_id: i.status.value for i in result.audit_issues}
+    assert by_id == {"i1": "open", "i2": "resolved"}  # only the re-reported issue stays open
+
+
+def test_initial_blocked_withholds_without_revision():
+    storage = InMemoryStorageBackend()
+    orchestrator, adapter_a, adapter_b = build(
+        audits=[{"status": "blocked", "issues": [{"issue_id": "i1"}]}], storage=storage
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.call_count == 7  # no revision cycle
+    assert [r.phase for r in adapter_b.requests] == ["respond", "audit"]
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.exit_code == EXIT_WITHHELD
+    assert result.audit_issues[0].status.value == "open"
+    events = [e.event_type for e in storage.load(result.run_id).events]
+    assert "revision_started" not in events
+
+
+def test_budget_exhaustion_during_revision_fails_run():
+    # 7 normal calls + revision synthesize = 8; the re-audit reservation is
+    # rejected and no auditor-approved answer exists, so the run fails.
+    budget = TokenBudget(input_limit=10**6, output_limit=10**6, call_limit=8)
+    orchestrator, _, _ = build(
+        audits=[{"status": "changes_required", "issues": [{"issue_id": "i1"}]}], budget=budget
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.call_count == 8
     assert result.status is RunStatus.FAILED
     assert result.exit_code == EXIT_FAILED
-    assert result.final_answer is None
+    assert budget.snapshot().reserved_call_count == 0
 
 
 def test_budget_exhaustion_before_first_call_fails_run():
