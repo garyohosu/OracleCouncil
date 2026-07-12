@@ -22,9 +22,12 @@ _CLAIM_STATUS_ENUM = [
 
 
 class CodexAdapter:
-    def __init__(self, agent_id: str, model: str | None = None) -> None:
+    # SPEC §8.4 per-agent-per-call timeout; see ClaudeAdapter's identical
+    # note (found live: hardcoded 60s tripped TIMEOUT under normal latency).
+    def __init__(self, agent_id: str, model: str | None = None, timeout_s: int = 180) -> None:
         self.agent_id = agent_id
         self.model = model
+        self.timeout_s = timeout_s
 
     def probe(self) -> str:
         cmd = ["codex.cmd" if os.name == "nt" else "codex", "--version"]
@@ -202,7 +205,7 @@ class CodexAdapter:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=60,
+                timeout=self.timeout_s,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 shell=False,

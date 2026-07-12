@@ -1417,6 +1417,16 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
+### W-7. Adapter実行タイムアウトがSPEC §8.4より短くハードコードされていた
+
+**重要度**: Critical
+**箇所**: SPEC §8.4 / `adapters/claude.py` / `adapters/codex.py`
+**背景**: metrics収集ハーネスの初回live実行（質問1件）で`TIMEOUT`が2回発生し、W-3のRun全体再試行上限（2回）を使い切って`failed`になった。原因を調査したところ、両Adapterの`execute()`が`subprocess.run(..., timeout=45)`（Claude）/`timeout=60`（Codex）とハードコードされており、SPEC §8.4が`verify`モードに定める「1 Agent・1呼び出し180秒」を守っていなかった。W-6完走時はたまたま応答が速かっただけで、通常の応答速度でも45〜60秒を超えることがある。
+**回答**: 確定。両Adapterのコンストラクタへ`timeout_s: int = 180`を追加し、`execute()`の`subprocess.run`タイムアウトへ使用する。`quick`/`strict`モードはOrchestrator側が未実装（J-3）のため、モード別配線は行わず、既定値をverifyの180秒に固定した。J-3実装時にCLIからmodeに応じた`timeout_s`を渡すよう拡張する。`probe()`の5秒（バージョン確認のみ、モデル呼び出しなし）は変更しない。
+**実装への影響**: 正常な応答速度でもRun全体の再試行予算を無駄に消費しなくなる。
+
+---
+
 ## X. SearchProvider Contract
 
 ### X-1. SearchProviderの型契約とエラーEnum
@@ -1463,4 +1473,19 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-12 — W-1〜W-6、K-2、X-1確定。実機2 Agent完走達成。既回答63問、未回答27問。*
+### X-2. 外部検索APIより先にAI CLI内蔵検索をSpikeする方針
+
+**重要度**: Major
+**箇所**: X-1 / SPEC §10.1（AI CLI組み込み検索は補助情報） / §16.1（任意シェルコマンド禁止、MVP対象外）
+**背景**: レビュアーからBrave Search API等の外部契約より先に、Claude Code・Codex CLIが既に持つWeb検索能力を`CliSearchProvider`として使えないかSpikeすべきという指摘があった。二段構え（1. AI CLIに検索させ候補URLを構造化出力させる、2. SafeHttpFetcherでOracle Councilが再取得・検証する）は、既にSPEC §10.1の「AI CLIの組み込み検索は補助情報として利用できるが、Oracle Councilが直接アクセスし記録できなければ`verified`の根拠に数えない」と整合する。
+**Spike結果（ヘルプ出力調査、API呼び出しなし）**:
+
+- **Codex CLI**: 現バージョンでWeb検索機能は無効。`codex features list`で`search_tool: removed`、`standalone_web_search: under development(false)`、`web_search_cached`/`web_search_request: deprecated(false)`。`-s`サンドボックスは`read-only`/`workspace-write`/`danger-full-access`のいずれもファイルアクセス軸であり、検索専用の許可軸がない。シェルコマンド経由（curl等）でのネットワークアクセスは、SPEC §4「AIが生成した任意のシェルコマンドの自動実行」の対象外条項に抵触するため採用しない。**結論: 現時点でCodexはCliSearchProviderの候補にならない**
+- **Claude Code**: `--tools <tools...>`が実在し、`""`で全ツール無効、ツール名を指定して個別許可できる（例: `Bash,Edit,Read`）。ヘルプの例に`WebSearch`という具体名は載っていないため、実在確認には最低1回のlive呼び出し（`--tools WebSearch --disallowed-tools Bash,Edit,Write`等での実行）が必要。**未検証（次のlive予算消費として保留）**
+- Claude in Chrome連携（`--chrome`）はブラウザ状態依存・ログイン済みページアクセス・再現性の問題があるため、レビュアー方針どおり将来機能とし今回のSpike対象外
+
+**回答**: 方針は確定（二段構えを採用、Chrome操作は将来）。Claude側の`WebSearch`ツール名の実在確認と、ツールを検索専用へ絞れるか・構造化JSON（url/title/support）を返せるか・SafeHttpFetcherで再取得できるURLか、はlive呼び出しでの検証待ち。`SearchProvider`実装として`ManualSearchProvider`（既存のManualEvidenceProviderと同型）、`CliSearchProvider`（Claude検証後に実装）、将来`BraveSearchProvider`等の外部APIの3段構成とする。
+
+---
+
+*最終更新: 2026-07-12 — W-1〜W-7、K-2、X-1、X-2確定。実機2 Agent完走達成。既回答65問、未回答27問。*

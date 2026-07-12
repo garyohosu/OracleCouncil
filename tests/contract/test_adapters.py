@@ -59,6 +59,23 @@ def verify_adapter_contract(adapter):
     assert caps.get("supports_no_tools") is True
 
 
+class TestAdapterTimeoutDefaults:
+    """SPEC §8.4: verify's per-agent-per-call budget is 180s. Found via live
+    metrics collection: both adapters previously hardcoded a lower value
+    (45s/60s) that a normal-latency real response could exceed, burning the
+    W-3 run-level retry budget on an otherwise healthy call."""
+
+    def test_claude_adapter_defaults_to_verify_mode_timeout(self):
+        assert ClaudeAdapter("claude-test").timeout_s == 180
+
+    def test_codex_adapter_defaults_to_verify_mode_timeout(self):
+        assert CodexAdapter("codex-test").timeout_s == 180
+
+    def test_timeout_is_overridable(self):
+        assert ClaudeAdapter("claude-test", timeout_s=300).timeout_s == 300
+        assert CodexAdapter("codex-test", timeout_s=300).timeout_s == 300
+
+
 def test_fake_adapter_contract():
     adapter = FakeAgentAdapter("claude", "OK")
     verify_adapter_contract(adapter)

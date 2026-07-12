@@ -80,9 +80,17 @@ def _extract_json_object(text: str) -> Any:
 
 
 class ClaudeAdapter:
-    def __init__(self, agent_id: str, model: str | None = None) -> None:
+    # SPEC §8.4 per-agent-per-call timeout. `verify` is the only mode
+    # Orchestrator implements today (`quick`/`strict` are blocked on J-3), so
+    # this defaults to verify's 180s rather than being mode-aware yet.
+    # Found via live metrics collection: the adapter previously hardcoded
+    # 45s, well under SPEC's budget, and a single slow real response was
+    # enough to trip TIMEOUT, burn both of the run-level retry budget (W-3),
+    # and fail an otherwise-healthy run.
+    def __init__(self, agent_id: str, model: str | None = None, timeout_s: int = 180) -> None:
         self.agent_id = agent_id
         self.model = model
+        self.timeout_s = timeout_s
 
     def probe(self) -> str:
         cmd = ["claude", "--version"]
@@ -151,7 +159,7 @@ class ClaudeAdapter:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=45,
+                timeout=self.timeout_s,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 shell=False,

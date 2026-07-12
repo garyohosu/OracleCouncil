@@ -55,10 +55,26 @@
    - 実行例: `ORACLE_COUNCIL_LIVE=1 python scripts/collect_metrics.py scripts/sample_questions.txt --out metrics.jsonl`（`ORACLE_COUNCIL_LIVE`はこのスクリプト自体は見ないが、live実行の合図として揃えている）
    - 「単独AI回答との差」はまだ未実装。単一Agentだけを有効にした設定ファイルが必要（現状のbaselineは`--mode quick`の粗い代替に留まる）
 
-## 4-3. 未決定（レビュアー判断待ち）
+## 4-3. metrics初回実行の結果とW-7
 
-- **実検索サービスの選定**: 契約（X-1）は確定済みだが実装は未選定。候補はBrave Search API / Tavily / Google Programmable Search Engineなど、いずれもAPIキーが必要（このセッションでは取得不可）
-- **live実行予算**: Claude quotaが回復した直後のため、metrics収集の初回実行を何問で行うか
+指示どおり1問だけ実行（`--limit 1`）。結果: `run_status: failed`、`TIMEOUT`×2、`agent_call_count: 4`（respond×2, claim_extract止まり）。
+
+原因はAdapterのバグだった（W-7、修正済み・push待ち）: `claude.py`/`codex.py`の`execute()`が`timeout=45`/`timeout=60`にハードコードされており、SPEC §8.4の`verify`モード規定（1呼び出し180秒）を守っていなかった。W-6完走時はたまたま速かっただけ。両Adapterに`timeout_s: int = 180`のコンストラクタ引数を追加し既定値をSPECへ合わせた。`quick`/`strict`のmode別配線はOrchestrator未実装（J-3）のため保留。
+
+**次のmetrics再実行はタイムアウト修正後、まだ行っていない**（1問分のlive予算を使用済みのため、再実行するかはユーザー判断）。
+
+## 4-4. CliSearchProvider Spike（X-2、レビュアー方針転換）
+
+外部検索API契約より先に、Claude/CodexのCLI内蔵検索能力を`CliSearchProvider`として使えるかSpikeする方針にレビュアーが転換。ヘルプ出力調査（API呼び出しなし）の結果:
+
+- **Codex**: `codex features list`でWeb検索系フィーチャーがすべて`removed`/`under development(false)`/`deprecated(false)`。**候補外**
+- **Claude**: `--tools`は実在し個別ツール名を許可できるが、`WebSearch`という名前がヘルプの例に載っておらず**live呼び出しでの実在確認が未実施**（次のlive予算消費として保留）
+
+## 4-5. 未決定（レビュアー判断待ち）
+
+- **Claude `--tools WebSearch`の実在確認**: live呼び出し1回が必要。metricsの1問がTIMEOUTで終わった直後のため、続けて使うかは判断待ち
+- **タイムアウト修正後のmetrics再実行**: 1問だけ再試行するか、複数問まとめて流すか
+- **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが機能しない場合の代替として維持
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
