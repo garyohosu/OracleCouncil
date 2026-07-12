@@ -2,7 +2,25 @@ from email.message import Message
 
 import pytest
 
-from oracle_council.evidence import EvidenceFetchError, SafeHttpFetcher
+from oracle_council.evidence import EvidenceFetchError, ManualEvidenceProvider, SafeHttpFetcher
+
+
+def test_manual_provider_maps_documents_per_claim():
+    provider = ManualEvidenceProvider(
+        documents={"claim-1": [{"evidence_id": "ev-1"}], "claim-2": [{"evidence_id": "ev-2"}]}
+    )
+    collected = provider.collect([{"claim_id": "claim-1"}, {"claim_id": "claim-2"}])
+    assert [e["evidence_id"] for e in collected] == ["ev-1", "ev-2"]  # deterministic order
+    assert all(e["claim_id"] for e in collected)
+    assert provider.calls == 1
+
+
+def test_manual_provider_falls_back_to_default():
+    provider = ManualEvidenceProvider(default=[{"evidence_id": "ev-default"}])
+    collected = provider.collect([{"claim_id": "claim-x"}])
+    assert [e["evidence_id"] for e in collected] == ["ev-default"]
+    # same input, same output: manual evidence is repeatable
+    assert provider.collect([{"claim_id": "claim-x"}]) == collected
 
 
 class Response:

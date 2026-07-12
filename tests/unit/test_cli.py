@@ -101,6 +101,40 @@ def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, cap
     assert data["exit_code"] == 3
 
 
+def test_cli_ask_manual_evidence_file(temp_config, capsys, tmp_path):
+    """--evidence-file switches to the manual provider; the run's evidence
+    count in the metadata snapshot reflects the file contents."""
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "claim-1": [
+                    {"evidence_id": "ev-manual-1", "url": "https://example.com/a", "stance": "supports"},
+                    {"evidence_id": "ev-manual-2", "url": "https://example.com/b", "stance": "supports"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    exit_code = main(
+        ["ask", "What is the height of Fuji?", "--json", "--no-store",
+         "--evidence-file", str(evidence_path)]
+    )
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "completed"
+    assert data["metadata"]["evidence_count"] == 2
+
+
+def test_cli_ask_evidence_file_unreadable_is_configuration_error(temp_config, capsys, tmp_path):
+    exit_code = main(
+        ["ask", "q", "--json", "--no-store", "--evidence-file", str(tmp_path / "missing.json")]
+    )
+    assert exit_code == 3
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "configuration_error"
+
+
 def test_cli_ask_high_risk_strict_trigger_non_interactive(temp_config, capsys):
     exit_code = main(["ask", "high_risk trigger test", "--no-interactive"])
     assert exit_code == 2

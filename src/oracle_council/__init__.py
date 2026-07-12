@@ -5,13 +5,14 @@ from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .orchestrator import Orchestrator
 from .storage import InMemoryStorageBackend, JSONLStorageBackend
-from .evidence import SafeHttpFetcher, WebEvidenceProvider
+from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 
 __all__ = [
     "BudgetExceededError",
     "InMemoryStorageBackend",
     "InsufficientAgentsError",
     "JSONLStorageBackend",
+    "ManualEvidenceProvider",
     "Orchestrator",
     "RegisteredAgent",
     "TokenBudget",

@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ import yaml
 
 from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments
 from .budget import TokenBudget
+from .evidence import ManualEvidenceProvider
 from .fakes import FakeEvidenceProvider
 from .models import AgentFailure, AgentRequest, AgentResult, RunResult, RunStatus, Usage
 from .orchestrator import Orchestrator
@@ -203,10 +204,17 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
             "votes": [],
             "warnings": [],
             "errors": [],
+            # O-5: the run metadata snapshot is the source of truth; timing
+            # comes from it instead of being recomputed here.
+            "metadata": result.metadata.to_dict() if result.metadata else None,
             "timing": {
-                "started_at": utc_now().isoformat(),
-                "finished_at": utc_now().isoformat(),
-                "elapsed_ms": 100,
+                "started_at": result.metadata.created_at.isoformat() if result.metadata else None,
+                "finished_at": (
+                    (result.metadata.created_at + timedelta(milliseconds=result.metadata.elapsed_ms)).isoformat()
+                    if result.metadata
+                    else None
+                ),
+                "elapsed_ms": result.metadata.elapsed_ms if result.metadata else None,
             },
         }
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
@@ -330,9 +338,29 @@ def cmd_ask(args) -> int:
     else:
         storage = JSONLStorageBackend(Path("data"))
 
+    # Evidence: --evidence-file switches to the manual provider (SPEC §10.2)
+    # with fixed documents; the fake provider remains the default until the
+    # real web provider is wired in.
+    if args.evidence_file:
+        try:
+            with open(args.evidence_file, "r", encoding="utf-8") as stream:
+                loaded = json.load(stream)
+        except (OSError, json.JSONDecodeError) as e:
+            return exit_stop("configuration_error", 3, f"evidence file unreadable: {e}", args.json)
+        if isinstance(loaded, dict):
+            evidence_provider = ManualEvidenceProvider(documents=loaded)
+        elif isinstance(loaded, list):
+            evidence_provider = ManualEvidenceProvider(default=loaded)
+        else:
+            return exit_stop(
+                "configuration_error", 3, "evidence file must be a JSON object or array", args.json
+            )
+    else:
+        evidence_provider = FakeEvidenceProvider([{"evidence_id": "ev-1"}])
+
     orchestrator = Orchestrator(
         agents=available_agents,
-        evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        evidence_provider=evidence_provider,
         budget=TokenBudget(input_limit=10**6, output_limit=10**6),
         storage=storage,
         store_content=args.store_content,
@@ -529,6 +557,11 @@ def main(args: list[str] | None = None) -> int:
         choices=["config", "real", "fake"],
         default="config",
         help="Adapter selection: explicit CLI mode overrides environment and config",
+    )
+    ask_parser.add_argument(
+        "--evidence-file",
+        default=None,
+        help="JSON file with manual evidence (claim_id -> documents mapping, or a list)",
     )
 
     # agents

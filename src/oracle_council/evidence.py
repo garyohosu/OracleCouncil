@@ -94,6 +94,33 @@ class SafeHttpFetcher:
         return {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
 
 
+class ManualEvidenceProvider:
+    """SPEC §10.2 `manual`: fixed evidence for tests and E2E runs, no network.
+
+    `documents` maps claim_id to its evidence entries; `default` is returned
+    for claims without an entry. Order is deterministic (input order)."""
+
+    def __init__(
+        self,
+        documents: dict[str, list[dict]] | None = None,
+        default: list[dict] | None = None,
+    ) -> None:
+        self._documents = documents or {}
+        self._default = default or []
+        self.calls = 0
+
+    def collect(self, claims: list[dict]) -> list[dict]:
+        self.calls += 1
+        collected: list[dict] = []
+        for claim in claims:
+            claim_id = claim.get("claim_id", "")
+            for document in self._documents.get(claim_id, []):
+                collected.append({**document, "claim_id": claim_id})
+        if not collected:
+            collected = [dict(document) for document in self._default]
+        return collected
+
+
 class WebEvidenceProvider:
     def __init__(self, fetcher: SafeHttpFetcher, searcher: Callable[[str, int], Iterable[dict]]):
         self._fetcher = fetcher

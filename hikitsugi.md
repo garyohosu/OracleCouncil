@@ -43,7 +43,15 @@
 4. ~~Phase/AgentExecutionレコードの正式化~~ 済（2026-07-12、W-4確定）。PhaseRecord（min/success_count、skipped/failed、evidence_collectのoutcome）、AgentExecutionRecord（試行ごと、retry_of、error_summary定型200字、raw_diagnosticはstore-contentのみ）、RunMetadataRecordスナップショット（run_*イベントへ埋め込み、再集計しない）。再監査は同一PhaseへのExecution追加。STATE.mdのW-2前の残骸も修正
 5. ~~CLI骨格~~ 済（並行セッション: argparse実装、exit code全表、--json純化、real/fake adapter切替、Windows UTF-8）。W-5でpre-flight probeフィルタとlive test 4分割を追加。**2 Agent実機完走テストはClaude利用上限の解除後に `$env:ORACLE_COUNCIL_LIVE="1"; python -m pytest -m "live and expensive" -vv` で再実行**
 6. **Clarification Engine**（Phase 1）: 決定的ルール→§7.2ステータス。J-4（2ラウンド目のClarifier）が未回答
-7. **L-4 spike**: 実CLI接続前に`docs/adapter-spike.md`を作る（実装開始のゲート、未実施）
+7. ~~L-4 spike~~ 実質完了（実Adapter接続と実機テストで代替。probe/execute乖離等の知見はW-5に記録）
+
+## 4-2. 実機接続後の優先順（2026-07-12レビュー合意）
+
+1. **Claude復活後に2 Agent実機E2E完走**: `$env:ORACLE_COUNCIL_LIVE="1"; python -m pytest -m "live and expensive" -vv`
+2. ~~Manual Evidence付きE2E~~ 済（`--evidence-file`＋ManualEvidenceProvider、既定スイートで検証）
+3. 実検索関数の接続（`WebEvidenceProvider`のsearcher実装、K-2未回答に注意）
+4. SafeHttpFetcher経由の実Web Evidence
+5. 実質問での評価指標収集: 総所要時間 / Agent呼び出し回数 / 各Phase所要時間 / quota欠席率 / verified・partially_verified・withheld率 / JSON Schema失敗率（P-1〜P-4の実験計画とnote記事の実測値になる）
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
