@@ -22,5 +22,7 @@ packages = ["src/oracle_council"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "live: opt-in tests that invoke an installed external CLI or service",
+]
 pythonpath = ["src"]
-

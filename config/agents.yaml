@@ -1,0 +1,19 @@
+# Phase 0 default: deterministic Fake agents. Set implementation: real or
+# ORACLE_COUNCIL_USE_REAL=1 to invoke the configured CLI adapter.
+agents:
+  - id: fake-claude
+    adapter: claude
+    implementation: mock
+    enabled: true
+    role_priority:
+      respond: 100
+      synthesize: 100
+      audit: 90
+  - id: fake-codex
+    adapter: codex
+    implementation: mock
+    enabled: true
+    role_priority:
+      respond: 90
+      verify: 100
+      audit: 100

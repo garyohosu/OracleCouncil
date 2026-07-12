@@ -15,6 +15,7 @@ from .budget import TokenBudget
 from .fakes import FakeEvidenceProvider
 from .models import AgentFailure, AgentRequest, AgentResult, RunResult, RunStatus, Usage
 from .orchestrator import Orchestrator
+from .adapters import ClaudeAdapter, CodexAdapter
 from .storage import (
     JSONLStorageBackend,
     StorageCorruptionError,
@@ -252,11 +253,19 @@ def cmd_ask(args) -> int:
     agents = []
     for entry in config_data.get("agents", []):
         if entry.get("enabled", True):
-            adapter = FakeAgentAdapter(
-                agent_id=entry["id"],
-                mock_status=entry.get("mock_status", "OK"),
-                capabilities=entry.get("capabilities"),
-            )
+            agent_id = entry["id"]
+            implementation = entry.get("implementation", "mock")
+            use_real = implementation == "real" or os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1"
+            if use_real and entry.get("adapter") == "claude":
+                adapter = ClaudeAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "codex":
+                adapter = CodexAdapter(agent_id, entry.get("model"))
+            else:
+                adapter = FakeAgentAdapter(
+                    agent_id=agent_id,
+                    mock_status=entry.get("mock_status", "OK"),
+                    capabilities=entry.get("capabilities"),
+                )
             agents.append(
                 RegisteredAgent(
                     agent_id=entry["id"],
