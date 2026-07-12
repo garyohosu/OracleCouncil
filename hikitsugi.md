@@ -50,8 +50,15 @@
 1. ~~Claude復活後に2 Agent実機E2E完走~~ **達成**（2026-07-12、W-6）。`test_real_two_agent_council`が実機PASS（7フェーズ、約180秒）。過程で見つけた5件のAdapterバグ（quota誤分類、Claude封筒未展開、Claim enum未検証、Codex verify schema enum欠落、Codex audit schema OpenAI厳格モード違反）はすべて修正済み・回帰テスト追加済み
 2. ~~Manual Evidence付きE2E~~ 済（`--evidence-file`＋ManualEvidenceProvider、既定スイートで検証）
 3. ~~SearchProvider Contract確定~~ 済（2026-07-12、X-1・K-2確定、SPEC v0.3.8）。`SearchResult`/`SearchProvider`/`SearchError`実装済み、`FakeSearchProvider`でテスト可能。次は実検索サービス選定（未選定、条件6点はSPEC §10.2参照）
-4. SafeHttpFetcher経由の実Web Evidence
-5. 実質問での評価指標収集: 総所要時間 / Agent呼び出し回数 / 各Phase所要時間 / quota欠席率 / verified・partially_verified・withheld率 / JSON Schema失敗率（P-1〜P-4の実験計画とnote記事の実測値になる）。180秒/7回という実測値が既に1件取れている
+4. SafeHttpFetcher経由の実Web Evidence（実検索サービス選定待ち、下記参照）
+5. ~~評価指標ハーネス~~ 済（2026-07-12）。`scripts/collect_metrics.py`：CLIのJSON出力（`phases[].elapsed_ms`をこのセッションで追加済み）から総所要時間・Phase別所要時間・呼び出し回数・分類割合・quota/failure発生数を集計しJSONLへ保存。単体テストあり（`test_collect_metrics.py`）。**実行はしていない**（liveでAPI費用が発生するため、対象問い数と実行タイミングはユーザー判断待ち）。サンプル質問は`scripts/sample_questions.txt`
+   - 実行例: `ORACLE_COUNCIL_LIVE=1 python scripts/collect_metrics.py scripts/sample_questions.txt --out metrics.jsonl`（`ORACLE_COUNCIL_LIVE`はこのスクリプト自体は見ないが、live実行の合図として揃えている）
+   - 「単独AI回答との差」はまだ未実装。単一Agentだけを有効にした設定ファイルが必要（現状のbaselineは`--mode quick`の粗い代替に留まる）
+
+## 4-3. 未決定（レビュアー判断待ち）
+
+- **実検索サービスの選定**: 契約（X-1）は確定済みだが実装は未選定。候補はBrave Search API / Tavily / Google Programmable Search Engineなど、いずれもAPIキーが必要（このセッションでは取得不可）
+- **live実行予算**: Claude quotaが回復した直後のため、metrics収集の初回実行を何問で行うか
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 

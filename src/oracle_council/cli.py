@@ -161,12 +161,27 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "status": execution.status.value,
                 "error_code": execution.error_code,
                 "retry_of": execution.retry_of,
+                "elapsed_ms": execution.elapsed_ms,
             }
             for execution in result.executions
         ]
         phases = [
-            {"phase": phase.phase, "status": phase.status.value if phase.status else None,
-             "success_count": phase.success_count, "error_code": phase.error_code}
+            {
+                "phase": phase.phase,
+                "status": phase.status.value if phase.status else None,
+                "success_count": phase.success_count,
+                "error_code": phase.error_code,
+                # Metrics collection (P-4 experiment plan): per-phase wall time,
+                # not just pass/fail, so a slow phase can be told apart from a
+                # failed one when comparing runs.
+                "started_at": phase.started_at.isoformat() if phase.started_at else None,
+                "finished_at": phase.finished_at.isoformat() if phase.finished_at else None,
+                "elapsed_ms": (
+                    int((phase.finished_at - phase.started_at).total_seconds() * 1000)
+                    if phase.started_at and phase.finished_at
+                    else None
+                ),
+            }
             for phase in result.phases
         ]
         payload = {
