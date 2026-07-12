@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
+import os
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
@@ -16,12 +17,14 @@ class CodexAdapter:
         self.model = model
 
     def probe(self) -> str:
-        cmd = ["codex", "--version"]
+        cmd = ["codex.cmd" if os.name == "nt" else "codex", "--version"]
         try:
             res = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
                 shell=False,
                 stdin=subprocess.DEVNULL,
@@ -147,10 +150,10 @@ class CodexAdapter:
         temp_schema_fd, temp_schema_path = tempfile.mkstemp(suffix=".json")
         try:
             with os.fdopen(temp_schema_fd, "w", encoding="utf-8") as f:
-                json.dump(schema, f)
+                json.dump(_strict_schema(schema), f)
 
             cmd = [
-                "codex",
+                "codex.cmd" if os.name == "nt" else "codex",
                 "exec",
                 question,
                 "-s",
@@ -168,6 +171,8 @@ class CodexAdapter:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 env=env,
                 stdin=subprocess.DEVNULL,
@@ -210,3 +215,15 @@ class CodexAdapter:
                 os.unlink(temp_schema_path)
             except OSError:
                 pass
+
+
+def _strict_schema(schema: dict) -> dict:
+    """Codex response schemas require closed object shapes at every level."""
+    if isinstance(schema, dict):
+        result = {key: _strict_schema(value) for key, value in schema.items()}
+        if result.get("type") == "object":
+            result["additionalProperties"] = False
+        return result
+    if isinstance(schema, list):
+        return [_strict_schema(value) for value in schema]
+    return schema

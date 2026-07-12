@@ -152,6 +152,22 @@ def exit_stop(status: str, exit_code: int, message: str, use_json: bool) -> int:
 
 def output_run_result(result: RunResult, use_json: bool) -> int:
     if use_json:
+        executions = [
+            {
+                "execution_id": execution.execution_id,
+                "agent_id": execution.agent_id,
+                "phase": execution.phase,
+                "status": execution.status.value,
+                "error_code": execution.error_code,
+                "retry_of": execution.retry_of,
+            }
+            for execution in result.executions
+        ]
+        phases = [
+            {"phase": phase.phase, "status": phase.status.value if phase.status else None,
+             "success_count": phase.success_count, "error_code": phase.error_code}
+            for phase in result.phases
+        ]
         payload = {
             "schema_version": "1.0",
             "run_id": result.run_id,
@@ -181,6 +197,9 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 for c in result.claims
             ],
             "evidence": [],
+            "agent_call_count": result.call_count,
+            "executions": executions,
+            "phases": phases,
             "votes": [],
             "warnings": [],
             "errors": [],

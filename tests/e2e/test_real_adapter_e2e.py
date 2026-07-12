@@ -20,7 +20,7 @@ def test_real_claude_codex_verify_json():
             "-m",
             "oracle_council.cli",
             "ask",
-            "Give one short factual answer about Tokyo.",
+            "Pythonの辞書とリストの違いを、初心者向けに説明してください。",
             "--mode",
             "verify",
             "--no-interactive",
@@ -38,7 +38,9 @@ def test_real_claude_codex_verify_json():
     payload = json.loads(process.stdout)
     if payload["status"] in {"insufficient_agents", "configuration_error"}:
         pytest.fail(payload)
-    if payload["status"] in {"failed", "internal_error"} and payload.get("exit_code") == 3:
-        pytest.skip(payload.get("message", "external CLI unavailable"))
+    if payload["status"] == "failed":
+        codes = {item.get("error_code") for item in payload.get("executions", [])}
+        if codes & {"QUOTA_EXCEEDED", "AUTH_REQUIRED", "COMMAND_NOT_FOUND"}:
+            pytest.skip(f"external adapter unavailable: {sorted(codes)}")
     assert payload["status"] in {"completed", "partial"}
     assert len(payload["participants"]) >= 2
