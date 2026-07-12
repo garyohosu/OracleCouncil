@@ -72,3 +72,9 @@
    * `probe()` 時には、実際に `--version` や極めて短いプロンプト（"test"）を投げてプローブし、エラーメッセージ（`session limit` や `AUTH_REQUIRED` 関連メッセージ）を検知してステータス（`QUOTA_EXCEEDED` / `AUTH_REQUIRED`）にマッピングする。
 3. **データフォーマットのパース**:
    * 両CLIとも JSON 出力をサポートしているため、パースエラー時は `INVALID_OUTPUT`（exit 1）として安全に処理を中断する。
+
+### 3.1 Adapter選択の優先順位
+
+CLIの`oracle ask --adapter-mode`を最優先とする。`real`または`fake`を明示した場合は、それぞれ設定・環境変数を上書きする。`config`（既定）の場合は`ORACLE_COUNCIL_USE_REAL=1`、次に`agents.yaml`の`implementation: real`を評価し、どちらもなければFakeを使う。
+
+`--adapter-mode real`は外部CLIを起動するopt-inであり、通常CIでは使用しない。`probe()`が`OK`でも`execute()`中に`QUOTA_EXCEEDED`や`AUTH_REQUIRED`を返し得るため、実行時エラーを必ず正規化する。

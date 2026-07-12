@@ -255,7 +255,15 @@ def cmd_ask(args) -> int:
         if entry.get("enabled", True):
             agent_id = entry["id"]
             implementation = entry.get("implementation", "mock")
-            use_real = implementation == "real" or os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1"
+            if args.adapter_mode == "real":
+                use_real = True
+            elif args.adapter_mode == "fake":
+                use_real = False
+            else:
+                use_real = (
+                    os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1"
+                    or implementation == "real"
+                )
             if use_real and entry.get("adapter") == "claude":
                 adapter = ClaudeAdapter(agent_id, entry.get("model"))
             elif use_real and entry.get("adapter") == "codex":
@@ -473,6 +481,12 @@ def main(args: list[str] | None = None) -> int:
     )
     ask_parser.add_argument("--store-content", action="store_true", help="Store content")
     ask_parser.add_argument("--no-store", action="store_true", help="Do not store logs")
+    ask_parser.add_argument(
+        "--adapter-mode",
+        choices=["config", "real", "fake"],
+        default="config",
+        help="Adapter selection: explicit CLI mode overrides environment and config",
+    )
 
     # agents
     agents_parser = subparsers.add_parser("agents", help="Manage agents")
