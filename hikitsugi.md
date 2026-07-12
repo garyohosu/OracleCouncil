@@ -61,7 +61,14 @@
 
 原因はAdapterのバグだった（W-7、修正済み・push待ち）: `claude.py`/`codex.py`の`execute()`が`timeout=45`/`timeout=60`にハードコードされており、SPEC §8.4の`verify`モード規定（1呼び出し180秒）を守っていなかった。W-6完走時はたまたま速かっただけ。両Adapterに`timeout_s: int = 180`のコンストラクタ引数を追加し既定値をSPECへ合わせた。`quick`/`strict`のmode別配線はOrchestrator未実装（J-3）のため保留。
 
-**次のmetrics再実行はタイムアウト修正後、まだ行っていない**（1問分のlive予算を使用済みのため、再実行するかはユーザー判断）。
+**タイムアウト修正後の再実行（2026-07-13）**: `QUOTA_EXCEEDED`で3.7秒即失敗（Claude quota再枯渇）。バグではなく外部要因——むしろW-5の分類修正（`QUOTA_EXCEEDED`を正しく検出、`EXECUTION_ERROR`に誤分類しない）と非再試行ルールが正しく機能していることを確認できた。ただしW-7の180秒タイムアウト自体はまだ実効性を検証できていない（API側が即座に拒否したため）。metrics JSONLのスキーマは正常（`participants`/`executions[]`/`phases[].elapsed_ms`/`metadata`すべて期待どおり）。
+
+**W-8（2026-07-13）**: 上記JSONLで`participants: ["fake-claude"]`と、実Adapter実行なのにFake時代の識別子が残っていることが判明。`config/agents.yaml`の`id`を`claude-code`/`codex-cli`へ修正済み（124テスト全パス確認）。次回のmetrics実行ではこの識別子が反映される。
+
+**quota回復後にやること（この順で、間に他の作業を挟まない）**:
+1. 同じ1問で`scripts/collect_metrics.py`を再実行し、次を確認: Claude+Codex両方参加、7フェーズ完走、180秒設定でtimeoutしない、`participants`が`claude-code`/`codex-cli`になっている
+2. 成功したらWebSearch Spike（独立スクリプト、本線コードは変更しない）: `--tools WebSearch`が受理されるか、ファイル変更/シェル実行が起きないか、url/title/snippet相当を構造化出力できるか、SafeHttpFetcherで再取得できるか、取得不能URLをverified根拠にしないか
+3. 失敗したら検索へ進まず、通常Adapter経路の原因を先に潰す
 
 ## 4-4. CliSearchProvider Spike（X-2、レビュアー方針転換）
 
@@ -72,8 +79,7 @@
 
 ## 4-5. 未決定（レビュアー判断待ち）
 
-- **Claude `--tools WebSearch`の実在確認**: live呼び出し1回が必要。metricsの1問がTIMEOUTで終わった直後のため、続けて使うかは判断待ち
-- **タイムアウト修正後のmetrics再実行**: 1問だけ再試行するか、複数問まとめて流すか
+- **Claude quota回復待ち**: 2026-07-13時点で再枯渇中。回復後は上記「quota回復後にやること」の順で進める
 - **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが機能しない場合の代替として維持
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）

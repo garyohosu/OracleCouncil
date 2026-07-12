@@ -1,7 +1,15 @@
 # Phase 0 default: deterministic Fake agents. Set implementation: real or
 # ORACLE_COUNCIL_USE_REAL=1 to invoke the configured CLI adapter.
+#
+# `id` is the participant identity, not a statement about which adapter
+# implementation resolved it this run. It stays "claude-code"/"codex-cli"
+# whether `implementation: mock` or `real` is in effect, so that
+# participants/executions[].agent_id in output and metrics never say
+# "fake-*" while a real adapter actually answered (found reviewing a real
+# metrics run: the old "fake-claude"/"fake-codex" ids leaked into
+# --json's `participants` field even with ORACLE_COUNCIL_USE_REAL=1).
 agents:
-  - id: fake-claude
+  - id: claude-code
     adapter: claude
     implementation: mock
     enabled: true
@@ -9,7 +17,7 @@ agents:
       respond: 100
       synthesize: 100
       audit: 90
-  - id: fake-codex
+  - id: codex-cli
     adapter: codex
     implementation: mock
     enabled: true

@@ -1427,6 +1427,16 @@ S-1〜S-3はCLASS.md作成時に発見した未回答。
 
 ---
 
+### W-8. 既定設定のagent_idが実Adapter時も`fake-*`のままだった
+
+**重要度**: Minor
+**箇所**: `config/agents.yaml`
+**背景**: W-7後のmetrics再実行（quota枯渇で`failed`）のJSON出力を確認したところ、`participants: ["fake-claude"]`と、実Adapter（`ORACLE_COUNCIL_USE_REAL=1`）で実行しているにもかかわらずFake時代の識別子が残っていた。動作に影響はないが、実測データやnote記事で「Fakeで動いているのか実Adapterで動いているのか」を混乱させる。
+**原因**: `cli.py`は`RegisteredAgent(agent_id=entry["id"], ...)`と設定ファイルの`id`をそのまま使う。`id`は実装（mock/real）を問わず固定の参加者識別子だが、既定の`config/agents.yaml`が`id: fake-claude`/`id: fake-codex`とPhase 0時代の名前のままだった。
+**回答**: 確定。`config/agents.yaml`の`id`を`claude-code`/`codex-cli`へ変更した。`id`は「今回mockかrealか」ではなく「どのAgentか」を表す識別子であることをコメントで明記した。テストは全て独自の一時configを使うため（`ORACLE_COUNCIL_CONFIG`環境変数で上書き）影響なし。124件全パス確認済み。
+
+---
+
 ## X. SearchProvider Contract
 
 ### X-1. SearchProviderの型契約とエラーEnum
@@ -1488,4 +1498,4 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-12 — W-1〜W-7、K-2、X-1、X-2確定。実機2 Agent完走達成。既回答65問、未回答27問。*
+*最終更新: 2026-07-13 — W-1〜W-8、K-2、X-1、X-2確定。実機2 Agent完走達成。既回答66問、未回答27問。*
