@@ -12,6 +12,16 @@ from oracle_council.fakes import FakeSearchProvider
 from oracle_council.models import SearchError, SearchResult
 
 
+def test_safe_http_fetcher_constructs_with_default_opener():
+    """Regression: `_NoRedirect` previously had no base class, so
+    `urllib.request.build_opener()` rejected it with TypeError and
+    `SafeHttpFetcher()` crashed on construction whenever the default opener
+    was used. Every other test in this file injects a mock `opener`
+    directly, so this path went unexercised until a real end-to-end fetch
+    attempt (found running the CliSearchProvider spike, 2026-07-13)."""
+    SafeHttpFetcher()  # must not raise
+
+
 def test_manual_provider_maps_documents_per_claim():
     provider = ManualEvidenceProvider(
         documents={"claim-1": [{"evidence_id": "ev-1"}], "claim-2": [{"evidence_id": "ev-2"}]}

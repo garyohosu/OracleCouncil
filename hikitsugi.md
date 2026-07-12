@@ -76,16 +76,21 @@
 - **Codex**: `codex features list`でWeb検索系フィーチャーがすべて`removed`/`under development(false)`/`deprecated(false)`。**候補外**
 - **Claude**: `--tools`は実在し個別ツール名を許可できるが、`WebSearch`という名前がヘルプの例に載っておらず**live呼び出しでの実在確認が未実施**
 
-metrics成功条件を満たしたので、次はこのSpike（独立スクリプト、本線コード非変更）に進んでよい。確認項目:
-- `WebSearch`ツール名が実際に受理される
-- ファイル変更や任意シェル実行が起きない
-- URL、title、snippet相当を構造化出力できる
-- URLをSafeHttpFetcherで再取得できる
-- 取得不能URLはverified根拠にしない
+**Spike実行結果（2026-07-13、成功）**: `scripts/spike_claude_websearch.py`で5項目すべて確認できた——`WebSearch`ツール名は受理される、空cwdはファイル変更後も空のまま、`{"sources":[{"url","title","snippet"}]}`形式の構造化JSONを返す、返された3URLは全てSafeHttpFetcherで再取得成功（docs.python.org等）。取得不能URL側（否定ケース）は今回3件とも成功したため未検証だが、判定ロジック自体は実装済み。**結論: Claude WebSearchは`CliSearchProvider`の実用候補**（X-3）。
 
-## 4-5. 未決定（レビュアー判断待ち）
+**途中で発見・修正したバグ（W-10）**: `SafeHttpFetcher()`を既定引数で構築するとTypeErrorでクラッシュしていた（`_NoRedirect`が`BaseHandler`を継承していなかった）。既存テストが全て`opener`をモック注入していたため、既定経路（実運用の唯一の経路）が一度もテストを通っていなかった。修正済み、回帰テスト追加、126テスト全パス。このバグにより2回のlive呼び出しを空振り（結果を確認する前にクラッシュ）し、計3回のlive呼び出しでSpikeを完了した。
 
-- **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが機能しない場合の代替として維持
+## 4-5. 次: CliSearchProvider本実装
+
+Spike成功により候補確定。残作業:
+1. `evidence.py`へ`CliSearchProvider`（`SearchProvider` Protocol実装）を追加。Adapterではなく`WebEvidenceProvider`の`searcher`として差し込む
+2. `claude.py`へ`search`用のフェーズ指示（`_PHASE_SCHEMA_HINT`と同型、Spikeで使ったプロンプトを土台にする）を追加するか、Spike専用ロジックを`CliSearchProvider`内に閉じるか判断
+3. 取得不能URL（否定ケース）のテスト——Fakeで模擬するか、意図的に無効なURLを混ぜたlive再実行で確認するか
+
+## 4-6. 未決定（レビュアー判断待ち）
+
+- **CliSearchProviderの実装着手**: Spikeスクリプトのロジックをどこまで本実装へ引き継ぐか
+- **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが安定しない場合の代替として維持
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 

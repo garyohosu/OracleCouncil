@@ -12,3 +12,4 @@ venv/
 # scripts/collect_metrics.py output: contains real questions/answers
 # (content-level data per O-5/§17), not something to commit.
 metrics*.jsonl
+spike_claude_websearch_result.json

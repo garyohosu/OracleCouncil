@@ -1509,4 +1509,32 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-9、K-2、X-1、X-2確定。実機2 Agent完走達成、metrics成功条件4点クリア。既回答67問、未回答27問。*
+### W-10. SafeHttpFetcherの既定opener構築がTypeErrorでクラッシュしていた
+
+**重要度**: Critical
+**箇所**: `evidence.py` `_NoRedirect` / `SafeHttpFetcher.__init__`
+**背景**: X-2のWebSearch Spikeスクリプトから`SafeHttpFetcher()`を既定引数（`opener`省略）で構築したところ、`urllib.request.build_opener()`が`TypeError: expected BaseHandler instance, got <class 'oracle_council.evidence._NoRedirect'>`で例外を送出した。
+**原因**: `_NoRedirect`クラスがどの基底クラスも継承しておらず、`urllib.request.OpenerDirector.add_handler()`の`isinstance(handler, BaseHandler)`チェックに落ちていた。既存の`test_evidence.py`は全テストで`opener`を独自モックとして注入しており、**既定opener経路（実運用で使われる唯一の経路）が一度もテストを通っていなかった**。
+**回答**: 確定。`_NoRedirect(BaseHandler)`と修正し、`urllib.request.BaseHandler`をimportした。`SafeHttpFetcher()`が既定引数だけで構築できることを検証する回帰テストを追加（`opener`未注入）。126テスト全パス。
+**教訓**: モックへ完全依存したテストは「モックへ正しく差し替えられるか」しか検証せず、「本番経路が実際に動くか」を検証しない。Contract Testに既定構成でのsmoke testを含めるべきだった。W-6（Adapter実機バグ）と同型の教訓——Fakeでは出ない、実際にコンストラクト/実行して初めて見つかる欠陥。
+
+---
+
+### X-3. CliSearchProvider Spike結果: Claude Code WebSearchは実用候補
+
+**重要度**: Major
+**箇所**: X-2 / `scripts/spike_claude_websearch.py`
+**背景**: X-2で保留していたClaude Codeの`WebSearch`ツール実在確認をlive実行した（1回。W-10のバグにより2回クラッシュで空振りし、計3回のlive呼び出しを要した）。
+**結果**: 5項目すべて確認できた。
+
+- `--tools WebSearch`は有効なツール名として受理される（`tool_name_rejected: false`）
+- 空の一時cwdはファイル変更・シェル実行後も空のまま（`cwd_stayed_clean: true`）
+- `{"sources": [{"url", "title", "snippet"}]}`形式の構造化JSONを正しく返す（3件）
+- 返された3件のURLは全てSafeHttpFetcherで独立に再取得成功（`docs.python.org`、実在ブログ、チュートリアルサイト。`content_type: text/html`、実サイズ取得）
+- 取得不能URLを機械的に区別する仕組み（`fetch_error`フィールド）は実装済みだが、今回は3件とも成功したため否定側（実際に取得失敗するURL）は未検証
+
+**回答**: 確定。**Claude CodeのWebSearchツールは`CliSearchProvider`の実用候補**と判断する。次に`CliSearchProvider`（`SearchProvider` Protocol実装）を`evidence.py`へ追加し、Claude Adapterの`search`用フェーズ指示（`_PHASE_SCHEMA_HINT`類似）を定義する作業が残る。外部API（Brave等）は「今は選定しない」のまま維持し、CliSearchProviderが安定しない場合の代替として温存する。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProvider Spike成功。既回答69問、未回答27問。*

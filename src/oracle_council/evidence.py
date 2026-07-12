@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Iterable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, build_opener
+from urllib.request import BaseHandler, Request, build_opener
 
 from .models import SearchResult
 
@@ -26,7 +26,14 @@ class FetchedEvidence:
     fetched_at: str
 
 
-class _NoRedirect:
+class _NoRedirect(BaseHandler):
+    """urllib.request.OpenerDirector.add_handler() requires a BaseHandler
+    instance (`isinstance` check) — this class previously had no base class
+    at all, so `SafeHttpFetcher()` with its default opener crashed on
+    construction with TypeError. Every unit test injected a mock `opener`
+    directly, so this path was never actually exercised until a real
+    end-to-end fetch attempt (found running the CliSearchProvider spike)."""
+
     def http_error_301(self, req, fp, code, msg, headers):
         return fp
     http_error_302 = http_error_303 = http_error_307 = http_error_308 = http_error_301
