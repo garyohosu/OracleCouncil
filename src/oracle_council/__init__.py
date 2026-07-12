@@ -3,9 +3,10 @@
 from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments
 from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
+from .evidence import ManualEvidenceProvider, SafeHttpFetcher, SearchProvider, WebEvidenceProvider
+from .models import SearchError, SearchResult
 from .orchestrator import Orchestrator
 from .storage import InMemoryStorageBackend, JSONLStorageBackend
-from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 
 __all__ = [
     "BudgetExceededError",
@@ -15,8 +16,11 @@ __all__ = [
     "ManualEvidenceProvider",
     "Orchestrator",
     "RegisteredAgent",
-    "TokenBudget",
     "SafeHttpFetcher",
+    "SearchError",
+    "SearchProvider",
+    "SearchResult",
+    "TokenBudget",
     "WebEvidenceProvider",
     "classify",
     "is_withheld",

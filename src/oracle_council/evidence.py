@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from dataclasses import dataclass
-from typing import Callable, Iterable
+from dataclasses import asdict, dataclass
+from typing import Iterable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, build_opener
+
+from .models import SearchResult
 
 
 class EvidenceFetchError(RuntimeError):
@@ -121,13 +123,24 @@ class ManualEvidenceProvider:
         return collected
 
 
+class SearchProvider(Protocol):
+    """SPEC §10.2 SearchProvider Contract (X-1). Returns candidate URLs only;
+    it must never fetch document bodies itself — that responsibility stays
+    with SafeHttpFetcher (S-1: Orchestrator/WebEvidenceProvider never talk to
+    a raw HTTP client directly). A search implementation that also fetches
+    content blurs the SSRF boundary S-1 exists to enforce."""
+
+    def search(self, query: str, limit: int) -> list[SearchResult]: ...
+
+
 class WebEvidenceProvider:
-    def __init__(self, fetcher: SafeHttpFetcher, searcher: Callable[[str, int], Iterable[dict]]):
+    def __init__(self, fetcher: SafeHttpFetcher, searcher: SearchProvider):
         self._fetcher = fetcher
         self._searcher = searcher
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
-        return list(self._searcher(query, limit))[:limit]
+        results = self._searcher.search(query, limit)[:limit]
+        return [asdict(result) for result in results]
 
     def fetch(self, result: dict) -> dict:
         document = self._fetcher.fetch(result["url"])

@@ -2,7 +2,14 @@ from email.message import Message
 
 import pytest
 
-from oracle_council.evidence import EvidenceFetchError, ManualEvidenceProvider, SafeHttpFetcher
+from oracle_council.evidence import (
+    EvidenceFetchError,
+    ManualEvidenceProvider,
+    SafeHttpFetcher,
+    WebEvidenceProvider,
+)
+from oracle_council.fakes import FakeSearchProvider
+from oracle_council.models import SearchError, SearchResult
 
 
 def test_manual_provider_maps_documents_per_claim():
@@ -21,6 +28,77 @@ def test_manual_provider_falls_back_to_default():
     assert [e["evidence_id"] for e in collected] == ["ev-default"]
     # same input, same output: manual evidence is repeatable
     assert provider.collect([{"claim_id": "claim-x"}]) == collected
+
+
+class TestSearchProviderContract:
+    """SPEC §10.2 X-1: WebEvidenceProvider only talks to SearchProvider for
+    candidates and SafeHttpFetcher for bodies (S-1 responsibility split)."""
+
+    def test_search_returns_dicts_with_all_search_result_fields(self):
+        fake = FakeSearchProvider(
+            [SearchResult("https://example.com/a", "Title A", "snippet", 1, "fake", "2026-07-12")]
+        )
+        provider = WebEvidenceProvider(fetcher=object(), searcher=fake)
+        results = provider.search("query", limit=5)
+        assert results == [
+            {
+                "url": "https://example.com/a",
+                "title": "Title A",
+                "snippet": "snippet",
+                "rank": 1,
+                "source": "fake",
+                "retrieved_at": "2026-07-12",
+            }
+        ]
+        assert fake.calls == [("query", 5)]
+
+    def test_search_result_count_is_capped_at_limit(self):
+        fake = FakeSearchProvider(
+            [SearchResult(f"https://example.com/{i}", "T", "s", i, "fake", "") for i in range(10)]
+        )
+        provider = WebEvidenceProvider(fetcher=object(), searcher=fake)
+        assert len(provider.search("q", limit=3)) == 3
+
+    def test_search_failure_propagates_as_search_error(self):
+        fake = FakeSearchProvider(failure=SearchError("SEARCH_QUOTA_EXCEEDED"))
+        provider = WebEvidenceProvider(fetcher=object(), searcher=fake)
+        with pytest.raises(SearchError) as excinfo:
+            provider.search("q", limit=5)
+        assert excinfo.value.code == "SEARCH_QUOTA_EXCEEDED"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "SEARCH_AUTH_REQUIRED",
+            "SEARCH_QUOTA_EXCEEDED",
+            "SEARCH_RATE_LIMITED",
+            "SEARCH_TIMEOUT",
+            "SEARCH_UNAVAILABLE",
+            "INVALID_SEARCH_RESPONSE",
+        ],
+    )
+    def test_all_contract_error_codes_are_constructible(self, code):
+        error = SearchError(code)
+        assert error.code == code
+
+    def test_fetch_still_goes_through_safe_http_fetcher(self):
+        """search() must never fetch bodies itself; only fetch() touches the
+        fetcher, and only for one URL at a time (SSRF boundary, S-1)."""
+
+        class RecordingFetcher:
+            def __init__(self):
+                self.calls = []
+
+            def fetch(self, url):
+                self.calls.append(url)
+                return FetchedEvidence(url, "T", "content", "text/plain", "")
+
+        from oracle_council.evidence import FetchedEvidence
+
+        fetcher = RecordingFetcher()
+        provider = WebEvidenceProvider(fetcher=fetcher, searcher=FakeSearchProvider([]))
+        provider.fetch({"url": "https://example.com/x", "title": "T"})
+        assert fetcher.calls == ["https://example.com/x"]
 
 
 class Response:

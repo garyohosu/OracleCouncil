@@ -1,6 +1,6 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.3.7
+- 文書バージョン: 0.3.8
 - ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
@@ -482,6 +482,23 @@ class EvidenceProvider(Protocol):
 
 最初に採用する実検索サービスは設定可能にし、サービス固有コードをOrchestratorへ埋め込まない。
 
+`web`の検索部分は次のSearchProvider Contractへ委譲する（X-1）。
+
+```python
+class SearchResult:
+    url: str
+    title: str
+    snippet: str
+    rank: int
+    source: str
+    retrieved_at: str
+
+class SearchProvider(Protocol):
+    def search(self, query: str, limit: int) -> list[SearchResult]: ...
+```
+
+エラーは`SearchError(code, message)`として送出し、`code`は`SEARCH_AUTH_REQUIRED` / `SEARCH_QUOTA_EXCEEDED` / `SEARCH_RATE_LIMITED` / `SEARCH_TIMEOUT` / `SEARCH_UNAVAILABLE` / `INVALID_SEARCH_RESPONSE`のいずれかとする。SearchProviderは候補URLを返すだけで本文取得を行わない。本文取得・SSRF防御・Content-Type・サイズ制限はSafeHttpFetcherが一元的に担う（S-1と同じ責務分離）。最初の実装を選ぶ条件は、APIキーの扱いが明確、結果にURL・タイトル・スニペットがある、無料または低コストで試せる、レート制限を検出できる、テストでFakeへ差し替え可能、SafeHttpFetcherと責務が重ならない、とする。
+
 取得の依存方向は`Orchestrator → EvidenceProvider → SafeHttpFetcher`とする。`web`の`fetch()`はDIされた`SafeHttpFetcher`へ必ず委譲し、HTTPクライアントを直接保持してよいのは`SafeHttpFetcher`だけとする。OrchestratorはEvidenceProvider以外のHTTP取得機能を参照しない。`manual`の`fetch()`は固定資料を返し、`none`の`search()`は空を返す。`none`の`fetch()`は通常呼ばれず、呼ばれた場合は型付き例外を送出する。直接HTTP接続がないことは、SafeHttpFetcherへの委譲確認、socketモックによる直接通信検査、アーキテクチャルールの静的検査を組み合わせたContract Testで確認する。
 
 MVPでは`critical`と`major`を合わせて最大5 Claimを、importance、claim_idの順で検索する。
@@ -588,6 +605,16 @@ URLが存在するだけでは根拠とみなさない。
 - 引用文が原文と一致するか
 - 二次資料が一次資料を正しく参照しているか
 - 同じ情報の転載を複数の独立資料として数えていないか
+
+MVPが扱う資料範囲（K-2）は次のとおりとする。
+
+- JavaScriptレンダリング、PDF、OCR、paywall資料: §4のとおりMVP対象外。取得不能理由は`CONTENT_TYPE_BLOCKED`（許可Content-Typeは`text/*`、`application/json`のみ）
+- 巨大文書: 展開後2MB上限で`RESPONSE_TOO_LARGE`
+- リダイレクト: 最大3回、各hopでURL・DNS・IP再検証。超過は`REDIRECT_LIMIT`
+- 非UTF-8: デコード失敗は`FETCH_FAILED`として拒否する
+- ログイン必須・Cookie同意: 専用の検出を持たず、非200応答またはHTML/JSON以外のContent-Typeとして自然に弾く
+- robots.txt: MVPでは尊重しない。Claimに対応する特定URLだけを1件ずつ取得し、能動的なクロールを行わないため
+- ブラウザ利用: MVPでは行わない
 
 ### 10.9 最終回答への反映
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Iterable
 
-from .models import AgentRequest, AgentResult, Usage
+from .models import AgentRequest, AgentResult, SearchError, SearchResult, Usage
 
 
 class ScriptedAgentAdapter:
@@ -29,4 +29,22 @@ class FakeEvidenceProvider:
     def collect(self, claims: list[dict]) -> list[dict]:
         self.calls += 1
         return list(self.evidence)
+
+
+class FakeSearchProvider:
+    """SearchProvider Contract (X-1) fake: deterministic results or a
+    scripted failure, no network."""
+
+    def __init__(
+        self, results: list[SearchResult] | None = None, failure: SearchError | None = None
+    ) -> None:
+        self._results = results or []
+        self._failure = failure
+        self.calls: list[tuple[str, int]] = []
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        self.calls.append((query, limit))
+        if self._failure is not None:
+            raise self._failure
+        return list(self._results)[:limit]
 

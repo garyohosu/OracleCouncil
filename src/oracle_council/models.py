@@ -170,6 +170,28 @@ class AuditIssue:
     status: AuditIssueStatus = AuditIssueStatus.OPEN
 
 
+class SearchError(RuntimeError):
+    """SearchProvider Contract error (K-2/X-1). Distinct from EvidenceFetchError:
+    a search failure means no candidate URLs were even found, whereas a fetch
+    failure means a specific URL could not be retrieved."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """SPEC §10.2 SearchProvider Contract (X-1)."""
+
+    url: str
+    title: str
+    snippet: str
+    rank: int
+    source: str
+    retrieved_at: str
+
+
 @dataclass(frozen=True)
 class Claim:
     claim_id: str
