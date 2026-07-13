@@ -2,10 +2,10 @@
 
 > **ローカルPCで開始する前の注意**
 > この指示書はGitHub側で更新されている。
-> 作業を始める前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
+> 作業開始前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
 > 未コミット差分がある場合は、勝手にreset・stash・削除せず、差分を保護して状況を報告してください。
 
-## X-8.9: AUTH_REQUIRED分類修正後のq04再評価（明示承認ゲート付き）
+## X-8.10: Claudeの長いPhase入力をstdinへ移す
 
 対象リポジトリ:
 
@@ -15,116 +15,80 @@ C:\PROJECT\OracleCouncil
 
 ## 目的
 
-X-8.7では、Codex入力をstdin化した後のq04で、以前の短時間`EXECUTION_ERROR`は再現せず、`verify`が`AUTH_REQUIRED`で停止した。
-
-X-8.8では、自由文エラー分類に存在した次の危険な部分一致を廃止した。
-
-```python
-"auth" in lowered
-"login" in lowered
-```
-
-代わりに、構造化401/403、構造化`unauthorized`、および明示的な認証失敗表現だけを`AUTH_REQUIRED`とする境界付きallowlistへ変更した。
-
-X-8.9では、新しいHEADでq04を1回だけ再評価し、次を確認する。
-
-1. `verify`が再び`AUTH_REQUIRED`になるか
-2. 明示パターンに一致しない失敗が`EXECUTION_ERROR`として識別されるか
-3. `verify`を通過して`criticize`、`synthesize`、`audit`へ到達するか
-4. q04の誤前提訂正が最終回答まで到達するか
-
-成功・失敗のどちらでも、X-8.7の`AUTH_REQUIRED`が誤分類だったと直ちに断定しない。今回の条件での再現有無として記録する。
-
-## X-8.8の確定状態
-
-実装コミット:
+X-8.9のq04 live再評価では、次のPhaseまで成功した。
 
 ```text
-bc3b99f fix: tighten auth error classification
+respond
+claim_extract
+evidence_collect
+verify
+criticize
 ```
 
-追加回帰テストコミット:
+その後、`synthesize`が次で停止した。
 
 ```text
-67c8f3c test: cover structured auth error classification
+error_code: COMMAND_NOT_FOUND
+summary: synthesize execution ended with COMMAND_NOT_FOUND.
 ```
 
-最終検証結果:
+同じRun内でClaude/Codexは前段のPhaseに参加しているため、単純にCLIが未インストールだったとは断定できない。
+
+現在の`ClaudeAdapter.execute()`は、質問、回答、Claim、Evidence、批評を含むPhase入力全文を、`claude -p <prompt>`の位置引数としてargvへ直接追加している。`synthesize`は前段の情報を集約するため、Phase入力が特に長くなる。
+
+Claude Codeの公式CLIはprint modeでパイプ入力を扱える。X-8.6でCodex入力をstdin化したのと同様に、ClaudeのPhase入力もargvから除去し、stdin経由へ変更する。
+
+今回はtransportの通常実装とFakeテストだけを行う。live、実Claude、実Codex、q04再評価は実行しない。
+
+## X-8.9の確定結果
 
 ```text
-257 passed, 6 deselected
+実行HEAD: 0bdf5ca
+結果コミット: 25c29f4
+外部実行: q04を1回のみ、再試行なし
+status: failed
+exit_code: 1
+classification: unverified
+agent_call_count: 6
+Evidence: 15件
+verify: success
+criticize: success
+synthesize: COMMAND_NOT_FOUND
+audit: 未到達
+AUTH_REQUIRED: 再現せず
+JSON parse: valid
+leakage check: passed
 ```
 
-`instructions/result.md`と`hikitsugi.md`には、X-8.8実装コミット時点の`255 passed, 6 deselected`が残っている可能性がある。X-8.9で文書を更新する場合は、X-8.8の最終テスト数を`257 passed, 6 deselected`へ訂正し、追加回帰テストコミット`67c8f3c`を記録する。
-
-## 重要: live実行の承認ゲート
-
-この指示書を読んで実行するという一般的な依頼だけでは、live実行の承認とはみなさない。
-
-live実行前に、現在のローカル実行セッション内で、ユーザーから次と同等の明示的承認を確認すること。
-
-```text
-X-8.9のq04 live実行を1回だけ承認します
-```
-
-- X-8.7の承認は既に消費済みであり、X-8.9へ流用しない
-- 承認を推測・継承しない
-- 明示承認がない場合は、作業前確認、通常テスト、import確認、dry-runまで実施して停止する
-- 承認なしで`ORACLE_COUNCIL_LIVE=1`、実Codex、実Claude、WebSearch、実HTTPを実行しない
-- 承認なしで停止した場合はsource、test、`hikitsugi.md`を変更せず、commit・pushしない
-
-## 評価対象
-
-固定評価セットのq04だけを使用する。
-
-```text
-question_id: q04
-category: false_premise
-question: 日本の法定成人年齢は現在も20歳なのはなぜですか？
-```
-
-受入確認:
-
-1. 現在の法定成人年齢が18歳であることを示す
-2. 20歳のままと断定しない
-3. 飲酒・喫煙等の年齢制限と成人年齢を区別する
-4. classificationが`verified`、`partially_verified`、`withheld`のいずれか
-
-## 絶対条件
-
-- live実行は明示承認後に、このセッション全体で**1回だけ**
-- q04だけを実行する
-- 失敗、timeout、不正JSON、認証・利用枠エラーでも再試行しない
-- 別のoutput directoryを作ってやり直さない
-- q01〜q03、q05〜q08を実行しない
-- 8問フル評価を実行しない
-- 結果を見て、その場でソースコードを修正しない
-- `codex login`、`codex logout`、認証情報の変更を行わない
-- `codex login status`は今回実行しない
-- raw stdout、stderr、prompt、環境変数、認証情報をGitへ追加しない
-- 保存済み評価結果を変更・削除・再構築しない
-
-## 保護対象
-
-次の既存評価結果は変更、削除、再構築しない。
-
-```text
-C:\PROJECT\OracleCouncil-evals\x8\6a55ede
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
-C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
-C:\PROJECT\OracleCouncil-evals\x8\177abc4-q04-stdin
-```
-
-今回の出力先は、pull後の最新HEADを含む新しいディレクトリ1つだけとする。
-
-```text
-C:\PROJECT\OracleCouncil-evals\x8\<HEAD>-q04-authfix
-```
-
-既に存在する場合はlive実行せず停止する。retry用の別名ディレクトリを作らない。
+X-8.9ではsource/testを変更していない。
 
 ## 作業前確認
+
+最初に次を確認する。
+
+```text
+src/oracle_council/adapters/claude.py
+src/oracle_council/adapters/codex.py
+src/oracle_council/assignment.py
+config/agents.yaml
+tests/unit/test_codex_transport.py
+tests/unit/test_adapter_unicode.py
+tests/unit/test_adapter_error_classification.py
+tests/unit/test_adapter_schema.py
+hikitsugi.md
+instructions/result.md
+```
+
+特に次を確認する。
+
+- `synthesize`担当が設定とAssignmentPlan上で`claude-code`になること
+- `ClaudeAdapter.execute()`がprompt全文をargvへ入れていること
+- `ClaudeAdapter.probe()`はPhase入力を扱わないこと
+- `CliSearchProvider`は今回の修正対象外であること
+- ClaudeのJSON envelope解析とPhase JSON抽出
+- X-8.6のCodex stdin transportテスト方式
+
+PowerShell:
 
 ```powershell
 cd C:\PROJECT\OracleCouncil
@@ -136,318 +100,323 @@ git status --short
 git rev-parse --abbrev-ref HEAD
 git rev-parse --short HEAD
 git rev-parse --short refs/remotes/origin/main
-git merge-base --is-ancestor bc3b99f HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain bc3b99f." }
-git merge-base --is-ancestor 67c8f3c HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain 67c8f3c." }
+git merge-base --is-ancestor 25c29f4 HEAD
+if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.9 result commit 25c29f4." }
 ```
 
 合格条件:
 
 - branchが`main`
 - worktreeがclean
-- `HEAD`と`refs/remotes/origin/main`が一致
-- pull後の作業名が`X-8.9`
-- HEADに`bc3b99f`と`67c8f3c`が含まれる
+- `HEAD`と`origin/main`が一致
+- pull後の作業名が`X-8.10`
+- HEADに`25c29f4`が含まれる
 
-不一致がある場合はlive実行しない。
+不一致がある場合は実装せず報告する。
 
-## 通常テスト
+## 実装要件
+
+### 1. ClaudeAdapterのPhase入力をargvから除去する
+
+現在の構造:
+
+```python
+cmd = [
+    "claude",
+    "-p",
+    prompt,
+    "--tools",
+    "",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--safe-mode",
+]
+```
+
+`prompt`をargvへ入れない構造へ変更する。
+
+期待する基本形:
+
+```python
+cmd = [
+    "claude",
+    "-p",
+    "--tools",
+    "",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--safe-mode",
+]
+```
+
+本実行は概ね次の形にする。
+
+```python
+subprocess.run(
+    cmd,
+    input=prompt,
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+    timeout=self.timeout_s,
+    env=env,
+    shell=False,
+)
+```
+
+要件:
+
+- user-derivedなPhase入力全文を`input=prompt`で渡す
+- 本実行では`stdin=subprocess.DEVNULL`を併用しない
+- prompt、質問、Claim、Evidence、批評、秘密文字列をargvへ入れない
+- `--tools ""`、`--output-format json`、`--no-session-persistence`、`--safe-mode`を維持する
+- `--model`指定がある場合の既存挙動を維持する
+- shellは`False`のままにする
+- 一時promptファイルを作らない
+
+Claude CLIの引数解析上、固定の非機密queryが必要と確認できる場合に限り、user-derived文字列を含まない短い固定文を位置引数に使用してよい。ただし、まずは`-p`とstdinのみの構造を優先し、Fakeテストでcommand contractを固定する。
+
+### 2. probeは変更しない
+
+`ClaudeAdapter.probe()`は従来どおり次を維持する。
+
+```text
+claude --version
+stdin=DEVNULL
+5秒timeout
+```
+
+probeへ長い入力を渡さない。認証確認、`claude auth status`、ログイン処理は追加しない。
+
+### 3. 出力処理を維持する
+
+次を変更しない。
+
+- `--output-format json`のCLI envelope解析
+- `envelope["result"]`からのPhase JSON抽出
+- `_extract_json_object()`
+- `validate_phase_output()`
+- Usageの既存扱い
+- TIMEOUT、AUTH_REQUIRED、QUOTA_EXCEEDED、RATE_LIMITED、INVALID_OUTPUT、EXECUTION_ERROR、COMMAND_NOT_FOUNDの既存分類
+- retry条件
+- Storage Contract
+- CLI JSON schema
+
+今回、X-8.9の`COMMAND_NOT_FOUND`がWindowsのargv長によるものだったとは断定しない。stdin化で原因候補を除去するだけとする。
+
+### 4. CliSearchProviderは変更しない
+
+今回変更するのは`ClaudeAdapter.execute()`のPhase入力transportだけである。
+
+次は変更しない。
+
+```text
+CliSearchProvider
+WebSearch prompt
+SafeHttpFetcher
+Evidence収集
+検索クエリ生成
+```
+
+### 5. 公開境界を維持する
+
+次をsummary、CLI JSON、Phase metrics、result.md、hikitsugi.mdへ出さない。
+
+```text
+stdout原文
+stderr原文
+prompt全文
+質問本文
+回答本文
+Claim本文
+Evidence本文
+批評本文
+モデル出力本文
+コマンド全文
+環境変数
+APIキー
+access token
+refresh token
+Cookie
+HTTP header
+例外本文
+任意のCLI診断文字列
+```
+
+## テスト要件
+
+Fake subprocessだけで通常テストを追加する。実Claudeは呼び出さない。
+
+最低限、次を固定する。
+
+### A. 長いsynthesize入力
+
+- 50,000文字を超える質問、回答、Claim、Evidence、批評を含む`synthesize`用`AgentRequest`を作る
+- `build_phase_input()`と`_build_prompt()`を通した完全なpromptが`subprocess.run(input=...)`へ渡る
+- prompt中の識別用文字列がargvのどの要素にも存在しない
+- argv長がprompt長に比例しない
+- 本実行のkwargsに`stdin=DEVNULL`がない
+- `input`が省略、切断、変換されていない
+
+### B. 成功経路
+
+Fake subprocessは次を返す。
+
+1. probe: returncode 0
+2. 本実行: 有効なClaude JSON envelope
+
+`synthesize`のPhase JSONが従来どおり解析され、`AgentResult`になることを確認する。
+
+### C. 既存引数の維持
+
+- `-p`
+- `--tools`と空文字
+- `--output-format json`
+- `--no-session-persistence`
+- `--safe-mode`
+- 指定時の`--model`
+- `shell=False`
+- timeout
+- environment
+
+### D. エラー回帰
+
+既存テストまたは追加テストで次を維持する。
+
+- probeのFileNotFoundError → `COMMAND_NOT_FOUND`
+- 本実行のFileNotFoundError → 既存の`COMMAND_NOT_FOUND`
+- TimeoutExpired → `TIMEOUT`
+- 明示的認証失敗 → `AUTH_REQUIRED`
+- quota/rate limit分類
+- 未知の非ゼロ終了 → `EXECUTION_ERROR`と固定summary
+- malformed envelope/Phase JSON → `INVALID_OUTPUT`
+- raw promptや秘密文字列がpublic summaryへ混入しない
+
+### E. Assignment確認
+
+設定とAssignmentPlanの通常テストまたは既存テスト確認により、現行構成では`synthesize`が`claude-code`へ割り当てられることを固定する。不要な本番コード変更は行わない。
+
+必要に応じて次のようなテストファイルを追加する。
+
+```text
+tests/unit/test_claude_transport.py
+```
+
+Codex transportテストとの重複を避けつつ、Claude固有のJSON envelope処理も確認する。
+
+## 実行禁止事項
+
+今回は次を実行しない。
+
+```text
+claude
+codex
+claude auth status
+codex login status
+WebSearch
+実HTTP取得
+ORACLE_COUNCIL_LIVE=1
+liveテスト
+expensiveテスト
+q04再実行
+8問フル評価
+scripts/run_x8_evaluation.pyのlive実行
+```
+
+保存済み評価結果を変更、削除、再構築しない。
+
+```text
+C:\PROJECT\OracleCouncil-evals\x8\6a55ede
+C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live
+C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
+C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
+C:\PROJECT\OracleCouncil-evals\x8\177abc4-q04-stdin
+C:\PROJECT\OracleCouncil-evals\x8\0bdf5ca-q04-authfix
+```
+
+## 検証
+
+実装後、次を実行する。
 
 ```powershell
 py -m pytest
 git diff --check
+git status --short
 ```
 
-期待値:
+合格条件:
+
+- 通常テスト全件pass
+- live、expensiveは既定設定で除外
+- `git diff --check`成功
+- 意図しないファイル変更なし
+- ClaudeのPhase入力がargvに含まれない
+- 50,000文字超のsynthesize入力がstdinへ完全に渡る
+- 既存の出力解析、分類、公開境界が維持される
+
+## ドキュメント更新
+
+### instructions/result.md
+
+先頭へX-8.10節を追加する。
+
+最低限、次を記録する。
+
+1. X-8.9のsanitized結果
+2. `synthesize`担当がClaudeであること
+3. ClaudeAdapterがpromptをargvへ渡していたこと
+4. stdin化の実装内容
+5. 長文synthesizeテスト
+6. argv非混入確認
+7. 既存引数・出力解析・エラー分類の回帰
+8. 変更ファイル
+9. pytest結果
+10. `git diff --check`結果
+11. live・実CLI未実行
+12. 原因を断定していないこと
+13. 次の推奨作業
+
+また、X-8.8の最終テスト数を次へ訂正し、追加テストコミット`67c8f3c`を記録する。
 
 ```text
 257 passed, 6 deselected
 ```
 
-テスト件数が増減していても、全通常テストがpassし、live・expensiveが除外されていればよい。失敗した場合はlive実行しない。
+X-8.9節が古い節の内部へ入っている場合は、内容を変えず独立した見出しとして整理してよい。
 
-## 評価セットとimportの事前確認
+### hikitsugi.md
 
-```powershell
-$evalSet = (Resolve-Path ".\evaluation\x8\eval-set-v1.json").Path
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
+X-8.10として次を追記する。
 
-if (-not (Test-Path $evalSet -PathType Leaf)) {
-    throw "Evaluation set not found: $evalSet"
-}
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-
-    py -c "import oracle_council; print('oracle_council import OK')"
-    if ($LASTEXITCODE -ne 0) {
-        throw "oracle_council import smoke test failed."
-    }
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-}
-```
-
-評価セットの内容を変更しない。
-
-## dry-run
-
-```powershell
-$head = (git rev-parse --short HEAD).Trim()
-$originHead = (git rev-parse --short refs/remotes/origin/main).Trim()
-
-if ($head -ne $originHead) {
-    throw "HEAD and origin/main do not match."
-}
-
-$outputDir = "C:\PROJECT\OracleCouncil-evals\x8\$head-q04-authfix"
-
-if (Test-Path $outputDir) {
-    throw "Output directory already exists. Do not reuse it and do not create a retry directory."
-}
-
-$evalSet = (Resolve-Path ".\evaluation\x8\eval-set-v1.json").Path
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-
-    py scripts/run_x8_evaluation.py `
-      --eval-set $evalSet `
-      --output-dir $outputDir `
-      --expected-head $head `
-      --question-id q04 `
-      --timeout-seconds 600 `
-      --dry-run
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "X-8.9 dry-run failed with exit code $LASTEXITCODE."
-    }
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-}
-```
-
-確認項目:
-
-- q04だけが選択されている
-- `adapter-mode real`
-- `evidence-provider cli-search`
-- JSON出力
-- `--no-store`
-- timeout 600秒
-- 出力先がリポジトリ外
-- HEADとorigin/mainが一致
-- worktree clean
-
-## live実行
-
-明示承認が確認できた場合だけ、dry-run成功後に次を1回だけ実行する。
-
-実行担当Agentやラッパーのtool timeoutは、Oracle Council側の600秒より長い**720000ms以上**にする。
-
-```powershell
-$evalSet = (Resolve-Path ".\evaluation\x8\eval-set-v1.json").Path
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
-$oldLive = $env:ORACLE_COUNCIL_LIVE
-$liveExit = $null
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-    $env:ORACLE_COUNCIL_LIVE = "1"
-
-    py scripts/run_x8_evaluation.py `
-      --eval-set $evalSet `
-      --output-dir $outputDir `
-      --expected-head $head `
-      --question-id q04 `
-      --timeout-seconds 600
-
-    $liveExit = $LASTEXITCODE
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldLive)) {
-        Remove-Item Env:ORACLE_COUNCIL_LIVE -ErrorAction SilentlyContinue
-    } else {
-        $env:ORACLE_COUNCIL_LIVE = $oldLive
-    }
-
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-}
-
-Write-Host "X-8.9 live exit code: $liveExit"
-```
-
-終了コードが0以外でも再実行しない。
-
-## 結果確認
-
-リポジトリ外の今回出力だけを確認する。
-
-```text
-manifest.json
-summary.jsonl
-summary.csv
-q04/attempted.json
-q04/record.json
-q04/stdout.json
-q04/stderr.txt
-```
-
-raw `stderr.txt`やstdout本文をチャット、`instructions/result.md`、`hikitsugi.md`、Gitへ転記しない。
-
-記録してよいのは、構造化・sanitizedされた次の情報だけ。
-
-- process exit code
-- Run status
-- result classification
-- run_id
-- agent_call_count
-- participants
-- Phaseごとのstatus、elapsed_ms、error_code、sanitized error_summary
-- Evidence件数と収集metrics
-- JSON parse status
-- leakage check
-- acceptance status
-
-## 判定
-
-### A. verifyを通過した場合
-
-- X-8.8後の今回条件では`AUTH_REQUIRED`が再現しなかったと記録する
-- X-8.7が誤分類だった、またはstdin化が根本原因を解決したと断定しない
-- `criticize`、`synthesize`、`audit`まで到達したか確認する
-- q04の受入条件を確認する
-
-### B. AUTH_REQUIREDが再現した場合
-
-- X-8.8の明示的allowlistでも認証失敗として分類されたと記録する
-- 真の認証問題である可能性がX-8.7時点より強まったとする
-- ただしraw出力を引用せず、認証状態やtoken失効を断定しない
-- 再試行、login、logout、認証変更を行わない
-
-### C. EXECUTION_ERRORになった場合
-
-- X-8.7の`AUTH_REQUIRED`が旧部分一致による誤分類だった可能性と整合すると記録する
-- ただし今回と前回で外部条件が異なるため断定しない
-- summaryが安全な固定形式であることを確認する
-- raw出力から原因を推測して仕様変更しない
-
-### D. QUOTA_EXCEEDED、RATE_LIMITED、TIMEOUT等の場合
-
-- 既知分類とsanitized summaryだけを記録する
-- 再試行しない
-
-## ドキュメント更新
-
-live実行した場合だけ、次を更新する。
-
-```text
-instructions/result.md
-hikitsugi.md
-```
-
-先頭へX-8.9の節を追加し、最低限次を記録する。
-
-1. 実行HEAD
-2. 出力先
-3. 明示承認を確認したこと
-4. dry-run結果
-5. live外部実行回数が1回であること
-6. process exit、status、classification
-7. 参加Agentとcall count
-8. Phase結果とsanitized summary
-9. Evidence件数・metrics
-10. q04受入条件の判定
-11. X-8.7のAUTH_REQUIREDが再現したか
-12. X-8.8後に言えること・言えないこと
-13. JSON parseとleakage check
-14. raw情報を保存・公開していないこと
-15. 未解決事項と次の推奨作業
-
-同時に、X-8.8節に残っている場合は次を訂正する。
-
-```text
-pytest: 255 passed, 6 deselected
-```
-
-を
-
-```text
-pytest: 257 passed, 6 deselected
-```
-
-へ変更し、追加回帰テストコミット`67c8f3c`を記録する。
-
-既存の過去結果は削除しない。
+- X-8.9でverify/criticizeまで成功したこと
+- synthesizeでCOMMAND_NOT_FOUNDになったこと
+- 現行synthesize担当がClaudeであること
+- ClaudeのPhase promptをargvからstdinへ移したこと
+- 原因は未断定であること
+- Fake長文テスト
+- 公開境界不変
+- live未実行
+- pytest結果
 
 ## commit・push
 
-live実行後、変更対象は原則として次の2ファイルだけとする。
-
-```text
-instructions/result.md
-hikitsugi.md
-```
-
-確認:
-
-```powershell
-git diff --check
-git status --short
-```
-
-評価ディレクトリ、raw stdout/stderr、秘密情報をcommitしない。
+全通常テスト通過後、意図したsource、test、documentだけをコミットし、`origin/main`へpushする。
 
 コミットメッセージ例:
 
 ```text
-docs: record q04 auth classification re-evaluation
+fix: pass Claude phase input through stdin
 ```
 
-`origin/main`へpushし、commit hashとpush結果を`instructions/result.md`へ記録する。
+作業完了時に次を確認する。
 
-## 明示承認がない場合
+```powershell
+git status --short
+git rev-parse --short HEAD
+git rev-parse --short refs/remotes/origin/main
+```
 
-次を報告して停止する。
-
-- pull後HEAD
-- worktree・origin同期状況
-- 通常テスト結果
-- import確認
-- dry-run結果
-- 想定出力先
-- live未実行
-- X-8.9の明示承認待ち
-
-この場合はcommit・pushしない。
+working tree clean、HEADとorigin/main一致を確認し、commit hashとpush結果を`instructions/result.md`へ記録する。
