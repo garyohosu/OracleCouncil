@@ -745,3 +745,47 @@ def test_adapter_failure_settles_budget_and_propagates():
     with pytest.raises(RuntimeError):
         orchestrator.run_verify("q")
     assert budget.snapshot().reserved_call_count == 0
+
+
+def test_execution_error_keeps_fixed_summary_without_invalid_output_wrapper():
+    fixed = "verify process exited with a non-zero status."
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            claims_output("unverified"),
+            AgentFailure("EXECUTION_ERROR", "raw stderr SECRET-TOKEN", public_summary=fixed),
+        ],
+        [{"answer": "B"}],
+    )
+
+    result = orchestrator.run_verify("private question")
+
+    phase = phase_by_name(result)["verify"]
+    failed = [e for e in result.executions if e.phase == "verify"]
+    assert phase.error_code == "EXECUTION_ERROR"
+    assert phase.error_summary == fixed
+    assert failed[0].error_summary == fixed
+    assert "invalid output" not in phase.error_summary
+    assert ".." not in phase.error_summary
+    assert "SECRET-TOKEN" not in phase.error_summary
+
+
+def test_execution_error_phase_mismatch_falls_back_to_fixed_code_summary():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            claims_output("unverified"),
+            AgentFailure(
+                "EXECUTION_ERROR",
+                "raw stderr",
+                public_summary="criticize process exited with a non-zero status.",
+            ),
+        ],
+        [{"answer": "B"}],
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert phase_by_name(result)["verify"].error_summary == (
+        "verify execution ended with EXECUTION_ERROR."
+    )

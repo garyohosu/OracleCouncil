@@ -26,6 +26,8 @@ from .models import (
     RunResult,
     RunStatus,
     SearchError,
+    safe_error_summary,
+    safe_public_summary,
     utc_now,
 )
 from .storage import StorageBackend, StorageWriteError
@@ -524,8 +526,18 @@ def _summary(phase: str, error_code: str) -> str:
 
 def _failure_summary(phase: str, failure: AgentFailure) -> str:
     public_summary = getattr(failure, "public_summary", None)
-    if public_summary:
-        return f"{phase} invalid output: {public_summary}."[:200]
+    if failure.error_code == "EXECUTION_ERROR":
+        if (
+            isinstance(public_summary, str)
+            and public_summary.startswith(f"{phase} ")
+            and safe_error_summary(public_summary) == public_summary
+        ):
+            return public_summary
+        return _summary(phase, failure.error_code)
+    if failure.error_code == "INVALID_OUTPUT" and public_summary:
+        detail = safe_public_summary(public_summary)
+        if detail:
+            return f"{phase} invalid output: {detail}."[:200]
     return _summary(phase, failure.error_code)
 
 

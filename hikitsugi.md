@@ -260,3 +260,11 @@ python -m pytest
 結果は`status=failed`、`exit_code=1`、`result_classification=unverified`、`run_id=7e891cbe-12f3-4568-bf3f-ea829dc0f962`、`agent_call_count=4`。Claude/Codex双方が参加し、respond、claim_extract、evidence_collect（Evidence 14件、search 5、fetch成功14/18）まで成功したが、verifyが254msで`EXECUTION_ERROR`となった。sanitized summaryには`verify process exited with a non-zero status`相当が現れ、前回のEXECUTION_ERRORは再現した。ただしOrchestrator既存ラップにより外部文言は`verify invalid output: ...`となっており、根本原因は未特定。`json_parse_status=valid`、`leakage_check=passed_structural_check`で、raw stdout/stderr等はGitへ保存していない。
 
 q04の受入確認（18歳への訂正、20歳との混同回避、飲酒・喫煙等との区別）はverify失敗により最終回答へ到達せず未評価。次は実CLIを再実行せず、固定FakeでEXECUTION_ERROR summaryのラップを修正し、通常テストで回帰を防ぐ。
+
+## 4-16. EXECUTION_ERROR summary誤ラップ修正（X-8.5）
+
+X-8.4のq04で、`EXECUTION_ERROR`の固定診断が`verify invalid output: ...`へ誤ラップされ、末尾ピリオドも二重になる問題を確認した。原因はOrchestratorの`_failure_summary()`が`error_code`を見ず、`public_summary`を常にINVALID_OUTPUT形式へ変換していたこと。
+
+`EXECUTION_ERROR`は`safe_error_summary()`で検証し、現在のphaseと一致する固定summaryをそのまま返す。phase不一致、不正形式、任意文字列は`<phase> execution ended with EXECUTION_ERROR.`へフォールバックする。`INVALID_OUTPUT`だけは従来どおり`safe_public_summary()`で構造診断を検証して`<phase> invalid output: ...`へ整形する。Storage Contract、JSONL形式、Adapter分類、retry、timeout、Evidence処理は変更していない。
+
+Fakeベースの回帰テストを追加し、PhaseRecord/AgentExecutionRecordのsummary、秘密情報非混入、ラップ除去、二重ピリオド除去、phase不一致フォールバック、既存INVALID_OUTPUT互換性を確認した。`py -m pytest`は236 passed / 6 deselected。live、expensive、q04再実行、実CLI、WebSearch、HTTPは実行していない。
