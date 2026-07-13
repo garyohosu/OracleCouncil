@@ -190,7 +190,6 @@ class CodexAdapter:
             cmd = [
                 "codex.cmd" if os.name == "nt" else "codex",
                 "exec",
-                question,
                 "-s",
                 "read-only",
                 "--ephemeral",
@@ -199,6 +198,10 @@ class CodexAdapter:
             ]
             if self.model:
                 cmd.extend(["--model", self.model])
+            # Pass the complete phase context through stdin. This keeps user
+            # and Evidence data out of argv and avoids platform command-line
+            # length limits for verify/audit phases.
+            cmd.append("-")
 
             env = dict(os.environ)
 
@@ -210,7 +213,7 @@ class CodexAdapter:
                 errors="replace",
                 timeout=self.timeout_s,
                 env=env,
-                stdin=subprocess.DEVNULL,
+                input=question,
                 shell=False,
             )
 

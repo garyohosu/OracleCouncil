@@ -1,5 +1,20 @@
 # 実施結果
 
+## X-8.6 Codexの長いPhase入力をstdinへ移行（2026-07-13）
+
+1. **現行構造**: Codex本実行は`codex exec`の位置引数へPhase入力全文を渡していた。`verify`ではClaimとEvidenceを含むため、前段より長い入力になることを確認した。
+2. **実装**: prompt本文をargvから除去し、`cmd`を`codex(.cmd) exec -s read-only --ephemeral --output-schema <schema-path> [--model <model>] -`の構造に変更した。末尾の`-`でstdin入力を指定する。
+3. **stdin方式**: `subprocess.run(input=question, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)`を使用し、本実行で`stdin=DEVNULL`は併用しない。probeは従来どおり維持。
+4. **長文テスト**: 50,000文字超の質問、Claim、Evidenceを作成し、全文がstdinへ渡り、argv長が入力長に比例せず、識別文字列がargvに存在しないことを検証した。
+5. **schema**: 一時ファイルはプログラム生成のJSON Schemaのみ。質問、Claim、Evidence、秘密文字列を含まず、成功・失敗後とも`finally`で削除される。
+6. **回帰**: EXECUTION_ERROR固定summary、TIMEOUT、QUOTA_EXCEEDED、RATE_LIMITED、AUTH_REQUIRED、INVALID_OUTPUTの既存分類を維持。
+7. **変更ファイル**: `src/oracle_council/adapters/codex.py`、`tests/unit/test_codex_transport.py`、`tests/unit/test_adapter_unicode.py`、`FIX_PLAN.md`、`hikitsugi.md`、`instructions/result.md`。
+8. **検証**: `py -m pytest` = **238 passed, 6 deselected**。`git diff --check`成功。
+9. **実行禁止事項**: codex/claude実呼び出し、WebSearch、HTTP、live、expensive、q04、8問評価は実行していない。
+10. **仮説の扱い**: Windowsコマンドライン長または引数受け渡しが原因であることは未確認。今回の変更は原因候補を除去しただけで、根本原因特定やlive成功を意味しない。
+11. **O-6**: CodexAdapter側のprompt transportはstdin化済み。ClaudeAdapter/CliSearchProviderを含む全体方針は未完了。
+12. **次の推奨作業**: ユーザー承認後、新HEADでq04のlive再評価を1回だけ行い、verify到達とsummaryを確認する。
+
 ## X-8.5 EXECUTION_ERROR summary誤ラップ修正（2026-07-13）
 
 1. **根本原因**: `_failure_summary()`が`failure.error_code`を確認せず、`public_summary`を常に`<phase> invalid output: ...`へラップしていた。

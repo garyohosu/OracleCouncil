@@ -268,3 +268,11 @@ X-8.4のq04で、`EXECUTION_ERROR`の固定診断が`verify invalid output: ...`
 `EXECUTION_ERROR`は`safe_error_summary()`で検証し、現在のphaseと一致する固定summaryをそのまま返す。phase不一致、不正形式、任意文字列は`<phase> execution ended with EXECUTION_ERROR.`へフォールバックする。`INVALID_OUTPUT`だけは従来どおり`safe_public_summary()`で構造診断を検証して`<phase> invalid output: ...`へ整形する。Storage Contract、JSONL形式、Adapter分類、retry、timeout、Evidence処理は変更していない。
 
 Fakeベースの回帰テストを追加し、PhaseRecord/AgentExecutionRecordのsummary、秘密情報非混入、ラップ除去、二重ピリオド除去、phase不一致フォールバック、既存INVALID_OUTPUT互換性を確認した。`py -m pytest`は236 passed / 6 deselected。live、expensive、q04再実行、実CLI、WebSearch、HTTPは実行していない。
+
+## 4-17. Codexの長いPhase入力をstdinへ移行（X-8.6）
+
+q04で2回再現したverify非ゼロ終了に対し、CodexAdapterが`build_phase_input()`全文を位置引数へ渡していたことを確認した。verifyはClaimとEvidenceを含むため前段より長い。Windowsコマンドライン長または引数受け渡しが原因というのは未確認の仮説であり、今回の変更で原因候補を除去しただけである。
+
+Codex本実行のargvからprompt本文を削除し、末尾の`-`でstdin入力を指定した。`subprocess.run(input=question, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)`を使用し、本実行で`stdin=DEVNULL`は併用しない。probe、read-only、ephemeral、output-schema、model指定、JSON抽出、既存エラー分類は維持した。temp fileは非機密のJSON Schemaだけで、成功・失敗後とも削除する。
+
+50,000文字超の質問・Claim・Evidenceを使うtransportテストを追加し、全文がstdinへ渡り、argvに本文識別子が入らず、schemaに入力本文が含まれないことを確認した。`py -m pytest`は238 passed / 6 deselected。live、expensive、q04、実CLI、WebSearch、HTTPは実行していない。O-6はCodexAdapter側のみ前進し、ClaudeAdapter/CliSearchProviderを含む全体完了ではない。次はユーザー承認後の新HEAD q04 1回限定live再評価。
