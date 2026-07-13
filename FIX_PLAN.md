@@ -80,7 +80,7 @@
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 
-O-6進捗（X-8.6）: `CodexAdapter`はPhase入力をstdinへ渡し、temp fileは機密情報を含まない`--output-schema`用JSON Schemaだけに限定して実装済み。`ClaudeAdapter`、`CliSearchProvider`を含む全体方針の完了確認は未実施。
+O-6進捗（X-8.12）: `CodexAdapter`、`ClaudeAdapter`、`CliSearchProvider`のuser-derived入力をstdinへ渡すtransportを通常実装へ反映し、argvには入力本文を含めない方針をFakeテストで確認済み。Codexのtemp fileは機密情報を含まない`--output-schema`用JSON Schemaだけに限定している。実Claude・WebSearch・q04・liveでの確認は未実施。
 
 ---
 

@@ -55,6 +55,24 @@ class TestSuccessfulSearch:
         assert "--safe-mode" in cmd
         assert "--no-session-persistence" in cmd
 
+    def test_passes_long_query_prompt_via_stdin_and_keeps_argv_data_free(self):
+        query = "QUERY-MARKER-日本語 " + ("q" * 50000)
+        with patch("oracle_council.adapters.claude.subprocess.run") as run:
+            run.return_value = completed(envelope(sources_json("https://a.example")))
+            results = CliSearchProvider().search(query, limit=3)
+
+        assert [result.url for result in results] == ["https://a.example"]
+        cmd = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+        assert "QUERY-MARKER-日本語" not in cmd
+        assert "QUERY-MARKER-日本語" in kwargs["input"]
+        assert "Include up to 3 sources" in kwargs["input"]
+        assert "stdin" not in kwargs
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        assert kwargs["shell"] is False
+        assert len(cmd) < 1000
+
     def test_limit_truncates_even_when_model_returns_more(self):
         with patch("oracle_council.adapters.claude.subprocess.run") as run:
             run.return_value = completed(

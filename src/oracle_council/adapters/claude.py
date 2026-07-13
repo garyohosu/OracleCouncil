@@ -253,7 +253,6 @@ class CliSearchProvider:
         cmd = [
             "claude",
             "-p",
-            prompt,
             "--tools",
             "WebSearch",
             "--output-format",
@@ -272,7 +271,7 @@ class CliSearchProvider:
                 errors="replace",
                 timeout=self.timeout_s,
                 env=env,
-                stdin=subprocess.DEVNULL,
+                input=prompt,
                 shell=False,
             )
         except FileNotFoundError as exc:

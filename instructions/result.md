@@ -172,3 +172,13 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - Evidence: 14 items; searches 5; candidates 25; fetch attempts 23; fetch successes 14; fetch failures 9; outcome `partial_evidence`.
 - `json_parse_status=valid`; `leakage_check=passed_structural_check`; no error codes were reported.
 - The q04 acceptance status remained `not_assessed`; no claim was made from raw model output. Raw stdout/stderr, prompts, tokens, and evaluation artifacts were not added to Git.
+## X-8.12 CliSearchProvider search prompt stdin transport (2026-07-13)
+
+- HEAD and `origin/main`: `12bc2df`; worktree was clean before implementation, and required ancestors `193706d` and `1152bcf` were present.
+- `CliSearchProvider.search()` now removes the user-derived search prompt from argv and passes it through `subprocess.run(input=prompt, ...)`; production search no longer uses `stdin=subprocess.DEVNULL`.
+- Search result parsing, source validation, limit handling, malformed-item skipping, timestamps, error mapping, timeout behavior, and SafeHttpFetcher boundaries were unchanged.
+- Added Fake coverage for a 50,000-character Japanese query, asserting query absence from argv, complete prompt presence in stdin, fixed WebSearch flags, UTF-8 handling, and no `stdin` kwarg.
+- Updated O-6 progress in `FIX_PLAN.md` to record Codex, Claude Phase, and CliSearchProvider stdin transport completion.
+- `py -m pytest`: **259 passed, 6 deselected**; `git diff --check`: passed.
+- Real Claude, WebSearch, q04, live, HTTP, and expensive evaluation were not executed.
+- Changed files: `src/oracle_council/adapters/claude.py`, `tests/unit/test_cli_search_provider.py`, `FIX_PLAN.md`, `instructions/result.md`, and `hikitsugi.md`.

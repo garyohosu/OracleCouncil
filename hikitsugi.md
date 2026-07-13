@@ -317,3 +317,10 @@ After explicit approval, exactly one q04 live run was executed on HEAD `05714b7`
 Sanitized result: `exit_code=4`, `status=completed`, `classification=withheld`, `timed_out=false`, run ID `7d42b9c7-a0c5-4df3-9ad8-92f5340b7e31`, and `agent_call_count=9`. Participants were `claude-code` and `codex-cli`. All phases from `respond` through `audit` succeeded. `synthesize` completed with `success_count=2`, `audit` completed with `success_count=2`, and the X-8.9 `synthesize COMMAND_NOT_FOUND` did not recur. This confirms the stdin transport worked through the later phases under these conditions, without proving a root cause for X-8.9.
 
 Evidence metrics: 14 evidence items, 5 searches, 25 candidates, 23 fetch attempts, 14 fetch successes, and 9 fetch failures; outcome `partial_evidence`. JSON parsing was valid, leakage checking passed, and no error codes were reported. The q04 acceptance status was `not_assessed`; raw stdout/stderr and other sensitive artifacts were not read into the report or committed.
+## 4-23. X-8.12 CliSearchProvider search prompt stdin transport
+
+X-8.11 was already completed on HEAD `05714b7`; X-8.12 does not rerun q04 or any live capability. The remaining O-6 gap was `CliSearchProvider.search()`, which passed the user-derived search prompt as the `claude -p` argv value and used `stdin=DEVNULL`.
+
+The search prompt now travels through `input=prompt`; argv contains only fixed Claude/WebSearch flags. Search result parsing, validation, limit handling, malformed-entry skipping, timestamps, error mapping, timeout handling, and SafeHttpFetcher responsibility were preserved. A Fake test covers a 50,000-character Japanese query and asserts the query is absent from argv and present in stdin.
+
+`FIX_PLAN.md` O-6 progress now records Codex, Claude Phase, and CliSearchProvider stdin transport as implemented and Fake-tested. `py -m pytest` passed: **259 passed, 6 deselected**. `git diff --check` passed. Real Claude, WebSearch, q04, live, HTTP, and expensive evaluation were not executed.
