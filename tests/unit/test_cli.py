@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,8 @@ from oracle_council.cli import output_run_result, main
 from oracle_council.evidence import ManualEvidenceProvider, WebEvidenceProvider
 from oracle_council.fakes import FakeEvidenceProvider
 from oracle_council.models import (
+    AgentExecutionRecord,
+    AgentExecutionStatus,
     PhaseRecord,
     PhaseStatus,
     ResultClassification,
@@ -591,6 +594,77 @@ def test_json_phase_metrics_summary_excludes_unsafe_values(capsys):
     assert "secret query" not in rendered
     assert "https://example.com/secret" not in rendered
     assert "secret prompt" not in rendered
+
+
+def test_json_includes_only_safe_error_summary(capsys):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.FAILED,
+        result_classification=ResultClassification.UNVERIFIED,
+        final_answer=None,
+        call_count=1,
+        exit_code=1,
+        phases=(
+            PhaseRecord(
+                phase_id="phase-1",
+                run_id="run-test",
+                phase="criticize",
+                minimum_success_count=1,
+                status=PhaseStatus.FAILED,
+                error_code="INVALID_OUTPUT",
+                error_summary="criticize invalid output: missing field: critique.",
+            ),
+            PhaseRecord(
+                phase_id="phase-2",
+                run_id="run-test",
+                phase="synthesize",
+                minimum_success_count=1,
+                status=PhaseStatus.FAILED,
+                error_code="INVALID_OUTPUT",
+                error_summary="raw stderr with SECRET-TOKEN",
+            ),
+        ),
+        executions=(
+            AgentExecutionRecord(
+                execution_id="exec-1",
+                run_id="run-test",
+                agent_id="claude-code",
+                phase="criticize",
+                status=AgentExecutionStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                elapsed_ms=0,
+                error_code="INVALID_OUTPUT",
+                error_summary="criticize invalid output: missing field: critique.",
+            ),
+            AgentExecutionRecord(
+                execution_id="exec-2",
+                run_id="run-test",
+                agent_id="claude-code",
+                phase="synthesize",
+                status=AgentExecutionStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                elapsed_ms=0,
+                error_code="INVALID_OUTPUT",
+                error_summary="raw stderr with SECRET-TOKEN",
+            ),
+        ),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["phases"][0]["error_summary"] == (
+        "criticize invalid output: missing field: critique."
+    )
+    assert data["phases"][1]["error_summary"] is None
+    assert data["executions"][0]["error_summary"] == (
+        "criticize invalid output: missing field: critique."
+    )
+    assert data["executions"][1]["error_summary"] is None
+    assert "SECRET-TOKEN" not in json.dumps(data, ensure_ascii=False)
 
 
 def test_json_evidence_empty_without_evidence(capsys):

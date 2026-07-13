@@ -237,6 +237,7 @@ class CodexAdapter:
                     raise AgentFailure(
                         "INVALID_OUTPUT",
                         f"Failed to extract JSON from: {stdout_text}",
+                        public_summary="malformed JSON",
                     ) from exc
 
             return AgentResult(validate_phase_output(request.phase, output), Usage(100, 20))

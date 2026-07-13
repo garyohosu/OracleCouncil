@@ -389,6 +389,53 @@ def test_leakage_check_fails_on_forbidden_json_key():
     assert runner.leakage_check(None) == "json_invalid"
 
 
+def test_phase_summary_keeps_safe_error_summary():
+    payload = {
+        "phases": [
+            {
+                "phase": "criticize",
+                "status": "failed",
+                "success_count": 0,
+                "elapsed_ms": 123,
+                "error_code": "INVALID_OUTPUT",
+                "error_summary": "criticize invalid output: missing field: critique.",
+                "outcome": None,
+                "ignored": "not copied",
+            }
+        ]
+    }
+
+    assert runner.phase_summary(payload) == [
+        {
+            "phase": "criticize",
+            "status": "failed",
+            "success_count": 0,
+            "elapsed_ms": 123,
+            "error_code": "INVALID_OUTPUT",
+            "error_summary": "criticize invalid output: missing field: critique.",
+            "outcome": None,
+        }
+    ]
+
+
+def test_phase_summary_drops_unsafe_error_summary():
+    payload = {
+        "phases": [
+            {
+                "phase": "criticize",
+                "status": "failed",
+                "success_count": 0,
+                "elapsed_ms": 123,
+                "error_code": "INVALID_OUTPUT",
+                "error_summary": "raw stderr with SECRET-TOKEN",
+                "outcome": None,
+            }
+        ]
+    }
+
+    assert runner.phase_summary(payload)[0]["error_summary"] is None
+
+
 def test_manifest_mismatch_attempted_corruption_timeout_and_rebuild(harness, monkeypatch):
     repo, eval_set, output = harness
 

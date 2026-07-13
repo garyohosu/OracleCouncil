@@ -14,7 +14,16 @@ from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignmen
 from .budget import TokenBudget
 from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
-from .models import AgentFailure, AgentRequest, AgentResult, RunResult, RunStatus, SearchError, Usage
+from .models import (
+    AgentFailure,
+    AgentRequest,
+    AgentResult,
+    RunResult,
+    RunStatus,
+    SearchError,
+    Usage,
+    safe_error_summary,
+)
 from .orchestrator import Orchestrator
 from .adapters import CliSearchProvider, ClaudeAdapter, CodexAdapter
 from .storage import (
@@ -232,6 +241,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "phase": execution.phase,
                 "status": execution.status.value,
                 "error_code": execution.error_code,
+                "error_summary": safe_error_summary(execution.error_summary),
                 "retry_of": execution.retry_of,
                 "elapsed_ms": execution.elapsed_ms,
             }
@@ -243,6 +253,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "status": phase.status.value if phase.status else None,
                 "success_count": phase.success_count,
                 "error_code": phase.error_code,
+                "error_summary": safe_error_summary(phase.error_summary),
                 "outcome": phase.outcome,
                 # Metrics collection (P-4 experiment plan): per-phase wall time,
                 # not just pass/fail, so a slow phase can be told apart from a

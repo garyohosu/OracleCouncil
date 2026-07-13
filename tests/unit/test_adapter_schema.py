@@ -1,7 +1,7 @@
 import pytest
 
 from oracle_council.adapters.base import validate_phase_output
-from oracle_council.models import AgentFailure
+from oracle_council.models import AgentFailure, safe_error_summary, safe_public_summary
 
 
 def test_phase_schema_accepts_required_fields():
@@ -17,3 +17,62 @@ def test_phase_schema_rejects_invalid_output(phase, output):
     with pytest.raises(AgentFailure) as error:
         validate_phase_output(phase, output)
     assert error.value.error_code == "INVALID_OUTPUT"
+    assert error.value.public_summary is not None
+
+
+def test_phase_schema_reports_safe_structural_detail_without_raw_value():
+    with pytest.raises(AgentFailure) as error:
+        validate_phase_output(
+            "claim_extract",
+            {"claims": [{"claim_id": "c1", "importance": "SECRET-IMPORTANCE"}]},
+        )
+
+    assert error.value.error_code == "INVALID_OUTPUT"
+    assert error.value.public_summary == "invalid enum for field: importance"
+    assert "SECRET-IMPORTANCE" in str(error.value)
+    assert "SECRET-IMPORTANCE" not in error.value.public_summary
+
+
+def test_public_summary_allowlist_rejects_arbitrary_strings():
+    assert AgentFailure(
+        "INVALID_OUTPUT",
+        "raw value",
+        public_summary="parse failed: SECRET-TOKEN",
+    ).public_summary is None
+    assert AgentFailure(
+        "INVALID_OUTPUT",
+        "raw value",
+        public_summary="unexpected field: attacker_key",
+    ).public_summary is None
+    assert AgentFailure(
+        "INVALID_OUTPUT",
+        "raw value",
+        public_summary="output was: https://example.com/token/abc",
+    ).public_summary is None
+
+
+def test_public_summary_rejects_control_characters_and_long_values():
+    assert safe_public_summary("missing field: critique\n") is None
+    assert safe_public_summary("missing field: critique\x01") is None
+    assert safe_public_summary("missing field: " + "a" * 220) is None
+
+
+def test_public_summary_allows_only_known_schema_fields():
+    assert safe_public_summary("missing field: critique") == "missing field: critique"
+    assert safe_public_summary("missing fields: critique, severity") == (
+        "missing fields: critique, severity"
+    )
+    assert safe_public_summary("missing field: attacker_key") is None
+    assert safe_public_summary("invalid type for field: critique; expected string; actual object") == (
+        "invalid type for field: critique; expected string; actual object"
+    )
+    assert safe_public_summary("invalid type for field: attacker_key; expected string; actual object") is None
+
+
+def test_safe_error_summary_uses_same_allowlist():
+    assert safe_error_summary("criticize invalid output: missing field: critique.") == (
+        "criticize invalid output: missing field: critique."
+    )
+    assert safe_error_summary("criticize invalid output: parse failed: SECRET-TOKEN.") is None
+    assert safe_error_summary("criticize invalid output: missing field: critique\n.") is None
+    assert safe_error_summary("criticize invalid output: output was: https://example.com.") is None

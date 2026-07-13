@@ -213,6 +213,7 @@ class Orchestrator:
                 record.finished_at = utc_now()
                 return self._budget_failure(run_id, state)
             except AgentFailure as failure:
+                error_summary = _failure_summary(phase, failure)
                 self._append(
                     run_id,
                     "agent_execution_failed",
@@ -235,7 +236,7 @@ class Orchestrator:
                     continue
                 record.status = PhaseStatus.FAILED
                 record.error_code = failure.error_code
-                record.error_summary = _summary(phase, failure.error_code)
+                record.error_summary = error_summary
                 record.finished_at = utc_now()
                 return self._finish(
                     run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
@@ -312,6 +313,7 @@ class Orchestrator:
                     run_id, phase, agent, execution_id, retry_of, started_at,
                     _execution_status(failure.error_code),
                     error_code=failure.error_code,
+                    error_summary=_failure_summary(phase, failure),
                     raw_diagnostic=str(failure) if self._store_content else None,
                 )
             )
@@ -326,7 +328,7 @@ class Orchestrator:
 
     def _execution_record(
         self, run_id, phase, agent, execution_id, retry_of, started_at, status,
-        error_code=None, raw_diagnostic=None,
+        error_code=None, error_summary=None, raw_diagnostic=None,
     ) -> AgentExecutionRecord:
         finished_at = utc_now()
         return AgentExecutionRecord(
@@ -339,7 +341,7 @@ class Orchestrator:
             finished_at=finished_at,
             elapsed_ms=_elapsed_ms(started_at, finished_at),
             error_code=error_code,
-            error_summary=_summary(phase, error_code) if error_code else None,
+            error_summary=error_summary or (_summary(phase, error_code) if error_code else None),
             raw_diagnostic=raw_diagnostic,
             retry_of=retry_of,
         )
@@ -514,6 +516,13 @@ def _summary(phase: str, error_code: str) -> str:
     """Fixed template only (SPEC §15.8): never raw stderr, exception text,
     question fragments, or paths. Bounded well under the 200-char limit."""
     return f"{phase} execution ended with {error_code}."[:200]
+
+
+def _failure_summary(phase: str, failure: AgentFailure) -> str:
+    public_summary = getattr(failure, "public_summary", None)
+    if public_summary:
+        return f"{phase} invalid output: {public_summary}."[:200]
+    return _summary(phase, failure.error_code)
 
 
 def _evidence_snapshot(state: "_RunState") -> tuple[dict, ...]:

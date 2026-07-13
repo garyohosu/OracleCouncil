@@ -1879,6 +1879,24 @@ tests/
   - **目的**: systemic failureの停止規則と復旧を確認する。
   - **期待結果**: timeout、不正JSON、`internal_error`、`configuration_error`、`verification_unavailable`、`run_id=null`、subprocess起動失敗では`--all`を停止し、残り質問のattemptedを作らない。`--rebuild-summary`は外部コマンドを起動せず、既存attempted/stdout/stderr/recordからrecordとsummaryを再構築する。
 
+## 7.6 X-8.1 INVALID_OUTPUT診断ケース
+
+- **UT-ADAPTER-X8-1-001**
+  - **目的**: Adapterのschema検証失敗が安全な構造診断を持つことを確認する。
+  - **期待結果**: `AgentFailure.error_code`は`INVALID_OUTPUT`、`public_summary`は必須フィールド欠落や型不正などの固定形式allowlistだけを含む。任意のモデル出力値、未知フィールド名、prompt、stdout/stderrは含めない。
+
+- **UT-ORCH-X8-1-001**
+  - **目的**: `public_summary`がPhase/Executionの`error_summary`へ伝播することを確認する。
+  - **期待結果**: `criticize`失敗時にRunはfailedのまま終了し、`error_summary`には安全な構造診断が残る。`raw_diagnostic`は`store_content=False`では保存されない。
+
+- **UT-CLI-X8-1-001**
+  - **目的**: JSON出力の`error_summary`がサニタイズされることを確認する。
+  - **期待結果**: allowlist形式のsummaryだけが`phases[]`/`executions[]`へ出力される。allowlist外、改行/制御文字、不正surrogate、200文字超のsummaryは出力されない。public_summaryがない場合に生例外へfallbackしない。
+
+- **UT-EVAL-X8-1-001**
+  - **目的**: X-8 runnerの`record.json`用phase_summaryに安全な`error_summary`が残ることを確認する。
+  - **期待結果**: recordへ生モデル出力やstderr全文を複製せず、Phaseの安全な構造診断だけを保持する。
+
 ## 8. ケース件数
 
 | レベル | 件数 |

@@ -152,6 +152,57 @@ def test_error_summary_is_templated_and_bounded():
     assert failed[0].raw_diagnostic is None  # store_content off by default
 
 
+def test_invalid_output_public_summary_is_recorded_without_raw_diagnostic():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            claims_output("unverified"),
+            claims_output("verified"),
+            AgentFailure(
+                "INVALID_OUTPUT",
+                "raw model text with SECRET-TOKEN",
+                public_summary="missing field: critique",
+            ),
+        ],
+        [{"answer": "B"}],
+    )
+    result = orchestrator.run_verify("q")
+
+    phase = phase_by_name(result)["criticize"]
+    failed = [e for e in result.executions if e.phase == "criticize"]
+
+    assert result.status.value == "failed"
+    assert phase.error_summary == "criticize invalid output: missing field: critique."
+    assert failed[0].error_summary == phase.error_summary
+    assert failed[0].raw_diagnostic is None
+    rendered = f"{phase.error_summary} {failed[0].error_summary}"
+    assert "SECRET-TOKEN" not in rendered
+
+
+def test_invalid_output_without_safe_summary_does_not_fallback_to_raw_exception():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            claims_output("unverified"),
+            claims_output("verified"),
+            AgentFailure(
+                "INVALID_OUTPUT",
+                "raw model text with SECRET-TOKEN",
+                public_summary="parse failed: SECRET-TOKEN",
+            ),
+        ],
+        [{"answer": "B"}],
+    )
+    result = orchestrator.run_verify("q")
+
+    phase = phase_by_name(result)["criticize"]
+    failed = [e for e in result.executions if e.phase == "criticize"]
+
+    assert phase.error_summary == "criticize execution ended with INVALID_OUTPUT."
+    assert failed[0].error_summary == phase.error_summary
+    assert "SECRET-TOKEN" not in phase.error_summary
+
+
 def test_raw_diagnostic_kept_only_with_store_content():
     orchestrator, _, _ = build_raw(
         [AgentFailure("AUTH_REQUIRED", "raw stderr detail")],

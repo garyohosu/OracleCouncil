@@ -1626,4 +1626,16 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答75問、未回答25問。*
+### X-8.1. criticize INVALID_OUTPUTの安全な診断
+
+**重要度**: Major
+**箇所**: `models.py` / `adapters/base.py` / `orchestrator.py` / `cli.py` / `scripts/run_x8_evaluation.py`
+**回答**: q01の保存済みX-8結果だけでは、`criticize`の`INVALID_OUTPUT`がJSON構文不正、必須フィールド欠落、型不正、コードフェンス等のどれだったかは特定不能だった。保存JSONにはphase/executionの`INVALID_OUTPUT`と所要時間はあるが、schema検証の失敗理由や生critic出力は保存されていない。したがって、q01原因を推測してparserを緩める変更は行わない。
+
+将来の同種障害に備え、`AgentFailure`へ安全な`public_summary`を追加した。Adapterのschema検証は、必須フィールド欠落や型不正などの構造的理由だけを固定形式で`public_summary`へ入れる。raw stdout/stderr、prompt、モデル出力全文、任意値、未知フィールド名は入れない。Orchestratorはallowlist検証済みの`public_summary`がある場合だけPhase/Executionの`error_summary`へ反映し、CLI JSONとX-8 runnerの`phase_summary`へ安全な`error_summary`を追加で出す。CLIとrunnerは共通のallowlist検証を使い、許可形式外、改行/制御文字、不正surrogate、200文字超は出力しない。`raw_diagnostic`は従来どおり`store_content=True`時だけ。
+
+**テスト**: INVALID_OUTPUTの安全な構造診断、任意値や未知フィールドをpublic_summaryへ入れないこと、allowlist外・改行/制御文字・200文字超の拒否、public_summaryなしで生例外へfallbackしないこと、OrchestratorがPhase/Executionへ反映すること、CLI JSONがphase/execution双方で安全なsummaryだけを出すこと、X-8 runnerのrecord用phase_summaryに安全な`error_summary`だけが残ることを追加。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。X-8.1でINVALID_OUTPUTの安全な構造診断を追加。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答76問、未回答24問。*

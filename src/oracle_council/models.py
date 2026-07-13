@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+import re
 from typing import Any
 
 
@@ -152,9 +153,98 @@ class PhaseStatus(StrEnum):
 class AgentFailure(RuntimeError):
     """A structured agent-execution failure carrying the SPEC §8.2 error code."""
 
-    def __init__(self, error_code: str, message: str = "") -> None:
+    def __init__(self, error_code: str, message: str = "", public_summary: str | None = None) -> None:
         super().__init__(message or error_code)
         self.error_code = error_code
+        self.public_summary = safe_public_summary(public_summary)
+
+
+_PHASE_NAMES = {
+    "respond",
+    "claim_extract",
+    "evidence_collect",
+    "verify",
+    "criticize",
+    "synthesize",
+    "audit",
+}
+_SCHEMA_FIELD_NAMES = {
+    "answer",
+    "claims",
+    "claim_id",
+    "importance",
+    "status",
+    "text",
+    "critique",
+    "issues",
+    "issue_id",
+    "issue_type",
+    "severity",
+}
+_JSON_TYPE_NAMES = {"array", "object", "string", "number", "boolean", "null"}
+_SIMPLE_PUBLIC_SUMMARIES = {
+    "malformed JSON",
+    "code fence detected",
+    "leading text detected",
+    "trailing text detected",
+}
+_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,80}$")
+
+
+def _contains_control_or_surrogate(value: str) -> bool:
+    return any(
+        ord(ch) < 32
+        or 0x7F <= ord(ch) <= 0x9F
+        or 0xD800 <= ord(ch) <= 0xDFFF
+        for ch in value
+    )
+
+
+def safe_public_summary(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 200:
+        return None
+    if _contains_control_or_surrogate(value):
+        return None
+    if value in _SIMPLE_PUBLIC_SUMMARIES:
+        return value
+    if value.startswith("missing field: "):
+        field = value.removeprefix("missing field: ")
+        return value if field in _SCHEMA_FIELD_NAMES else None
+    if value.startswith("missing fields: "):
+        fields = value.removeprefix("missing fields: ").split(", ")
+        return value if fields and all(field in _SCHEMA_FIELD_NAMES for field in fields) else None
+    match = re.fullmatch(
+        r"invalid type for field: ([a-z_]+); expected ([a-z]+); actual ([a-z]+)",
+        value,
+    )
+    if match:
+        field, expected, actual = match.groups()
+        if (
+            field in _SCHEMA_FIELD_NAMES
+            and expected in _JSON_TYPE_NAMES
+            and actual in _JSON_TYPE_NAMES
+        ):
+            return value
+    if value.startswith("invalid enum for field: "):
+        field = value.removeprefix("invalid enum for field: ")
+        return value if field in _SCHEMA_FIELD_NAMES else None
+    return None
+
+
+def safe_error_summary(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 200:
+        return None
+    if _contains_control_or_surrogate(value):
+        return None
+    match = re.fullmatch(r"([a-z_]+) invalid output: (.+)\.", value)
+    if match:
+        phase, detail = match.groups()
+        return value if phase in _PHASE_NAMES and safe_public_summary(detail) else None
+    match = re.fullmatch(r"([a-z_]+) execution ended with ([A-Z][A-Z0-9_]{1,80})\.", value)
+    if match:
+        phase, code = match.groups()
+        return value if phase in _PHASE_NAMES and _ERROR_CODE_RE.fullmatch(code) else None
+    return None
 
 
 class AuditIssueStatus(StrEnum):

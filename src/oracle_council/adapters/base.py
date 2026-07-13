@@ -64,27 +64,59 @@ _CLAIM_STATUS_VALUES = {
 }
 
 
+def _invalid_output(message: str, public_detail: str | None = None) -> AgentFailure:
+    return AgentFailure("INVALID_OUTPUT", message, public_summary=public_detail or message)
+
+
+def _json_type_name(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if type(value) in (int, float):
+        return "number"
+    return "object"
+
+
 def _validate_claims(claims: Any) -> None:
     if not isinstance(claims, list):
-        raise AgentFailure("INVALID_OUTPUT", "claims must be an array")
+        raise _invalid_output(
+            "claims must be an array",
+            f"invalid type for field: claims; expected array; actual {_json_type_name(claims)}",
+        )
     for item in claims:
         if not isinstance(item, dict):
-            raise AgentFailure("INVALID_OUTPUT", "each claim must be an object")
+            raise _invalid_output(
+                "each claim must be an object",
+                f"invalid type for field: claims; expected object; actual {_json_type_name(item)}",
+            )
         if "claim_id" not in item:
-            raise AgentFailure("INVALID_OUTPUT", "claim missing claim_id")
+            raise _invalid_output("claim missing claim_id", "missing field: claim_id")
         importance = item.get("importance")
         if importance not in _CLAIM_IMPORTANCE_VALUES:
-            raise AgentFailure("INVALID_OUTPUT", f"invalid claim importance: {importance!r}")
+            raise _invalid_output(
+                f"invalid claim importance: {importance!r}",
+                "invalid enum for field: importance",
+            )
         # Missing status defaults to UNVERIFIED downstream (Claim.from_dict);
         # a present-but-invalid value (including explicit null) is rejected.
         if "status" in item and item["status"] not in _CLAIM_STATUS_VALUES:
-            raise AgentFailure("INVALID_OUTPUT", f"invalid claim status: {item['status']!r}")
+            raise _invalid_output(
+                f"invalid claim status: {item['status']!r}",
+                "invalid enum for field: status",
+            )
 
 
 def validate_phase_output(phase: str, output: Any) -> dict[str, Any]:
     """Validate the phase envelope before it reaches Orchestrator state."""
     if not isinstance(output, dict):
-        raise AgentFailure("INVALID_OUTPUT", "structured output must be an object")
+        raise _invalid_output("structured output must be an object", "malformed JSON")
     required: dict[str, tuple[str, ...]] = {
         "respond": ("answer",),
         "claim_extract": ("claims",),
@@ -95,13 +127,17 @@ def validate_phase_output(phase: str, output: Any) -> dict[str, Any]:
     }
     for key in required.get(phase, ()):
         if key not in output:
-            raise AgentFailure("INVALID_OUTPUT", f"missing field: {key}")
+            raise _invalid_output(f"missing field: {key}")
     if phase in ("respond", "criticize", "synthesize") and not isinstance(
         output[required[phase][0]], str
     ):
-        raise AgentFailure("INVALID_OUTPUT", "text field must be a string")
+        key = required[phase][0]
+        raise _invalid_output(
+            "text field must be a string",
+            f"invalid type for field: {key}; expected string; actual {_json_type_name(output[key])}",
+        )
     if phase in ("claim_extract", "verify"):
         _validate_claims(output["claims"])
     if phase == "audit" and output["status"] not in {"approved", "changes_required", "blocked"}:
-        raise AgentFailure("INVALID_OUTPUT", "invalid audit status")
+        raise _invalid_output("invalid audit status", "invalid enum for field: status")
     return output

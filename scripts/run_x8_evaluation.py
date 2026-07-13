@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from oracle_council.models import safe_error_summary
+
 
 RUNNER_VERSION = "x8-runner-v1"
 FORBIDDEN_JSON_KEYS = {
@@ -265,6 +267,7 @@ def phase_summary(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "success_count": phase.get("success_count"),
                 "elapsed_ms": phase.get("elapsed_ms"),
                 "error_code": phase.get("error_code"),
+                "error_summary": safe_error_summary(phase.get("error_summary")),
                 "outcome": phase.get("outcome"),
             })
     return rows

@@ -175,7 +175,9 @@ class ClaudeAdapter:
                 envelope = json.loads(res.stdout.strip())
             except json.JSONDecodeError as exc:
                 raise AgentFailure(
-                    "INVALID_OUTPUT", f"Failed to parse CLI envelope: {res.stdout}"
+                    "INVALID_OUTPUT",
+                    f"Failed to parse CLI envelope: {res.stdout}",
+                    public_summary="malformed JSON",
                 ) from exc
             # --output-format json always wraps the model's text in a CLI
             # metadata envelope; the phase JSON is inside envelope["result"].
@@ -187,6 +189,7 @@ class ClaudeAdapter:
                 raise AgentFailure(
                     "INVALID_OUTPUT",
                     f"Failed to parse phase JSON from model text: {result_text}",
+                    public_summary="malformed JSON",
                 ) from exc
 
         except FileNotFoundError:

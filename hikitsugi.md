@@ -167,6 +167,12 @@ Storage契約は変更していない。次の実Web E2Eでは、`evidence_colle
 
 dry-runは外部AI、WebSearch、実HTTPを起動せず、attemptedやmanifestも作成しない。未コミット差分がある開発中でもdirty状態を安全確認結果として表示する。本番実行コマンドはREADME参照。生成された評価結果は`C:\PROJECT\OracleCouncil-evals\x8\<HEAD>\`配下に置き、Gitへ追加しない。timeout、不正JSON、`internal_error`、`configuration_error`、`verification_unavailable`、`run_id=null`などのsystemic failureでは`--all`を停止し、未実行質問のattemptedを作らない。`--rebuild-summary`で既存record群からsummaryを再構築できる。
 
+## 4-11. criticize INVALID_OUTPUTの診断改善（X-8.1）
+
+q01の保存済みX-8結果は読み取り専用で確認した。`criticize` phaseが`INVALID_OUTPUT`で失敗したことは分かるが、生critic出力やschema検証詳細は保存されていないため、原因分類は「保存情報不足により特定不能」。q01評価結果は再実行・改変していない。
+
+推測でparserを緩める代わりに、将来のINVALID_OUTPUTへ安全な構造診断を残す経路を追加した。`AgentFailure.public_summary`は必須フィールド欠落、型不正、JSON抽出不能などの構造的理由だけを固定形式で保持する。Orchestratorはallowlist検証済みの値だけをPhase/Executionの`error_summary`へ入れ、CLI JSONとX-8 runnerの`phase_summary`へ出す。raw stdout/stderr、prompt、モデル出力全文、任意のモデル値、未知フィールド名は出さない。許可形式外、改行/制御文字、不正surrogate、200文字超は出力しない。Storage契約は変更していない。
+
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
 実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。
