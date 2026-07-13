@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest
@@ -12,6 +13,29 @@ _EXECUTION_SUMMARY_TEXT = {
     "known_error_pattern_not_matched": "execution failed without a recognized error pattern",
     "unknown_execution_failure": "execution failed unexpectedly",
 }
+
+_AUTH_FAILURE_PATTERNS = (
+    r"\bunauthorized\b",
+    r"\bnot\s+logged\s+in\b",
+    r"\blogin\s+required\b",
+    r"\blog\s+in\s+required\b",
+    r"\bplease\s+(?:login|log\s+in|sign\s+in)\b",
+    r"\bsign\s+in\s+again\b",
+    r"\bauthentication\s+required\b",
+    r"\bauth\s+required\b",
+    r"\binvalid\s+api\s+key\b",
+    r"\bmissing\s+api\s+key\b",
+    r"\bapi\s+key\s+is\s+missing\b",
+    r"\baccess\s+token\s+expired\b",
+    r"\brefresh\s+token\s+has\s+expired\b",
+    r"\brefresh\s+token\s+was\s+revoked\b",
+    r"\brefresh\s+token\s+was\s+already\s+used\b",
+)
+
+
+def _has_explicit_auth_failure(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip()
+    return any(re.search(pattern, normalized) for pattern in _AUTH_FAILURE_PATTERNS)
 
 
 def execution_failure_summary(phase: str, category: str) -> str:
@@ -46,7 +70,7 @@ def classify_cli_error(stdout: str, stderr: str) -> str | None:
     if isinstance(parsed, dict) and parsed.get("is_error"):
         status = parsed.get("api_error_status")
         result_text = str(parsed.get("result", "")).lower()
-        if status in (401, 403) or "unauthorized" in result_text:
+        if status in (401, 403) or re.search(r"\bunauthorized\b", result_text):
             return "AUTH_REQUIRED"
         if status == 429:
             return "RATE_LIMITED" if "rate limit" in result_text else "QUOTA_EXCEEDED"
@@ -60,7 +84,7 @@ def classify_cli_error(stdout: str, stderr: str) -> str | None:
         return "QUOTA_EXCEEDED"
     if "rate limit" in lowered:
         return "RATE_LIMITED"
-    if "auth" in lowered or "login" in lowered:
+    if _has_explicit_auth_failure(combined):
         return "AUTH_REQUIRED"
     return None
 

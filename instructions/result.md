@@ -1,5 +1,17 @@
 # 実施結果
 
+## X-8.8 AUTH_REQUIRED部分一致の廃止（2026-07-13）
+
+1. **問題**: `classify_cli_error()`の`"auth" in lowered`と`"login" in lowered`が、`authoritative`、`authentic`、説明文中の`login`などを認証失敗として誤分類し得た。
+2. **実装**: 構造化401/403と`unauthorized`は維持し、自由文は境界付きの固定allowlistへ変更した。対象は`not logged in`、`login required`、`please log in`、`authentication required`、`invalid api key`、`missing api key`、`access token expired`、refresh token失効・再利用等。
+3. **負例**: `authoritative source`、`authority lookup`、`authentic response`、`author field`、`OAuth documentation`、`login page documentation`、単独の`authorization policy`は`AUTH_REQUIRED`にならず、未知の非ゼロ終了は`EXECUTION_ERROR`へフォールバックする。
+4. **回帰**: 構造化401/403、unauthorized、QUOTA_EXCEEDED、RATE_LIMITED、既存固定summaryを維持。probe、login status、認証情報、stdin transport、Storage Contract、公開境界は変更していない。
+5. **テスト**: 明示的認証失敗10例と誤分類防止7例を追加。
+6. **検証**: `py -m pytest` = **255 passed, 6 deselected**。`git diff --check`成功。
+7. **実行禁止事項**: live、expensive、q04、実CLI、`codex login status`、WebSearch、HTTPは実行していない。
+8. **未解決事項**: X-8.7のAUTH_REQUIREDが実認証切れか旧部分一致の誤分類かは、保存済みsanitized情報だけでは確定できない。
+9. **次の推奨作業**: ユーザー承認後、`codex login status`をローカル確認するか、別HEADでq04を1回限定再評価する。
+
 ## X-8.7 Codex stdin化後のq04 1回限定live再評価（2026-07-13）
 
 1. **実行HEAD**: `177abc4`。main、worktree clean、origin/main一致。`55044cc`を含む。

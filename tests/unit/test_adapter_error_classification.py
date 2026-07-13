@@ -44,6 +44,41 @@ def test_plain_text_auth_message_still_detected():
     assert classify_cli_error("please login again", "") == "AUTH_REQUIRED"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Not logged in",
+        "Please log in again",
+        "Authentication required",
+        "Invalid API key",
+        "missing api key",
+        "api key is missing",
+        "access token expired",
+        "refresh token has expired. Please log out and sign in again.",
+        "refresh token was revoked",
+        "refresh token was already used",
+    ],
+)
+def test_explicit_auth_failure_phrases_are_auth_required(message):
+    assert classify_cli_error("", message) == "AUTH_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "authoritative source unavailable",
+        "authority lookup failed",
+        "authentic response could not be parsed",
+        "author field was missing",
+        "OAuth documentation was not found",
+        "login page documentation could not be fetched",
+        "authorization policy rejected the request",
+    ],
+)
+def test_unrelated_auth_words_are_not_auth_required(message):
+    assert classify_cli_error("", message) is None
+
+
 def test_unmatched_error_returns_none_and_falls_back_to_execution_error():
     assert classify_cli_error("", "some unrelated crash trace") is None
 

@@ -284,3 +284,13 @@ Codex本実行のargvからprompt本文を削除し、末尾の`-`でstdin入力
 結果は`exit_code=1`、`status=failed`、`classification=unverified`、`agent_call_count=4`。CodexとClaudeが参加し、respond、claim_extract、evidence_collect（Evidence 14件、search 5、fetch成功14/23）までは成功したが、verifyが`AUTH_REQUIRED`（`verify execution ended with AUTH_REQUIRED.`）で失敗した。以前の短時間`EXECUTION_ERROR`は今回の条件では再現しなかったが、認証要求で停止したためstdin化が根本原因を解決したとは断定しない。criticize、synthesize、auditには到達せず、q04の受入条件は未評価。JSON parseはvalid、leakage checkはpassedで、raw stdout/stderr等はGitへ保存していない。
 
 追加liveは承認なしに実行せず、次はFake/Contractで認証切れ時の停止と、verify以降のstdin transportを確認する。
+
+## 4-19. AUTH_REQUIRED部分一致の廃止（X-8.8）
+
+X-8.7の`AUTH_REQUIRED`は真の認証切れか、旧分類器の部分一致による誤分類かをsanitized結果だけでは確定できない。旧実装は`"auth" in lowered`と`"login" in lowered`を使っていたため、`authoritative`、`authentic`、説明文の`login`にも一致し得た。
+
+自由文fallbackを境界付きallowlistへ変更した。`unauthorized`、`not logged in`、`login required`、`please log in`、`authentication required`、`invalid api key`、`missing api key`、`access token expired`、refresh tokenのexpired/revoked/already usedを認証失敗とする。構造化401/403と構造化`unauthorized`は従来どおり維持する。
+
+`authoritative source`、`authority lookup`、`authentic response`、`author field`、`OAuth documentation`、`login page documentation`、単独の`authorization policy`はAUTH_REQUIREDにしない。明示パターンに一致しない非ゼロ終了はEXECUTION_ERRORへ戻る。認証情報・probe・login status・Adapter引数・stdin transport・Storage Contract・公開境界は変更していない。
+
+明示的認証失敗と誤分類防止の通常テストを追加し、`py -m pytest`は255 passed / 6 deselected。live、expensive、q04、実CLI、`codex login status`、WebSearch、HTTPは実行していない。次は承認後のローカル認証状態確認またはq04 1回限定再評価。
