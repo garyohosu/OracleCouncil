@@ -235,3 +235,20 @@ python -m pytest
 - 終了コード: SPEC §13.4 / 分類: §15.3 / Budget: §8.7 / Storage: §15.1 / withheld開示: §11.5
 - 状態遷移: STATE.md / テスト期待値: TESTCASE.md（BLOCKED解除済みのものから実装）
 - note記事素材: docs/note-draft.md（「23回→7回」「AIに真偽を決めさせない」「保留は失敗ではない」が柱）
+
+## 4-14. EXECUTION_ERRORの安全な構造診断（X-8.3）
+
+実装済み（2026-07-13）。既知のTIMEOUT、RATE_LIMITED、QUOTA_EXCEEDED、AUTH_REQUIRED、INVALID_OUTPUT分類は維持したまま、認識不能なCLI失敗にもプログラム側で確定した固定診断を付けるようにした。
+
+外部へ出せる診断は次のallowlistだけで、CLI出力から文字列を連結しない:
+
+```text
+<phase> process exited with a non-zero status.
+<phase> process could not be started.
+<phase> execution failed without a recognized error pattern.
+<phase> execution failed unexpectedly.
+```
+
+現在のAdapter経路では、既知パターンに一致しない非ゼロ終了を`subprocess_nonzero_exit`、起動時の`OSError`を`process_launch_failure`として記録する。`AgentFailure.public_summary`、CLI JSONのExecution/Phase、X-8 runnerの`phase_summary`はいずれもallowlist検証を通す。stdout、stderr、prompt、モデル出力、コマンド全文、パス、環境変数、認証情報、Cookie、HTTP header、検索語、例外本文は外部出力へ出さない。Storage Contract、新しいJSONL項目、Runの終了コード・classification・PhaseStatus、`--no-store`の意味は変更していない。
+
+追加テストは、Claude/Codex双方の非ゼロ終了・起動失敗、固定summary、診断情報の混入拒否、既存分類の回帰、CLI/X-8 summaryのallowlist経路を対象とした。`py -m pytest`は234 passed / 6 deselected。q04 live、実CLI、実WebSearch、実HTTP、expensive評価は指示どおり再実行していない。次の作業は、ユーザー承認後に新しい評価ディレクトリでq04を1回限定再評価すること。今回の診断により、同様の失敗が再発した場合でも少なくとも「非ゼロ終了」か「起動失敗」か、既知エラー分類かを外部へ安全に識別できる。

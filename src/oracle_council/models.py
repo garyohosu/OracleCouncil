@@ -195,6 +195,12 @@ _SIMPLE_PUBLIC_SUMMARIES = {
     "leading text detected",
     "trailing text detected",
 }
+_EXECUTION_SUMMARIES = {
+    "process exited with a non-zero status",
+    "process could not be started",
+    "execution failed without a recognized error pattern",
+    "execution failed unexpectedly",
+}
 _ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,80}$")
 
 
@@ -214,6 +220,13 @@ def safe_public_summary(value: Any) -> str | None:
         return None
     if value in _SIMPLE_PUBLIC_SUMMARIES:
         return value
+    if value in _EXECUTION_SUMMARIES:
+        return value
+    if re.fullmatch(
+        r"[a-z_]+ (process exited with a non-zero status|process could not be started|execution failed without a recognized error pattern|execution failed unexpectedly)\.",
+        value,
+    ):
+        return value if value.split(" ", 1)[0] in _PHASE_NAMES else None
     if value.startswith("missing field: "):
         field = value.removeprefix("missing field: ")
         return value if field in _SCHEMA_FIELD_NAMES else None
@@ -251,6 +264,9 @@ def safe_error_summary(value: Any) -> str | None:
     if match:
         phase, code = match.groups()
         return value if phase in _PHASE_NAMES and _ERROR_CODE_RE.fullmatch(code) else None
+    match = re.fullmatch(r"([a-z_]+) (process exited with a non-zero status|process could not be started|execution failed without a recognized error pattern|execution failed unexpectedly)\.", value)
+    if match:
+        return value if match.group(1) in _PHASE_NAMES else None
     return None
 
 

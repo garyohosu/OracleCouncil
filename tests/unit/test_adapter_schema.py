@@ -76,3 +76,20 @@ def test_safe_error_summary_uses_same_allowlist():
     assert safe_error_summary("criticize invalid output: parse failed: SECRET-TOKEN.") is None
     assert safe_error_summary("criticize invalid output: missing field: critique\n.") is None
     assert safe_error_summary("criticize invalid output: output was: https://example.com.") is None
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "verify process exited with a non-zero status.",
+        "verify process could not be started.",
+        "verify execution failed without a recognized error pattern.",
+        "verify execution failed unexpectedly.",
+    ],
+)
+def test_safe_error_summary_allows_fixed_execution_diagnostics(summary):
+    assert safe_error_summary(summary) == summary
+
+
+def test_safe_error_summary_rejects_execution_diagnostic_injection():
+    assert safe_error_summary("verify process exited with a non-zero status: SECRET.") is None

@@ -3,8 +3,12 @@
 limit", so naive substring checks misclassified it as EXECUTION_ERROR."""
 
 import json
+from types import SimpleNamespace
 
-from oracle_council.adapters.base import classify_cli_error
+import pytest
+
+from oracle_council.adapters.base import classify_cli_error, execution_failure_summary
+from oracle_council.models import AgentRequest, AgentFailure
 
 
 def test_structured_429_usage_credits_is_quota_exceeded():
@@ -46,3 +50,64 @@ def test_unmatched_error_returns_none_and_falls_back_to_execution_error():
 
 def test_non_json_stdout_does_not_raise():
     assert classify_cli_error("not json at all {{{", "") is None
+
+
+def test_execution_summary_is_fixed_and_does_not_include_diagnostics():
+    summary = execution_failure_summary("verify", "subprocess_nonzero_exit")
+    assert summary == "verify process exited with a non-zero status."
+    assert "SECRET" not in summary
+    assert AgentFailure("EXECUTION_ERROR", "stderr SECRET", public_summary=summary).public_summary == summary
+
+
+@pytest.mark.parametrize(
+    ("module_name", "adapter_name"),
+    [("oracle_council.adapters.claude", "ClaudeAdapter"), ("oracle_council.adapters.codex", "CodexAdapter")],
+)
+def test_adapters_sanitize_unrecognized_nonzero_exit(monkeypatch, module_name, adapter_name):
+    module = __import__(module_name, fromlist=[adapter_name])
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # probe
+            return SimpleNamespace(returncode=0, stdout="1.0", stderr="")
+        return SimpleNamespace(
+            returncode=17,
+            stdout="model output SECRET-PROMPT",
+            stderr="opaque failure API-KEY-123",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    adapter = getattr(module, adapter_name)("test-agent")
+    request = AgentRequest("run-1", "exec-1", "verify", {"question": "private question"})
+    with pytest.raises(AgentFailure) as error:
+        adapter.execute(request)
+    assert error.value.error_code == "EXECUTION_ERROR"
+    assert error.value.public_summary == "verify process exited with a non-zero status."
+    assert "SECRET" not in error.value.public_summary
+    assert "API-KEY" not in error.value.public_summary
+
+
+@pytest.mark.parametrize(
+    ("module_name", "adapter_name"),
+    [("oracle_council.adapters.claude", "ClaudeAdapter"), ("oracle_council.adapters.codex", "CodexAdapter")],
+)
+def test_adapters_sanitize_process_launch_failure(monkeypatch, module_name, adapter_name):
+    module = __import__(module_name, fromlist=[adapter_name])
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(returncode=0, stdout="1.0", stderr="")
+        raise PermissionError("C:\\Users\\secret\\api-key.txt")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    adapter = getattr(module, adapter_name)("test-agent")
+    request = AgentRequest("run-1", "exec-1", "verify", {"question": "private question"})
+    with pytest.raises(AgentFailure) as error:
+        adapter.execute(request)
+    assert error.value.error_code == "EXECUTION_ERROR"
+    assert error.value.public_summary == "verify process could not be started."

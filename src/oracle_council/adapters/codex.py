@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
-from .base import build_phase_input, classify_cli_error, validate_phase_output
+from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output
 
 # SPEC §10.4 / §10.5 enums. Must match adapters/base.py's
 # _CLAIM_IMPORTANCE_VALUES / _CLAIM_STATUS_VALUES exactly: a schema that
@@ -219,7 +219,13 @@ class CodexAdapter:
             if error_code:
                 raise AgentFailure(error_code, err_text)
             if res.returncode != 0:
-                raise AgentFailure("EXECUTION_ERROR", err_text)
+                raise AgentFailure(
+                    "EXECUTION_ERROR",
+                    err_text,
+                    public_summary=execution_failure_summary(
+                        request.phase, "subprocess_nonzero_exit"
+                    ),
+                )
 
             stdout_text = res.stdout.strip()
             output = None
@@ -244,6 +250,13 @@ class CodexAdapter:
                     ) from exc
 
             return AgentResult(validate_phase_output(request.phase, output), Usage(100, 20))
+
+        except OSError as exc:
+            raise AgentFailure(
+                "EXECUTION_ERROR",
+                str(exc),
+                public_summary=execution_failure_summary(request.phase, "process_launch_failure"),
+            ) from exc
 
         finally:
             try:

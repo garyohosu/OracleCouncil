@@ -7,7 +7,7 @@ import subprocess
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, SearchError, SearchResult, Usage, utc_now
-from .base import build_phase_input, classify_cli_error, validate_phase_output
+from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output
 
 # Claude Code has no --output-schema flag (unlike Codex). The model must be
 # told in the prompt what shape to answer in, and `--output-format json`
@@ -172,7 +172,13 @@ class ClaudeAdapter:
             if error_code:
                 raise AgentFailure(error_code, err_text)
             if res.returncode != 0:
-                raise AgentFailure("EXECUTION_ERROR", err_text)
+                raise AgentFailure(
+                    "EXECUTION_ERROR",
+                    err_text,
+                    public_summary=execution_failure_summary(
+                        request.phase, "subprocess_nonzero_exit"
+                    ),
+                )
 
             try:
                 envelope = json.loads(res.stdout.strip())
@@ -199,6 +205,12 @@ class ClaudeAdapter:
             raise AgentFailure("COMMAND_NOT_FOUND", "claude command not found")
         except subprocess.TimeoutExpired as exc:
             raise AgentFailure("TIMEOUT", "claude command timed out") from exc
+        except OSError as exc:
+            raise AgentFailure(
+                "EXECUTION_ERROR",
+                str(exc),
+                public_summary=execution_failure_summary(request.phase, "process_launch_failure"),
+            ) from exc
 
 
 # SPEC §10.2 X-1 SearchProvider Contract, X-2/X-3: confirmed live 2026-07-13

@@ -6,6 +6,20 @@ from typing import Any
 from ..models import AgentFailure, AgentRequest
 
 
+_EXECUTION_SUMMARY_TEXT = {
+    "subprocess_nonzero_exit": "process exited with a non-zero status",
+    "process_launch_failure": "process could not be started",
+    "known_error_pattern_not_matched": "execution failed without a recognized error pattern",
+    "unknown_execution_failure": "execution failed unexpectedly",
+}
+
+
+def execution_failure_summary(phase: str, category: str) -> str:
+    """Build a fixed, public-safe summary without incorporating CLI output."""
+    detail = _EXECUTION_SUMMARY_TEXT.get(category, _EXECUTION_SUMMARY_TEXT["unknown_execution_failure"])
+    return f"{phase} {detail}."
+
+
 def classify_cli_error(stdout: str, stderr: str) -> str | None:
     """Map a failed CLI invocation to a SPEC §8.2 error code, or None if no
     known pattern matched (the caller falls back to EXECUTION_ERROR).
