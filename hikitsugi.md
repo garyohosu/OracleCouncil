@@ -151,6 +151,14 @@ metricsにはURL、title、excerpt、本文、検索語、prompt、stdout/stderr
 - 代表質問5〜10問を1回ずつ実行し、完走率、classification、Evidence件数、フェーズ別所要時間、検索/fetch失敗率を測る
 - `collect_metrics.py`のフラットEvidence metricsを使い、検索が遅いのか、fetchが失敗しているのか、AI処理が遅いのかを切り分ける
 
+## 4-9. Unicode/IRIエンコード障害の堅牢化（X-7.1）
+
+実装済み（2026-07-13、X-7.1確定）。c572303の実Web E2Eで`urllib`境界由来とみられるASCII encode failureが出たため、実E2Eは再実行せず、モックテストで境界を切り分けた。Claude/Codex Adapterは日本語質問をUTF-8 text modeでsubprocessへ渡せることを確認済み。
+
+`SafeHttpFetcher`はfetch前に検索結果URL/IRIをHTTP URIへ正規化する。hostnameはIDNA化し、path/query/fragmentの非ASCII文字はpercent-encodeする。既存percent-encodeは二重変換しない。正規化できないURLは`EvidenceFetchError("INVALID_URL_ENCODING")`として個別候補のfetch失敗にし、Run全体の`internal_error`へ漏らさない。metricsにはコード別件数だけを残し、URL全文、検索語、prompt、stdout/stderr、環境変数、例外全文は入れない。
+
+Storage契約は変更していない。次の実Web E2Eでは、`evidence_collect.metrics.fetch_error_codes.INVALID_URL_ENCODING`の有無と、`internal_error`ではなく通常のPhase記録に収まることを確認する。
+
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
 実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。

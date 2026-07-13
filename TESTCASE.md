@@ -1835,6 +1835,24 @@ tests/
 
 通常CIはnetworkを拒否し、live markerをdeselectする。secret未設定時のlive testはfailではなくskipし、skip理由を表示する。
 
+## 7.4 X-7.1 Unicode/IRI回帰ケース
+
+- **UT-ADAPTER-X7-1-001**
+  - **目的**: 日本語質問がClaude/Codex Adapterのsubprocess境界でエンコード失敗しないことを確認する。
+  - **期待結果**: subprocessはモックされ、実CLIは起動しない。Adapterは`encoding="utf-8"`のtext modeで呼び出され、日本語質問を含む引数を保持する。
+
+- **UT-EVIDENCE-X7-1-001**
+  - **目的**: `SafeHttpFetcher`が非ASCII URL/IRIをHTTPリクエスト前に安全なURIへ正規化することを確認する。
+  - **期待結果**: 日本語path/queryはpercent-encodeされ、国際化ドメインはIDNA化される。既存percent-encodeは二重変換されず、ASCII URLの既存動作は変わらない。
+
+- **UT-EVIDENCE-X7-1-002**
+  - **目的**: URL/IRI正規化不能な検索候補がRun全体の`internal_error`へ漏れないことを確認する。
+  - **期待結果**: 正規化不能URLは`EvidenceFetchError("INVALID_URL_ENCODING")`へ変換される。`WebEvidenceProvider.collect_with_metrics()`は該当候補だけをfetch失敗として集計し、次候補へ継続する。全候補が失敗した場合は`evidence_collect=succeeded`、`success_count=1`、`outcome=no_evidence`、`fetch_error_codes.INVALID_URL_ENCODING`を記録する。
+
+- **UT-CLI-X7-1-001**
+  - **目的**: cli-search経路で不正IRI候補が返ってもJSON出力が安全に完了することを確認する。
+  - **期待結果**: `--json` stdoutは単一の有効JSONで、`status=internal_error`にならない。metricsにはコード別件数だけを出し、URL全文、検索語、prompt、stdout/stderr、環境変数、例外全文は出力しない。
+
 ## 8. ケース件数
 
 | レベル | 件数 |

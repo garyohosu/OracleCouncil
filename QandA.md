@@ -1598,4 +1598,18 @@ Storage契約は変更しない。Phase metricsはin-memory `PhaseRecord`、RunR
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測を完了。既回答73問、未回答27問。*
+### X-7.1. Unicode/IRIエンコード障害の切り分けと堅牢化
+
+**重要度**: Major
+**箇所**: `evidence.py` / `tests/unit/test_evidence.py` / `tests/unit/test_cli.py` / `tests/unit/test_adapter_unicode.py`
+**回答**: 確定。c572303の実Web E2Eで発生した`'ascii' codec can't encode characters...`は、日本語質問そのものではなく、WebSearch候補URL/IRIを`urllib.request.Request`へ渡す境界で非ASCII URLがHTTP URIへ正規化されていない可能性が高いと切り分けた。Claude/Codex Adapterは既に`subprocess.run(..., text=True, encoding="utf-8", errors="replace")`で日本語質問を扱えることをモックテストで確認した。
+
+`SafeHttpFetcher`はHTTPリクエスト前にIRIをURIへ正規化する。hostnameはIDNA化し、path/query/fragmentの非ASCII文字はpercent-encodeする。既存percent-encodeは二重変換しない。正規化不能なURLは`EvidenceFetchError("INVALID_URL_ENCODING")`へ変換し、個別候補のfetch失敗としてmetricsへ集計して次候補へ進む。URL全文、検索語、prompt、stdout/stderr、環境変数、例外全文はmetricsへ入れない。
+
+表示用Evidence URLは、実際にfetchへ使用した正規化済みURIを保持する。全候補がURL正規化で失敗した場合も、収集処理自体は`succeeded`、`success_count=1`、`outcome=no_evidence`、`fetch_error_codes.INVALID_URL_ENCODING`として記録し、CLI最外層の`internal_error`へ漏らさない。Storage契約は変更しない。実E2Eは再実行していない。
+
+**テスト**: 日本語質問のClaude/Codex Adapterモック実行、日本語path/query、国際化ドメイン、既存percent-encode、ASCII URL、不正IRIの`EvidenceFetchError`化、不正IRI候補後の継続、全候補不正時の`no_evidence`、CLI JSONが`internal_error`にならないことを追加。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答74問、未回答26問。*

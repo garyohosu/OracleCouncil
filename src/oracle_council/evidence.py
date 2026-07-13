@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Callable, Iterable, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse, urlsplit, urlunsplit
 from urllib.request import BaseHandler, Request, build_opener
 
 from .models import EvidenceCollectionResult, SearchError, SearchResult
@@ -51,10 +51,13 @@ class SafeHttpFetcher:
         self._opener = opener or build_opener(_NoRedirect())
 
     def fetch(self, url: str, *, max_redirects: int = 3) -> FetchedEvidence:
-        current = url
+        current = self._iri_to_uri(url)
         for _ in range(max_redirects + 1):
             self._validate_url(current)
-            request = Request(current, headers={"User-Agent": "OracleCouncil/0.1"}, method="GET")
+            try:
+                request = Request(current, headers={"User-Agent": "OracleCouncil/0.1"}, method="GET")
+            except UnicodeError as exc:
+                raise EvidenceFetchError("INVALID_URL_ENCODING", "URL must be a valid URI") from exc
             try:
                 response = self._opener.open(request, timeout=self.timeout)
             except HTTPError as exc:
@@ -62,7 +65,7 @@ class SafeHttpFetcher:
                     location = exc.headers.get("Location")
                     if not location:
                         raise EvidenceFetchError("FETCH_FAILED", "redirect without location") from exc
-                    current = urljoin(current, location)
+                    current = self._iri_to_uri(urljoin(current, location))
                     continue
                 raise EvidenceFetchError("FETCH_FAILED", f"HTTP {exc.code}") from exc
             except (URLError, TimeoutError, OSError) as exc:
@@ -72,7 +75,7 @@ class SafeHttpFetcher:
                 location = response.headers.get("Location")
                 if not location:
                     raise EvidenceFetchError("FETCH_FAILED", "redirect without location")
-                current = urljoin(current, location)
+                current = self._iri_to_uri(urljoin(current, location))
                 continue
             content_type = response.headers.get_content_type()
             if not any(content_type.startswith(prefix) for prefix in self.ALLOWED_TYPES):
@@ -102,6 +105,29 @@ class SafeHttpFetcher:
     @staticmethod
     def _resolve(host: str) -> Iterable[str]:
         return {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
+
+    @staticmethod
+    def _iri_to_uri(url: str) -> str:
+        try:
+            parsed = urlsplit(url)
+            hostname = parsed.hostname.encode("idna").decode("ascii") if parsed.hostname else ""
+        except (UnicodeError, ValueError) as exc:
+            raise EvidenceFetchError("INVALID_URL_ENCODING", "URL must be encodable as URI") from exc
+        try:
+            netloc = hostname
+            if parsed.port is not None:
+                netloc = f"{netloc}:{parsed.port}"
+            if parsed.username:
+                userinfo = quote(parsed.username, safe="%")
+                if parsed.password:
+                    userinfo += ":" + quote(parsed.password, safe="%")
+                netloc = f"{userinfo}@{netloc}"
+            path = quote(parsed.path, safe="/%:@!$&'()*+,;=")
+            query = quote(parsed.query, safe="/?:@!$&'()*+,;=%")
+            fragment = quote(parsed.fragment, safe="/?:@!$&'()*+,;=%")
+        except (UnicodeError, ValueError) as exc:
+            raise EvidenceFetchError("INVALID_URL_ENCODING", "URL must be encodable as URI") from exc
+        return urlunsplit((parsed.scheme, netloc, path, query, fragment))
 
 
 class ManualEvidenceProvider:

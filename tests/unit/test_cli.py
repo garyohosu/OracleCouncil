@@ -11,7 +11,15 @@ import yaml
 from oracle_council.cli import output_run_result, main
 from oracle_council.evidence import ManualEvidenceProvider, WebEvidenceProvider
 from oracle_council.fakes import FakeEvidenceProvider
-from oracle_council.models import PhaseRecord, PhaseStatus, ResultClassification, RunResult, RunStatus, SearchError
+from oracle_council.models import (
+    PhaseRecord,
+    PhaseStatus,
+    ResultClassification,
+    RunResult,
+    RunStatus,
+    SearchError,
+    SearchResult,
+)
 from oracle_council.storage import JSONLStorageBackend
 
 
@@ -301,6 +309,20 @@ class PartialSearchErrorProvider:
         raise error
 
 
+class InvalidIriSearchProvider:
+    def search(self, query, limit):
+        return [
+            SearchResult(
+                "https://example.com/\udcff",
+                "invalid iri",
+                "snippet",
+                1,
+                "fake-search",
+                "2026-07-13T00:00:00+00:00",
+            )
+        ]
+
+
 def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(temp_config, capsys):
     with patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
          patch("oracle_council.cli.SafeHttpFetcher"), \
@@ -352,6 +374,29 @@ def test_cli_ask_search_error_json_keeps_partial_sanitized_evidence(temp_config,
     assert evidence_phase["metrics"]["search_count"] == 2
     assert "secret full body" not in captured.out
     assert "raw stderr" not in captured.out
+
+
+def test_cli_ask_invalid_iri_fetch_error_does_not_become_internal_error(temp_config, capsys):
+    with patch("oracle_council.cli.CliSearchProvider", return_value=InvalidIriSearchProvider()):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["status"] == "completed"
+    assert data["run_id"]
+    assert data["evidence"] == []
+    evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+    assert evidence_phase["status"] == "succeeded"
+    assert evidence_phase["success_count"] == 1
+    assert evidence_phase["outcome"] == "no_evidence"
+    assert evidence_phase["metrics"]["fetch_attempt_count"] == 1
+    assert evidence_phase["metrics"]["fetch_failure_count"] == 1
+    assert evidence_phase["metrics"]["fetch_error_codes"] == {"INVALID_URL_ENCODING": 1}
+    rendered = json.dumps(data, ensure_ascii=False)
+    assert "UnicodeEncodeError" not in rendered
+    assert "\udcff" not in rendered
 
 
 def test_cli_ask_cli_search_does_not_fallback_to_fake_provider(temp_config, capsys):

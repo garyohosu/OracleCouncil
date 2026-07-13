@@ -346,6 +346,40 @@ class TestWebEvidenceProviderCollect:
             [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
         ) == []
 
+    def test_collect_continues_after_invalid_iri_candidate_and_records_metrics(self):
+        opener = Opener(Response())
+        provider = WebEvidenceProvider(
+            SafeHttpFetcher(opener=opener, resolver=lambda host: ["93.184.216.34"]),
+            RecordingSearchProvider(
+                {"q": [result("https://example.com/\udcff", 1), result("https://example.com/ok", 2)]}
+            ),
+        )
+        collected = provider.collect_with_metrics(
+            [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        )
+
+        assert [item["url"] for item in collected.evidence] == ["https://example.com/ok"]
+        assert opener.calls == ["https://example.com/ok"]
+        assert collected.metrics["fetch_attempt_count"] == 2
+        assert collected.metrics["fetch_success_count"] == 1
+        assert collected.metrics["fetch_failure_count"] == 1
+        assert collected.metrics["fetch_error_codes"] == {"INVALID_URL_ENCODING": 1}
+
+    def test_collect_all_invalid_iri_candidates_is_no_evidence(self):
+        provider = WebEvidenceProvider(
+            SafeHttpFetcher(opener=Opener(Response()), resolver=lambda host: ["93.184.216.34"]),
+            RecordingSearchProvider({"q": [result("https://example.com/\udcff", 1)]}),
+        )
+        collected = provider.collect_with_metrics(
+            [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        )
+
+        assert collected.evidence == ()
+        assert collected.metrics["evidence_count"] == 0
+        assert collected.metrics["fetch_attempt_count"] == 1
+        assert collected.metrics["fetch_failure_count"] == 1
+        assert collected.metrics["fetch_error_codes"] == {"INVALID_URL_ENCODING": 1}
+
     def test_collect_propagates_search_error(self):
         provider = WebEvidenceProvider(
             RecordingCollectFetcher(),
@@ -378,8 +412,10 @@ class Response:
 class Opener:
     def __init__(self, response):
         self.response = response
+        self.calls = []
 
     def open(self, request, timeout):
+        self.calls.append(request.full_url)
         return self.response
 
 
@@ -398,6 +434,47 @@ def fetcher(opener, addresses=("93.184.216.34",)):
 def test_fetches_allowed_text():
     result = fetcher(Opener(Response())).fetch("https://example.com/a")
     assert result.content == "hello"
+
+
+def test_fetch_percent_encodes_japanese_path_before_request():
+    opener = Opener(Response())
+    result = fetcher(opener).fetch("https://example.com/富士山/標高")
+    assert opener.calls == ["https://example.com/%E5%AF%8C%E5%A3%AB%E5%B1%B1/%E6%A8%99%E9%AB%98"]
+    assert result.url == "https://example.com/%E5%AF%8C%E5%A3%AB%E5%B1%B1/%E6%A8%99%E9%AB%98"
+
+
+def test_fetch_percent_encodes_japanese_query_before_request():
+    opener = Opener(Response())
+    fetcher(opener).fetch("https://example.com/search?q=富士山&unit=m")
+    assert opener.calls == ["https://example.com/search?q=%E5%AF%8C%E5%A3%AB%E5%B1%B1&unit=m"]
+
+
+def test_fetch_idna_encodes_international_domain_before_request():
+    opener = Opener(Response())
+    result = SafeHttpFetcher(
+        opener=opener,
+        resolver=lambda host: ["93.184.216.34"] if host == "xn--r8jz45g.xn--zckzah" else [],
+    ).fetch("https://例え.テスト/資料")
+    assert opener.calls == ["https://xn--r8jz45g.xn--zckzah/%E8%B3%87%E6%96%99"]
+    assert result.url == "https://xn--r8jz45g.xn--zckzah/%E8%B3%87%E6%96%99"
+
+
+def test_fetch_does_not_double_encode_existing_percent_encoding():
+    opener = Opener(Response())
+    fetcher(opener).fetch("https://example.com/%E5%AF%8C%E5%A3%AB%E5%B1%B1?q=%E6%A8%99%E9%AB%98")
+    assert opener.calls == ["https://example.com/%E5%AF%8C%E5%A3%AB%E5%B1%B1?q=%E6%A8%99%E9%AB%98"]
+
+
+def test_fetch_keeps_ascii_url_behavior():
+    opener = Opener(Response())
+    fetcher(opener).fetch("https://example.com/a?q=fuji")
+    assert opener.calls == ["https://example.com/a?q=fuji"]
+
+
+def test_fetch_invalid_iri_encoding_raises_evidence_fetch_error():
+    with pytest.raises(EvidenceFetchError) as excinfo:
+        fetcher(Opener(Response())).fetch("https://example.com/\udcff")
+    assert excinfo.value.code == "INVALID_URL_ENCODING"
 
 
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])
