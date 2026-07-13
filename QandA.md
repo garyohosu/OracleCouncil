@@ -1612,4 +1612,18 @@ Storage契約は変更しない。Phase metricsはin-memory `PhaseRecord`、RunR
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答74問、未回答26問。*
+### X-8. 固定評価セット準備
+
+**重要度**: Major
+**箇所**: `evaluation/x8/` / `scripts/run_x8_evaluation.py`
+**回答**: 準備完了。実AI・実Web Evidence付きMVPの信頼性測定用に、8問の固定評価セット`eval-set-v1.json`を作成した。カテゴリは単純事実、安定法令事実、最新/近年情報、誤った前提、競合資料、用語訂正、Evidence不足、日時指定の現在情報に分けた。質問文・順序・期待挙動・受入確認・許容classification・`max_external_runs=1`はJSONを正本にする。
+
+runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`一致、リポジトリ外output、同一question-id再実行禁止を確認する。最初のlive実行前に`manifest.json`を原子的に作成し、eval-set SHA-256、HEAD、question_idsを固定する。外部コマンド直前に`attempted.json`を原子的に作成し、失敗しても解除しない。stdout/stderrは別ファイルに保存し、`record.json`と`summary.jsonl`/`summary.csv`にはrun_id、status、classification、Phase概要、Evidence metricsなどの監査用抽出値だけを保存する。回答全文、生prompt、生stdout/stderr、本文全文はsummaryへ入れない。
+
+`--dry-run`は外部AIや`oracle ask`を起動せず、`attempted.json`や`manifest.json`も作らない。開発中の未コミット差分がある状態でも、dirty状態を安全確認結果として表示する。本番評価実行ではdirty worktreeを拒否する。`--all`は通常のwithheld/no_evidence/partial_evidenceでは継続するが、timeout、不正JSON、`internal_error`、`configuration_error`、`verification_unavailable`、`run_id=null`、subprocess起動失敗では残り質問へattemptedを作らず停止する。`--rebuild-summary`で既存のattempted/stdout/stderr/recordからrecordとsummaryを再構築できる。
+
+**テスト**: 質問順、manifest作成と不一致拒否、1問1回制限、attempted後の再実行拒否、失敗後の再実行拒否、`--all`の継続/停止規則、HEAD/origin/dirty/output-dir拒否、stdout/stderr分離、不正JSON耐性、metrics抽出、欠落フィールド耐性、timeout、spawn失敗、summary再構築、CSV formula injection防止、dry-runでsubprocess未実行、日本語質問の引数渡し、UTF-8環境、`shell=False`を確認する。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答75問、未回答25問。*

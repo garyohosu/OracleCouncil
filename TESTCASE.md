@@ -1853,6 +1853,32 @@ tests/
   - **目的**: cli-search経路で不正IRI候補が返ってもJSON出力が安全に完了することを確認する。
   - **期待結果**: `--json` stdoutは単一の有効JSONで、`status=internal_error`にならない。metricsにはコード別件数だけを出し、URL全文、検索語、prompt、stdout/stderr、環境変数、例外全文は出力しない。
 
+## 7.5 X-8固定評価runnerケース
+
+- **UT-EVAL-X8-001**
+  - **目的**: 固定評価セットの質問順とJSON正本を確認する。
+  - **期待結果**: runnerは`eval-set-v1.json`から`q01`〜`q08`の順に質問を読み、質問文字列をrunner内へ重複定義しない。
+
+- **UT-EVAL-X8-002**
+  - **目的**: 1問1回制限を確認する。
+  - **期待結果**: live実行前に`manifest.json`を作成し、eval-set SHA-256、HEAD、question_idsを固定する。外部コマンド直前に`attempted.json`を原子的に作成し、成功・失敗・不正JSONのいずれでも同じquestion-idの再実行を拒否する。
+
+- **UT-EVAL-X8-003**
+  - **目的**: 安全条件を確認する。
+  - **期待結果**: 本番実行ではHEAD不一致、origin/main不一致、dirty worktree、リポジトリ内output-dirを拒否する。dry-runは外部コマンドを起動せず、attempted、manifest、stdout/stderr、record、summaryを作成しない。
+
+- **UT-EVAL-X8-004**
+  - **目的**: 出力分離とsummary抽出を確認する。
+  - **期待結果**: stdout/stderrは別ファイルへ保存し、`record.json`、`summary.jsonl`、`summary.csv`へはrun_id、status、classification、Phase概要、Evidence metricsなどの安全な抽出値だけを保存する。stderr、回答全文、生prompt、生モデル出力全文をsummaryへ入れない。CSVはUTF-8 BOM付きで、formula injectionを防ぐ。
+
+- **UT-EVAL-X8-005**
+  - **目的**: subprocess境界を確認する。
+  - **期待結果**: `shell=True`を使わず、日本語質問を単一の安全な引数として渡し、`PYTHONPATH`を現在cloneの`src`へ固定する。`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`を設定する。テストではsubprocess、外部AI、ネットワークをすべてモックする。
+
+- **UT-EVAL-X8-006**
+  - **目的**: systemic failureの停止規則と復旧を確認する。
+  - **期待結果**: timeout、不正JSON、`internal_error`、`configuration_error`、`verification_unavailable`、`run_id=null`、subprocess起動失敗では`--all`を停止し、残り質問のattemptedを作らない。`--rebuild-summary`は外部コマンドを起動せず、既存attempted/stdout/stderr/recordからrecordとsummaryを再構築する。
+
 ## 8. ケース件数
 
 | レベル | 件数 |

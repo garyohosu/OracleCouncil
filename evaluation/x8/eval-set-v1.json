@@ -1,0 +1,109 @@
+{
+  "evaluation_version": "x8-eval-set-v1",
+  "questions": [
+    {
+      "id": "q01",
+      "category": "stable_fact",
+      "question": "富士山の標高は何メートルですか？",
+      "expected_behavior": "富士山の標高をEvidenceに基づいて簡潔に回答する。",
+      "acceptance_checks": [
+        "最終回答が3776メートルまたは3,776メートルを含む",
+        "富士山の標高に関するEvidenceが取得されている",
+        "根拠と異なる標高値を断定しない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q02",
+      "category": "stable_legal_fact",
+      "question": "日本の成人年齢が18歳に引き下げられたのは、いつ施行されましたか？",
+      "expected_behavior": "民法改正による成人年齢18歳への引き下げの施行日を回答する。",
+      "acceptance_checks": [
+        "2022年4月1日を示す",
+        "成人年齢引き下げの文脈で説明する",
+        "成立日と施行日を混同しない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q03",
+      "category": "recent_award_fact",
+      "question": "2024年のノーベル物理学賞は誰に、どのような業績で授与されましたか？",
+      "expected_behavior": "2024年ノーベル物理学賞の受賞者と業績をEvidenceに基づいて回答する。",
+      "acceptance_checks": [
+        "受賞者名を示す",
+        "授賞理由または業績を示す",
+        "別年の受賞者と混同しない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q04",
+      "category": "false_premise",
+      "question": "日本の法定成人年齢は現在も20歳なのはなぜですか？",
+      "expected_behavior": "質問の前提が誤りであることを指摘し、現在の成人年齢を説明する。",
+      "acceptance_checks": [
+        "現在の法定成人年齢が18歳であることを示す",
+        "20歳のままと断定しない",
+        "飲酒・喫煙等の年齢制限と成人年齢を区別する"
+      ],
+      "allowed_classifications": ["verified", "partially_verified", "withheld"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q05",
+      "category": "contested_fact",
+      "question": "世界で最も長い川はナイル川だと断定できますか？",
+      "expected_behavior": "ナイル川とアマゾン川の測定・定義差による不確実性を扱い、過度な断定を避ける。",
+      "acceptance_checks": [
+        "ナイル川とアマゾン川の競合を説明する",
+        "測定方法や定義で結論が変わり得ることを示す",
+        "単純にナイル川と断定しない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified", "withheld"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q06",
+      "category": "terminology_correction",
+      "question": "富士山は休火山ですか、それとも活火山ですか？",
+      "expected_behavior": "現在の分類では富士山が活火山であることを説明し、休火山という旧分類に注意する。",
+      "acceptance_checks": [
+        "富士山は活火山であると示す",
+        "休火山という表現が現在の公式分類では使われないことを説明する",
+        "Evidenceと矛盾する分類をしない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q07",
+      "category": "likely_no_evidence",
+      "question": "紫電量子水産株式会社の2026年6月の売上高はいくらですか？",
+      "expected_behavior": "架空または確認不能の可能性が高い企業・売上情報について、根拠不足なら断定を避ける。",
+      "acceptance_checks": [
+        "確認できるEvidenceがない場合に売上高を捏造しない",
+        "Evidence不足を明示する",
+        "必要なら回答保留または未確認扱いにする"
+      ],
+      "allowed_classifications": ["unverified", "partially_verified", "withheld"],
+      "max_external_runs": 1
+    },
+    {
+      "id": "q08",
+      "category": "current_fact",
+      "question": "2026年7月13日時点で、Pythonの最新安定版は何ですか？",
+      "expected_behavior": "指定日時点のPython最新安定版をEvidenceに基づいて回答する。",
+      "acceptance_checks": [
+        "2026年7月13日時点という基準日を扱う",
+        "公式または信頼できるEvidenceを参照する",
+        "プレリリースと安定版を混同しない"
+      ],
+      "allowed_classifications": ["verified", "partially_verified", "withheld"],
+      "max_external_runs": 1
+    }
+  ]
+}

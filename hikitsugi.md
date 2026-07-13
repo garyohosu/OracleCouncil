@@ -159,6 +159,14 @@ metricsにはURL、title、excerpt、本文、検索語、prompt、stdout/stderr
 
 Storage契約は変更していない。次の実Web E2Eでは、`evidence_collect.metrics.fetch_error_codes.INVALID_URL_ENCODING`の有無と、`internal_error`ではなく通常のPhase記録に収まることを確認する。
 
+## 4-10. X-8固定評価セット準備
+
+準備済み（2026-07-13）。`evaluation/x8/eval-set-v1.json`に8問の固定評価セットを定義した。質問文・順序・カテゴリ・期待挙動・受入確認・許容classification・`max_external_runs=1`はJSONを正本にする。
+
+`scripts/run_x8_evaluation.py`は、実行前にHEAD、ローカル`refs/remotes/origin/main`、worktree、output-dirを検査する。本番実行ではdirty worktreeを拒否し、output-dirがリポジトリ内なら拒否する。最初のlive実行前に`manifest.json`を作成し、eval-set SHA-256、HEAD、question_idsを固定する。各質問は`attempted.json`を外部コマンド直前に原子的に作成して1回制限をかける。失敗してもattemptedは解除しない。stdout/stderrは質問ごとのディレクトリへ分離保存し、`record.json`と`summary.jsonl`/`summary.csv`には監査用の抽出値だけを保存する。
+
+dry-runは外部AI、WebSearch、実HTTPを起動せず、attemptedやmanifestも作成しない。未コミット差分がある開発中でもdirty状態を安全確認結果として表示する。本番実行コマンドはREADME参照。生成された評価結果は`C:\PROJECT\OracleCouncil-evals\x8\<HEAD>\`配下に置き、Gitへ追加しない。timeout、不正JSON、`internal_error`、`configuration_error`、`verification_unavailable`、`run_id=null`などのsystemic failureでは`--all`を停止し、未実行質問のattemptedを作らない。`--rebuild-summary`で既存record群からsummaryを再構築できる。
+
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
 実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。
