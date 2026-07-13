@@ -1,6 +1,6 @@
 # hikitsugi.md — 引き継ぎ（Phase 0実装）
 
-> 最終更新: 2026-07-12。前セッションがトークン切れで中断したため、現在地と残作業をここに集約する。
+> 最終更新: 2026-07-13。前セッションがトークン切れで中断したため、現在地と残作業をここに集約する。
 > 正本はFIX_PLAN.md（残ブロッカー）とTESTCASE.md（期待値）。本書は「次に何をするか」の作業指示書。
 
 ## 1. 現在地
@@ -188,6 +188,23 @@ q04の保存済みX-8結果は読み取り専用で確認した。Claimは全て
 - Real Adapterの後続phase promptへclaims、evidence、critique、final_answerなどのrun contextを渡す
 
 検証済み: `py -m pytest` は224 passed / 6 deselected / 460 warnings、`git diff --check`成功。X-8評価結果は読み取りのみで、q04やrunnerは再実行していない。次に実機で確認する場合は、この差分をコミット・pushした後、新しいHEAD用の別評価ディレクトリでX-8再評価を行う。既存`C:\PROJECT\OracleCouncil-evals\x8\6a55ede`は基準値として変更しない。
+
+## 4-13. X-8.2後のlive再評価（q04）で新しい未解決の失敗を発見 — 次はこれ
+
+X-8.2（誤前提と回答保留の分離）コミット・push後、新HEAD（`9dd2407`）で`scripts/run_x8_evaluation.py --dry-run`を実行し安全確認（worktree clean・origin一致・出力先`x8/9dd2407`が既存`x8/6a55ede`と非衝突）。8問フルの本番live実行はコストが大きいため、ユーザー判断でq04（false_premise、X-8.2の直接対象）1問だけに絞ってlive再実行した。
+
+**運用ミス**: live 1問の所要時間（実測約280秒）を見積もらず、最初の試行をBashツール既定の2分タイムアウトで強制終了してしまった。`attempted.json`は外部コマンド起動直前に原子的作成されるため、この試行でq04の1回限定ロックは無結果のまま消費された（`C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live\`、`record.json`なし、`stdout.json`/`stderr.txt`とも空）。別出力ディレクトリ（`9dd2407-q04-live2`、タイムアウトを10分へ延長）で再度実行し完走。**結果としてq04の外部呼び出しをこのセッションで実質2回消費した**（eval-set側の`max_external_runs=1`は出力ディレクトリ単位のロックであり、別ディレクトリを跨いだ多重実行そのものは防げない）。次にlive評価を回す際は、SPEC §8.4のverifyモード上限（1呼び出し180秒）×フェーズ数から逆算し、最初からBashのtimeoutを600000ms付近に設定すること。
+
+**完走した方（`9dd2407-q04-live2`）の結果**: `status: failed`、`result_classification: unverified`（q04の`allowed_classifications`は`verified`/`partially_verified`/`withheld`のいずれかで、これに該当しない）。フェーズ進行は`respond`（2件成功）→`claim_extract`→`evidence_collect`（Evidence 15件収集、`outcome: partial_evidence`）までは正常。`verify` phaseで`codex-cli`が起動から413ms後に`error_code: EXECUTION_ERROR`（`error_summary: "verify execution ended with EXECUTION_ERROR."`のみ、allowlist経由の定型文）で失敗し、Run全体が`failed`で終端した。
+
+X-8.2で修正した「誤前提Claimが反証されても訂正Claimがverified/supportedなら公開可能」ロジックは、audit以降のRun分類判定の話であり、そこに到達する前の`verify`実行自体が失敗しているため**今回の失敗はX-8.2の修正対象とは無関係**。X-8.1で追加した構造診断（`AgentFailure.public_summary`）は主に`INVALID_OUTPUT`（必須フィールド欠落・型不正・JSON抽出不能）向けで、`EXECUTION_ERROR`（`classify_cli_error`の一般フォールバック、CLIサブプロセス自体の異常終了系）には粒度の粗い定型文しか残らない。`--no-store`実行だったため生stdout/stderrは保存されておらず、根本原因は**q01（X-8.1）と同様「保存情報不足により特定不能」**。413msという速さから、タイムアウトよりもCLI起動直後の即時拒否（引数不正、認証/quota、コンテキスト長超過など）を疑うが未確認。
+
+**次にやること（未着手）**:
+
+1. EXECUTION_ERROR系にもX-8.1相当の粗い構造診断（subprocess非ゼロ終了か／タイムアウトか／既知パターン不一致か程度)を残せないか検討・実装する。再現性のない一発の失敗から仕様を変えない（X-8.1の教訓と同じ）
+2. 再現性確認のため、ユーザーの追加承認を得た上でq04をもう一度live実行する（別出力ディレクトリ、timeoutは600000ms前提）。1回で再現しなければ外部要因（レート制限等）の可能性が高い
+3. 8問フル評価はまだ未実施。1問実行するたびに数分かかる前提でスケジュールし、`--all`はBashの`run_in_background`＋Monitor監視、またはtimeoutを600000ms超で分割実行することを検討する
+4. 既存の基準値`C:\PROJECT\OracleCouncil-evals\x8\6a55ede`と、今回のq04単発結果（`9dd2407-q04-live`は無結果につき無視、`9dd2407-q04-live2`が有効）はどちらも変更・削除していない
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
