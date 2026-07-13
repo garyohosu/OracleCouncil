@@ -5,7 +5,7 @@
 > 作業を始める前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
 > 未コミット差分がある場合は、勝手にreset・stash・削除せず、差分を保護して状況を報告してください。
 
-## X-8.5: EXECUTION_ERROR summaryの誤ラップ修正
+## X-8.6: Codexの長いPhase入力をstdinへ移す
 
 対象リポジトリ:
 
@@ -15,202 +15,238 @@ C:\PROJECT\OracleCouncil
 
 ## 目的
 
-X-8.4のq04 live再評価で、`verify`の失敗自体は正しく`EXECUTION_ERROR`かつ「非ゼロ終了」と判別できたが、外部向けsummaryが次のように誤って`invalid output`としてラップされた。
+q04のlive評価では、2回とも次の流れで失敗した。
 
-```text
-verify invalid output: verify process exited with a non-zero status..
-```
+- `respond` 2回成功
+- `claim_extract`成功
+- `evidence_collect`成功
+- Evidence 14〜15件取得
+- `verify`のCodex CLIが起動直後の短時間で非ゼロ終了
+- `EXECUTION_ERROR`
 
-`EXECUTION_ERROR`と`INVALID_OUTPUT`は別の失敗種別であるため、Orchestratorのsummary生成を修正し、EXECUTION_ERRORでは固定実行診断をそのまま出し、INVALID_OUTPUTだけが従来どおり構造診断ラップを使うようにする。
+X-8.3〜X-8.5により、失敗を安全な固定summaryとして記録する経路は整備できたが、実Codexが非ゼロ終了する根本原因は未特定である。
 
-今回はsummary経路だけを修正する。実CLI、WebSearch、HTTP、X-8 live評価は実行しない。
-
-## 現在地・確認済み原因
-
-X-8.4はHEAD `bca0c90`でq04を1回だけ実行し、次を確認した。
-
-- Run: `failed` / exit 1 / classification `unverified`
-- `respond`、`claim_extract`、`evidence_collect`は成功
-- Evidence 14件
-- `verify`は`EXECUTION_ERROR`
-- 固定診断は非ゼロ終了相当
-- JSON parse valid
-- leakage check passed
-- 再試行なし
-
-文言二重化の直接原因は`src/oracle_council/orchestrator.py`の`_failure_summary()`である。
-
-現行実装は`failure.public_summary`が存在する場合、error codeを見ずに常に次の形式へ変換している。
+現在の`CodexAdapter.execute()`は、`build_phase_input()`が生成した質問、Claim、Evidence等の長い入力全文を、`codex exec`の位置引数としてコマンドラインへ直接追加している。
 
 ```python
-return f"{phase} invalid output: {public_summary}."[:200]
+cmd = [
+    "codex.cmd" if os.name == "nt" else "codex",
+    "exec",
+    question,
+    ...
+]
 ```
 
-そのため、既にphaseと末尾ピリオドを含むEXECUTION_ERRORの固定summaryもINVALID_OUTPUTとして包まれ、意味の誤りと二重ピリオドが発生する。
+`verify`は質問だけでなくClaimとEvidenceを含むため、先行Phaseより大幅に長くなる。Windows上で`codex.cmd`へ長い引数を渡す構成は、コマンドライン長制限や引数解釈の影響を受ける可能性がある。
+
+これは現時点では**有力仮説であり確定原因ではない**。今回の目的は、原因と断定することではなく、Codex CLIが公式に対応するstdin入力へ切り替え、プロンプト長をコマンドラインから除去することで、この失敗要因を安全に排除することである。
+
+## O-6に関する今回の設計判断
+
+`FIX_PLAN.md`のO-6「stdin限定と一時ファイル許可の矛盾」について、CodexAdapterでは次の境界を採用する。
+
+### stdinへ渡す情報
+
+次のユーザー由来・実行由来データはコマンドライン引数や一時ファイルへ書かず、stdinで渡す。
+
+```text
+question
+responses
+claims
+evidence
+critique
+final_answer
+build_phase_input()が生成するPhase入力全文
+```
+
+### 一時ファイルを許可する情報
+
+Codex CLIの`--output-schema`で必要な、プログラムが生成したJSON Schemaだけは一時ファイルを許可する。
+
+条件:
+
+- ユーザー質問を含めない
+- Claim本文、Evidence、回答、promptを含めない
+- 環境変数や認証情報を含めない
+- subprocess終了後、成功・失敗を問わず`finally`で削除する
+- 既存の安全な一時ファイル処理を維持する
+
+今回、ClaudeAdapterやCliSearchProviderの入力方式は変更しない。O-6全体を完了扱いにせず、**CodexAdapter側のprompt transportを解消した**と記録する。
 
 ## 作業前確認
 
 最初に次を確認する。
 
 ```text
-src/oracle_council/orchestrator.py
-src/oracle_council/models.py
+src/oracle_council/adapters/codex.py
 src/oracle_council/adapters/base.py
-tests/unit/test_orchestrator.py
+tests/unit/test_adapter_error_classification.py
 tests/unit/test_adapter_schema.py
-scripts/run_x8_evaluation.py
+FIX_PLAN.md
 hikitsugi.md
 instructions/result.md
 ```
 
-特に次の契約を確認する。
+確認事項:
 
-- `AgentFailure.error_code`
-- `AgentFailure.public_summary`
-- `safe_public_summary()`
-- `safe_error_summary()`
-- `_failure_summary()`
-- `INVALID_OUTPUT`の既存構造診断
-- `EXECUTION_ERROR`の固定診断
-- CLI JSONとX-8 runnerの`phase_summary`
+- `build_phase_input()`がPhase別に含めるデータ
+- CodexAdapterの`probe()`と本実行の`subprocess.run()`の違い
+- temp schemaの作成・削除経路
+- `classify_cli_error()`の順序
+- X-8.3のEXECUTION_ERROR固定summary
+- X-8.5のOrchestrator summary規則
+- Codex CLIのprompt `-`によるstdin入力契約
 
 ## 実装要件
 
-### 1. error codeごとにsummary生成を分離する
+### 1. promptをargvから除去する
 
-`_failure_summary()`を修正し、少なくとも次の挙動にする。
+Codex本実行のコマンドラインに、`question`または`build_phase_input()`の戻り値を直接含めない。
 
-#### INVALID_OUTPUT
+期待する構造例:
 
-`failure.error_code == "INVALID_OUTPUT"`かつ安全な`public_summary`がある場合だけ、従来形式を維持する。
+```python
+cmd = [
+    "codex.cmd" if os.name == "nt" else "codex",
+    "exec",
+    "-s",
+    "read-only",
+    "--ephemeral",
+    "--output-schema",
+    temp_schema_path,
+]
 
-```text
-<phase> invalid output: <構造診断>.
+if self.model:
+    cmd.extend(["--model", self.model])
+
+cmd.append("-")
 ```
 
-例:
+実際の並び順はCodex CLIの現行契約に合わせること。
 
-```text
-criticize invalid output: missing field: critique.
-```
+次を満たすこと。
 
-#### EXECUTION_ERROR
+- promptを示す位置引数にはstdin指定の`-`だけを使う
+- `question`全文を`cmd`へ追加しない
+- schema path以外の実行時データをargvへ追加しない
+- Windowsでは従来どおり`codex.cmd`を使う
+- read-only、ephemeral、output-schema、model指定を維持する
 
-`failure.error_code == "EXECUTION_ERROR"`かつ安全な固定実行summaryがある場合は、`invalid output`を付けず、そのsummaryを外部向けに使う。
+### 2. subprocess.runへstdinデータを渡す
+
+本実行では`subprocess.run()`へPhase入力を文字列として渡す。
 
 期待例:
 
-```text
-verify process exited with a non-zero status.
-verify process could not be started.
-verify execution failed without a recognized error pattern.
-verify execution failed unexpectedly.
+```python
+res = subprocess.run(
+    cmd,
+    input=question,
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+    timeout=self.timeout_s,
+    env=env,
+    shell=False,
+)
 ```
 
 次を満たすこと。
 
-- `invalid output`を付けない
-- ピリオドを二重にしない
-- summary内のphaseが現在のphaseと一致することを確認する
-- `safe_error_summary()`または同等のallowlist検証を通す
-- phase不一致、不正形式、任意文字列なら採用しない
+- `input=question`を使用する
+- 本実行で`stdin=subprocess.DEVNULL`を併用しない
+- probeは従来どおり`stdin=subprocess.DEVNULL`でよい
+- prompt内容をログ、例外summary、コマンド表示へ追加しない
 
-#### その他のerror code
+### 3. 既存の処理を変更しない
 
-安全な専用処理が定義されていないerror codeは、従来どおり次の固定形式へフォールバックする。
+次を維持する。
 
-```text
-<phase> execution ended with <ERROR_CODE>.
-```
+- probeの動作
+- `--output-schema`による構造化出力
+- `_strict_schema()`
+- temp schemaの削除
+- stdoutからのJSON抽出
+- `validate_phase_output()`
+- TIMEOUT、RATE_LIMITED、QUOTA_EXCEEDED、AUTH_REQUIRED分類
+- EXECUTION_ERROR固定summary
+- INVALID_OUTPUT構造診断
+- Usageの現行扱い
+- Storage Contract
+- Run、Phase、Executionのclassificationと終了コード
 
-### 2. Adapter分類は変更しない
+### 4. 仮説を事実化しない
 
-今回、次は変更しない。
+ドキュメントでは次のように区別する。
 
-- Claude/Codex Adapterのコマンドライン引数
-- `classify_cli_error()`の既知エラー判定
-- EXECUTION_ERRORを生成する条件
-- timeout値
-- retry条件
-- phase schema
-- prompt内容
-- Evidence処理
+- 確認済み: Codex prompt全文がargvへ入っていた
+- 確認済み: verifyはClaimとEvidenceを含み、前段より長い
+- 確認済み: q04のverifyで短時間の非ゼロ終了が2回再現した
+- 仮説: Windowsのコマンドライン長または引数受け渡しが原因
+- 今回の修正: promptをstdinへ移し、この原因候補を除去
+- 未確認: stdin化で実liveが成功するか
 
-### 3. 公開境界を維持する
-
-次を外部summary、CLI JSON、Phase metrics、X-8 summaryへ出さない。
-
-```text
-stdout
-stderr
-prompt
-モデル出力本文
-コマンド全文
-ファイルパス
-ユーザー名
-環境変数
-APIキー
-認証情報
-Cookie
-HTTP header
-検索クエリ
-例外本文
-任意のCLI出力文字列
-```
-
-Storage ContractとJSONL形式は変更しない。
-
-### 4. 既存結果を変更しない
-
-次の保存済み評価結果は基準記録として扱い、変更・削除・再構築しない。
-
-```text
-C:\PROJECT\OracleCouncil-evals\x8\6a55ede
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
-C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
-```
+「根本原因を特定した」「Windows長制限が原因だった」とは、live再確認前に断定しない。
 
 ## テスト要件
 
-FakeまたはScripted Adapterだけで再現する通常テストを追加する。
+実Codexを呼ばず、`subprocess.run`をFakeまたはmonkeypatchして通常テストを追加する。
 
-最低限、次を固定する。
+最低限、次を確認する。
 
-1. verify phaseで`AgentFailure("EXECUTION_ERROR", ..., public_summary="verify process exited with a non-zero status.")`を発生させる
-2. PhaseRecordの`error_code`が`EXECUTION_ERROR`
-3. PhaseRecordの`error_summary`が正確に次となる
+### コマンドとstdin
+
+1. probe呼び出しは従来どおり成功する
+2. 本実行の`cmd`に`codex exec`が含まれる
+3. 本実行の`cmd`にstdin指定の`-`が含まれる
+4. 本実行の`cmd`に質問本文が含まれない
+5. 本実行の`cmd`にClaim本文が含まれない
+6. 本実行の`cmd`にEvidence本文が含まれない
+7. `subprocess.run(input=...)`へ`build_phase_input()`相当の全文が渡される
+8. 本実行で`stdin=subprocess.DEVNULL`が指定されない
+9. `shell=False`を維持する
+10. Windows分岐では`codex.cmd`を維持する
+
+### 長い入力
+
+11. 50,000文字以上のsyntheticなverify入力を作る
+12. 長い入力全文が`input`へ渡される
+13. `cmd`の長さは入力本文の長さに比例して増えない
+14. 長い質問、Claim、Evidenceの識別文字列がargvへ一切入らない
+15. Fake成功応答を正常にparse・validateできる
+
+### 一時schema
+
+16. subprocess呼び出し時点でschemaファイルが存在する
+17. schemaに質問、Claim、Evidence、秘密文字列が含まれない
+18. 成功後にschemaファイルが削除される
+19. 非ゼロ終了や例外後にもschemaファイルが削除される
+
+### エラー回帰
+
+20. 非ゼロ終了は`EXECUTION_ERROR`になる
+21. fixed summaryは`<phase> process exited with a non-zero status.`になる
+22. stdout、stderr、prompt、秘密文字列はpublic summaryへ混入しない
+23. timeout、quota、rate limit、authの既存分類を壊さない
+24. INVALID_OUTPUTの既存構造診断を壊さない
+
+テストの追加先は、既存構成に合わせて次のいずれかを使用する。
 
 ```text
-verify process exited with a non-zero status.
+tests/unit/test_adapter_error_classification.py
+tests/unit/test_adapter_schema.py
 ```
 
-4. AgentExecutionRecordの`error_summary`も同じ固定summary
-5. `invalid output`を含まない
-6. `..`の二重ピリオドを含まない
-7. raw messageや秘密文字列を含まない
-8. `process could not be started`など他の固定実行summaryも許可される
-9. phase不一致のsummaryは拒否または安全な一般summaryへフォールバックする
-10. 任意文字列・改行・制御文字・長すぎるsummaryは拒否する
-11. INVALID_OUTPUTは従来どおり次の形式を維持する
-
-```text
-criticize invalid output: missing field: critique.
-```
-
-12. TIMEOUT、RATE_LIMITED、QUOTA_EXCEEDED、AUTH_REQUIRED等の既存summaryを壊さない
-13. CLI JSON化後も`safe_error_summary()`を通過する
-14. X-8 runnerの`phase_summary()`でも修正後summaryが保持される
-
-必要なら`tests/unit/test_orchestrator.py`、`tests/unit/test_adapter_schema.py`、`tests/unit/test_x8_evaluation.py`へ分けて追加する。
+必要ならCodex transport専用の単体テストファイルを新設してよい。
 
 ## 実行禁止事項
 
 今回は次を実行しない。
 
 ```text
-claude
-codex
+codex execによる生成呼び出し
+claude -pによる生成呼び出し
 WebSearch
 実HTTP取得
 ORACLE_COUNCIL_LIVE=1
@@ -221,7 +257,16 @@ q04再実行
 scripts/run_x8_evaluation.pyのlive実行
 ```
 
-X-8.4の失敗原因を推測してAdapter仕様を変更しない。
+`codex --version`や`codex exec --help`も、実装とテストに不要なら実行しない。
+
+保存済み評価結果を変更・削除・再構築しない。
+
+```text
+C:\PROJECT\OracleCouncil-evals\x8\6a55ede
+C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live
+C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
+C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
+```
 
 ## 検証
 
@@ -239,20 +284,34 @@ git status --short
 - live / expensiveは既定設定で除外
 - `git diff --check`成功
 - 意図しないファイル変更なし
-- EXECUTION_ERROR summaryから`invalid output`と二重ピリオドが消える
-- INVALID_OUTPUTの既存summaryは変わらない
+- prompt本文がCodex実行argvへ入らない
+- 長いPhase入力がstdinへ渡される
+- temp schemaのcleanupが維持される
+- 既存エラー分類とsummaryを壊さない
 
 ## ドキュメント更新
 
-`hikitsugi.md`へX-8.5として次を記録する。
+`hikitsugi.md`へX-8.6として次を記録する。
 
-- X-8.4で確認した誤ラップ
-- 根本原因が`_failure_summary()`の無条件ラップだったこと
-- 修正後のerror code別summary規則
-- 公開境界とStorage Contractが不変であること
-- 追加テスト
+- q04のverify非ゼロ終了が2回再現したこと
+- promptをargvへ直接渡していた現行構造
+- Windowsコマンドライン長は未確認の原因仮説であること
+- Codex promptをstdinへ移したこと
+- temp fileはschemaだけに限定したこと
+- O-6はCodexAdapter側のみ前進し、全体完了ではないこと
+- 追加した長文入力テスト
 - pytest結果
 - live再実行をしていないこと
+- 次の作業が「ユーザー承認後のq04 1回限定再評価」であること
+
+`FIX_PLAN.md`のO-6には、完了扱いにせず次の趣旨を追記する。
+
+```text
+CodexAdapter: promptはstdin、temp fileは非機密schemaだけに限定して実装済み。
+ClaudeAdapter/CliSearchProviderを含む全体方針の完了確認は未実施。
+```
+
+SPEC変更が不要ならバージョンは上げない。
 
 ## コミットとpush
 
@@ -261,14 +320,14 @@ git status --short
 コミットメッセージ例:
 
 ```text
-fix: preserve execution error summaries
+fix: pass Codex phase input through stdin
 ```
 
-`instructions/result.md`も結果記録コミットへ含める。
+`instructions/result.md`も今回のコミット対象に含める。
 
 ## 結果出力
 
-作業完了後、結果を次へ必ず出力する。
+作業完了後、結果を次へ必ず出力すること。
 
 ```text
 instructions/result.md
@@ -278,18 +337,20 @@ instructions/result.md
 
 最低限、次を記載する。
 
-1. 誤ラップの根本原因
-2. 修正したsummary分岐
-3. EXECUTION_ERRORの修正後summary
-4. INVALID_OUTPUTの互換性確認
-5. phase不一致・不正summaryの扱い
-6. 機密情報漏えい防止
-7. 変更ファイル一覧
-8. 追加テスト一覧
-9. pytest結果
-10. `git diff --check`結果
-11. live / expensive / q04を実行していないこと
-12. commit hash
-13. push結果
-14. 未解決事項
-15. 次の推奨作業
+1. 現行Codex commandの確認結果
+2. stdin化した実装内容
+3. 最終的な`cmd`の構造（prompt本文は記載しない）
+4. `subprocess.run()`へ渡すstdin方式
+5. 長文入力テストの文字数と結果
+6. argvへprompt、Claim、Evidenceが入らないこと
+7. temp schemaの内容境界とcleanup結果
+8. 既存エラー分類の回帰結果
+9. 変更ファイル一覧
+10. pytest結果
+11. `git diff --check`結果
+12. live、q04、実CLIを実行していないこと
+13. commit hash
+14. push結果
+15. Windowsコマンドライン長は未確認仮説であること
+16. 未解決事項
+17. 次の推奨作業
