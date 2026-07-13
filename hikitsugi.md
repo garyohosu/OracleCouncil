@@ -276,3 +276,11 @@ q04で2回再現したverify非ゼロ終了に対し、CodexAdapterが`build_pha
 Codex本実行のargvからprompt本文を削除し、末尾の`-`でstdin入力を指定した。`subprocess.run(input=question, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)`を使用し、本実行で`stdin=DEVNULL`は併用しない。probe、read-only、ephemeral、output-schema、model指定、JSON抽出、既存エラー分類は維持した。temp fileは非機密のJSON Schemaだけで、成功・失敗後とも削除する。
 
 50,000文字超の質問・Claim・Evidenceを使うtransportテストを追加し、全文がstdinへ渡り、argvに本文識別子が入らず、schemaに入力本文が含まれないことを確認した。`py -m pytest`は238 passed / 6 deselected。live、expensive、q04、実CLI、WebSearch、HTTPは実行していない。O-6はCodexAdapter側のみ前進し、ClaudeAdapter/CliSearchProviderを含む全体完了ではない。次はユーザー承認後の新HEAD q04 1回限定live再評価。
+
+## 4-18. Codex stdin化後のq04再評価（X-8.7）
+
+ユーザー明示承認後、HEAD `177abc4`でq04を新規出力先`C:\PROJECT\OracleCouncil-evals\x8\177abc4-q04-stdin`へ1回だけ実行した。評価セットは`evaluation/x8/eval-set-v1.json`、実行中のみ`src`を`PYTHONPATH`へ追加し、dry-runでq04のみ・real adapter・CLI search・JSON・`--no-store`・HEAD一致・cleanを確認した。
+
+結果は`exit_code=1`、`status=failed`、`classification=unverified`、`agent_call_count=4`。CodexとClaudeが参加し、respond、claim_extract、evidence_collect（Evidence 14件、search 5、fetch成功14/23）までは成功したが、verifyが`AUTH_REQUIRED`（`verify execution ended with AUTH_REQUIRED.`）で失敗した。以前の短時間`EXECUTION_ERROR`は今回の条件では再現しなかったが、認証要求で停止したためstdin化が根本原因を解決したとは断定しない。criticize、synthesize、auditには到達せず、q04の受入条件は未評価。JSON parseはvalid、leakage checkはpassedで、raw stdout/stderr等はGitへ保存していない。
+
+追加liveは承認なしに実行せず、次はFake/Contractで認証切れ時の停止と、verify以降のstdin transportを確認する。

@@ -1,5 +1,21 @@
 # 実施結果
 
+## X-8.7 Codex stdin化後のq04 1回限定live再評価（2026-07-13）
+
+1. **実行HEAD**: `177abc4`。main、worktree clean、origin/main一致。`55044cc`を含む。
+2. **出力先**: `C:\PROJECT\OracleCouncil-evals\x8\177abc4-q04-stdin`。
+3. **承認**: ユーザーの「X-8.7のq04 live実行を1回だけ承認します」を確認済み。外部実行は1回のみで、再試行・別ディレクトリ実行なし。
+4. **評価セット/PYTHONPATH**: `evaluation/x8/eval-set-v1.json`を使用し、実行中だけ`src`を`PYTHONPATH`へ追加。import smoke test成功。
+5. **dry-run**: q04のみ、real adapter、CLI search、JSON、`--no-store`、timeout 600秒、HEAD/origin一致、出力先リポジトリ外を確認。
+6. **結果**: process exit `1`、Run status `failed`、classification `unverified`、run_id `017fbc93-58b1-4026-a23e-12910ef0d44e`、timed_out `false`。
+7. **参加/call**: `codex-cli`、`claude-code`が参加。`agent_call_count=4`。
+8. **Phase**: respond 2成功、claim_extract 1成功、evidence_collect 1成功、verify 失敗。verifyは`AUTH_REQUIRED`、summaryは`verify execution ended with AUTH_REQUIRED.`。stdin化後のverifyは過去の短時間`EXECUTION_ERROR`ではなく、認証要求で停止したため、verify通過・後続criticize/synthesize/auditには到達していない。
+9. **Evidence**: 14件。search 5、candidate 25、fetch 23、成功14、失敗9、`FETCH_FAILED=6`、`UNSUPPORTED_CONTENT_TYPE=3`、target claim 5、claims with evidence 5、outcome `partial_evidence`。
+10. **q04受入確認**: 最終回答まで到達しなかったため、18歳への訂正、20歳との混同回避、飲酒・喫煙等との区別は未評価。classificationは`unverified`で許容範囲外。
+11. **再現性の判断**: 以前のverify即時`EXECUTION_ERROR`は今回の条件では再現しなかった。ただしstdin化が根本原因を解決したとは断定しない。今回は`AUTH_REQUIRED`で停止したため比較不能な外部条件が残る。
+12. **安全性**: `json_parse_status=valid`、`leakage_check=passed_structural_check`。raw stdout/stderr、prompt、環境変数、認証情報はGitへ保存・公開していない。
+13. **未解決事項/次の作業**: 実Codexの認証状態を含む外部要因、verify以降のstdin化動作は未確認。追加liveは承認なしに実行せず、まずFake/Contractで認証切れ時の停止を評価する。
+
 ## X-8.6 Codexの長いPhase入力をstdinへ移行（2026-07-13）
 
 1. **現行構造**: Codex本実行は`codex exec`の位置引数へPhase入力全文を渡していた。`verify`ではClaimとEvidenceを含むため、前段より長い入力になることを確認した。
