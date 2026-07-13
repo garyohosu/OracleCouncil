@@ -7,7 +7,7 @@ import subprocess
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, SearchError, SearchResult, Usage, utc_now
-from .base import classify_cli_error, validate_phase_output
+from .base import build_phase_input, classify_cli_error, validate_phase_output
 
 # Claude Code has no --output-schema flag (unlike Codex). The model must be
 # told in the prompt what shape to answer in, and `--output-format json`
@@ -20,7 +20,8 @@ _PHASE_SCHEMA_HINT = {
     "respond": '{"answer": "<your answer as a string>"}',
     "claim_extract": (
         '{"claims": [{"claim_id": "<string>", '
-        '"importance": "critical|major|minor", "status": "unverified", "text": "<string>"}]}'
+        '"importance": "critical|major|minor", "status": "unverified", '
+        '"claim_role": "user_premise|proposed_answer|contextual", "text": "<string>"}]}'
     ),
     "verify": (
         '{"claims": [{"claim_id": "<string>", "importance": "critical|major|minor", '
@@ -41,7 +42,12 @@ _PHASE_SCHEMA_HINT = {
 # rather than a strict enum, so phases with an `importance` field get a
 # blunt, unambiguous restatement of the allowed values.
 _EXTRA_CONSTRAINTS = {
-    "claim_extract": 'The "importance" field must be EXACTLY one of these three strings, nothing else: "critical", "major", "minor".',
+    "claim_extract": (
+        'The "importance" field must be EXACTLY one of these three strings, nothing else: '
+        '"critical", "major", "minor". The "claim_role" field must be EXACTLY one of '
+        '"user_premise", "proposed_answer", "contextual". Use "user_premise" only for a '
+        "claim that represents a premise in the user's question rather than a proposed answer."
+    ),
     "verify": 'The "importance" field must be EXACTLY one of these three strings, nothing else: "critical", "major", "minor".',
 }
 
@@ -131,10 +137,7 @@ class ClaudeAdapter:
         if status != "OK":
             raise AgentFailure(status, f"Claude Agent {self.agent_id} is unavailable: {status}")
 
-        question = request.payload.get("question", "")
-        if not question:
-            question = json.dumps(request.payload)
-        prompt = _build_prompt(request.phase, question)
+        prompt = _build_prompt(request.phase, build_phase_input(request))
 
         cmd = [
             "claude",

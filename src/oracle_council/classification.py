@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .models import Claim, ClaimImportance, ClaimStatus, ResultClassification
+from .models import Claim, ClaimImportance, ClaimRole, ClaimStatus, ResultClassification
 
 _PRINCIPAL = (ClaimImportance.CRITICAL, ClaimImportance.MAJOR)
 _CONFIRMED = (ClaimStatus.VERIFIED, ClaimStatus.SUPPORTED)
@@ -24,7 +24,11 @@ _CONFIRMED = (ClaimStatus.VERIFIED, ClaimStatus.SUPPORTED)
 
 def is_withheld(claims: Iterable[Claim]) -> bool:
     """Stage 1: return True when the answer must not be published."""
+    claims = tuple(claims)
+    has_publish_claim = any(c.claim_role is not ClaimRole.USER_PREMISE for c in claims)
     for claim in claims:
+        if has_publish_claim and claim.claim_role is ClaimRole.USER_PREMISE:
+            continue
         if claim.importance is ClaimImportance.CRITICAL and claim.status in (
             ClaimStatus.UNVERIFIED,
             ClaimStatus.CONTRADICTED,
@@ -40,6 +44,9 @@ def classify(claims: Iterable[Claim]) -> ResultClassification:
     claims = tuple(claims)
     if is_withheld(claims):
         return ResultClassification.WITHHELD
+    non_user_premise = [c for c in claims if c.claim_role is not ClaimRole.USER_PREMISE]
+    if non_user_premise:
+        claims = tuple(non_user_premise)
 
     verifiable = [c for c in claims if c.status is not ClaimStatus.NOT_APPLICABLE]
     principals = [c for c in verifiable if c.importance in _PRINCIPAL]

@@ -50,6 +50,12 @@ class ClaimStatus(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class ClaimRole(StrEnum):
+    USER_PREMISE = "user_premise"
+    PROPOSED_ANSWER = "proposed_answer"
+    CONTEXTUAL = "contextual"
+
+
 @dataclass(frozen=True)
 class Usage:
     input_tokens: int
@@ -174,6 +180,7 @@ _SCHEMA_FIELD_NAMES = {
     "claim_id",
     "importance",
     "status",
+    "claim_role",
     "text",
     "critique",
     "issues",
@@ -289,6 +296,7 @@ class Claim:
     importance: ClaimImportance
     status: ClaimStatus
     text: str = ""
+    claim_role: ClaimRole = ClaimRole.PROPOSED_ANSWER
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> Claim:
@@ -297,6 +305,7 @@ class Claim:
             importance=ClaimImportance(value["importance"]),
             status=ClaimStatus(value.get("status", ClaimStatus.UNVERIFIED)),
             text=value.get("text", ""),
+            claim_role=ClaimRole(value.get("claim_role", ClaimRole.PROPOSED_ANSWER)),
         )
 
 

@@ -1638,4 +1638,18 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。X-8.1でINVALID_OUTPUTの安全な構造診断を追加。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答76問、未回答24問。*
+### X-8.2. 誤前提訂正と回答保留の判定分離
+
+**重要度**: Major
+**箇所**: `models.py` / `classification.py` / `orchestrator.py` / `adapters/`
+**回答**: q04の保存済み結果では、Claimは全て`verified`/`supported`で、`criticize`/`synthesize`/`audit`は成功しているが、最終的に`withheld`だった。verify後の安全判定ではなく、初回auditが`approved`以外を返した経路が直接原因である。ただし`--no-store`のためaudit理由やsynthesize本文は保存されておらず、auditがなぜ未承認だったかは特定不能。
+
+ローカル解析で再現可能な実装問題として、Real Adapterがphase payloadの`responses`/`claims`/`evidence`をpromptへ渡しておらず、verify後にClaimを丸ごと置換してClaim本文やIDが失われることを確認した。これでは誤前提、訂正Claim、補足Claim、Evidence対応を後続phaseが安定して区別できない。
+
+最小修正として、Real Adapterのphase入力へrun contextをJSONデータとして渡し、`criticize`/`synthesize`/`audit`には「ユーザー前提の反証は訂正材料であり、支持済み訂正Claimがある場合はそれだけでwithheldにしない」旨を明記した。verify結果は既存Claimへmergeし、Claim ID、本文、`claim_role`を保持する。新たに`claim_role`（`user_premise` / `proposed_answer` / `contextual`）を追加し、既定値は`proposed_answer`で後方互換にした。`user_premise`が`contradicted`でも、支持済み訂正Claimがあれば分類上は公開可能にするが、訂正Claimが不足・未確認・競合ならwithheld/慎重分類を維持する。
+
+**テスト**: 誤前提contradicted＋訂正Claim verified/supportedでwithheldしないこと、訂正Claimがunverifiedならwithheld維持、user_premiseだけならwithheld維持、q05相当の断定Claim contradictedはwithheld維持、verify mergeがClaim本文/ID/roleを保持すること、Adapter promptがclaims/evidence/final_answerと誤前提訂正指示を含むことを追加。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。X-8.1でINVALID_OUTPUTの安全な構造診断を追加。X-8.2で誤前提訂正と回答保留の判定を分離。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答77問、未回答23問。*

@@ -295,6 +295,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                     "claim_id": c.claim_id,
                     "importance": c.importance.value,
                     "status": c.status.value,
+                    "claim_role": c.claim_role.value,
                     "text": c.text,
                 }
                 for c in result.claims

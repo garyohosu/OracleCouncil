@@ -98,6 +98,7 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert data["status"] == "completed"
         assert data["answer"]["text"] == "Mock final synthesized answer."
         assert data["answer"]["result_classification"] == "verified"
+        assert data["claims"][0]["claim_role"] == "proposed_answer"
         assert data["evidence"] == [{"evidence_id": "ev-1"}]
         assert data["metadata"]["evidence_count"] == len(data["evidence"]) == 1
         assert all("metrics" in phase for phase in data["phases"])

@@ -30,6 +30,22 @@ class TestValidatePhaseOutputClaimEnums:
                 {"claims": [{"claim_id": "c1", "importance": "major", "status": "probably_true"}]},
             )
 
+    def test_out_of_enum_claim_role_is_rejected(self):
+        with pytest.raises(AgentFailure):
+            validate_phase_output(
+                "claim_extract",
+                {
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "importance": "major",
+                            "status": "unverified",
+                            "claim_role": "answerish",
+                        }
+                    ]
+                },
+            )
+
     def test_missing_status_is_allowed_and_defaults_downstream(self):
         # claim_extract may omit status; Claim.from_dict defaults to unverified.
         output = validate_phase_output(

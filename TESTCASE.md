@@ -1897,6 +1897,24 @@ tests/
   - **目的**: X-8 runnerの`record.json`用phase_summaryに安全な`error_summary`が残ることを確認する。
   - **期待結果**: recordへ生モデル出力やstderr全文を複製せず、Phaseの安全な構造診断だけを保持する。
 
+## 7.7 X-8.2 誤前提訂正ケース
+
+- **UT-CLASS-X8-2-001**
+  - **目的**: ユーザー前提の反証と訂正Claimの支持を分離する。
+  - **期待結果**: `user_premise`のcritical Claimが`contradicted`でも、対応する`proposed_answer`/`contextual` Claimが`verified`/`supported`なら`withheld`にしない。
+
+- **UT-CLASS-X8-2-002**
+  - **目的**: 訂正不能な誤前提を公開しない。
+  - **期待結果**: 訂正Claimが`unverified`、`conflicting`、`contradicted`、または存在しない場合はwithheldまたは慎重分類を維持する。
+
+- **UT-ORCH-X8-2-001**
+  - **目的**: verify結果のmergeでClaim本文、ID、roleを保持する。
+  - **期待結果**: Verifierがstatusだけ、または誤ったclaim_idで返しても、既存Claimの`claim_id`、`text`、`claim_role`を維持してstatusを反映する。
+
+- **UT-ADAPTER-X8-2-001**
+  - **目的**: Real Adapterが後続phaseへrun contextを渡すことを確認する。
+  - **期待結果**: `verify`/`criticize`/`synthesize`/`audit`のpromptにはclaims、evidence、final_answer等の必要contextがJSONデータとして含まれ、誤前提訂正の指示が含まれる。
+
 ## 8. ケース件数
 
 | レベル | 件数 |

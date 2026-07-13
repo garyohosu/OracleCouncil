@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, Usage
-from .base import classify_cli_error, validate_phase_output
+from .base import build_phase_input, classify_cli_error, validate_phase_output
 
 # SPEC §10.4 / §10.5 enums. Must match adapters/base.py's
 # _CLAIM_IMPORTANCE_VALUES / _CLAIM_STATUS_VALUES exactly: a schema that
@@ -19,6 +19,7 @@ _CLAIM_IMPORTANCE_ENUM = ["critical", "major", "minor"]
 _CLAIM_STATUS_ENUM = [
     "verified", "supported", "contradicted", "conflicting", "unverified", "not_applicable",
 ]
+_CLAIM_ROLE_ENUM = ["user_premise", "proposed_answer", "contextual"]
 
 
 class CodexAdapter:
@@ -68,9 +69,7 @@ class CodexAdapter:
         if status != "OK":
             raise AgentFailure(status, f"Codex Agent {self.agent_id} is unavailable: {status}")
 
-        question = request.payload.get("question", "")
-        if not question:
-            question = json.dumps(request.payload)
+        question = build_phase_input(request)
 
         # Build schema to stabilize and strictly validate response structure
         schema = {}
@@ -99,9 +98,13 @@ class CodexAdapter:
                                     "type": "string",
                                     "enum": _CLAIM_STATUS_ENUM,
                                 },
+                                "claim_role": {
+                                    "type": "string",
+                                    "enum": _CLAIM_ROLE_ENUM,
+                                },
                                 "text": {"type": "string"},
                             },
-                            "required": ["claim_id", "importance", "status", "text"],
+                            "required": ["claim_id", "importance", "status", "claim_role", "text"],
                         },
                     }
                 },

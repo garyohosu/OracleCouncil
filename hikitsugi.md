@@ -173,6 +173,22 @@ q01の保存済みX-8結果は読み取り専用で確認した。`criticize` ph
 
 推測でparserを緩める代わりに、将来のINVALID_OUTPUTへ安全な構造診断を残す経路を追加した。`AgentFailure.public_summary`は必須フィールド欠落、型不正、JSON抽出不能などの構造的理由だけを固定形式で保持する。Orchestratorはallowlist検証済みの値だけをPhase/Executionの`error_summary`へ入れ、CLI JSONとX-8 runnerの`phase_summary`へ出す。raw stdout/stderr、prompt、モデル出力全文、任意のモデル値、未知フィールド名は出さない。許可形式外、改行/制御文字、不正surrogate、200文字超は出力しない。Storage契約は変更していない。
 
+## 4-12. 誤前提訂正と回答保留の分離（X-8.2）
+
+q04の保存済みX-8結果は読み取り専用で確認した。Claimは全て`verified`/`supported`、publish phaseは全て成功していたため、早期のClaim安全判定ではなくaudit未承認によるwithheldだった。ただしaudit出力理由は保存されておらず、直接の判断理由は特定不能。
+
+実装上の再現可能な問題として、Real Adapterがphase payloadの`claims`/`evidence`/`final_answer`をpromptへ渡していなかったこと、verify後にClaimを丸ごと置換してClaim本文・ID・roleを失っていたことを修正した。`claim_role`を追加し、省略時は`proposed_answer`。`user_premise`が反証されても、支持済みの訂正Claimがある場合はそれだけで公開ブロックにしない。訂正Claimが未確認、競合、反証、または存在しない場合は保留を維持する。Storage契約は変更していない。
+
+追加した回帰観点:
+
+- 誤前提Claim（`user_premise`）が`contradicted`でも、訂正Claimが`verified`/`supported`なら公開可能分類へ進める
+- 訂正Claimが`unverified`、`conflicting`、`contradicted`、または存在しない場合は保留・慎重分類を維持する
+- q05相当の「断定Claim自体が反証される」ケースと、q07相当のEvidence 0件はwithheldを維持する
+- verify mergeでClaim本文、ID、`claim_role`を保持する
+- Real Adapterの後続phase promptへclaims、evidence、critique、final_answerなどのrun contextを渡す
+
+検証済み: `py -m pytest` は224 passed / 6 deselected / 460 warnings、`git diff --check`成功。X-8評価結果は読み取りのみで、q04やrunnerは再実行していない。次に実機で確認する場合は、この差分をコミット・pushした後、新しいHEAD用の別評価ディレクトリでX-8再評価を行う。既存`C:\PROJECT\OracleCouncil-evals\x8\6a55ede`は基準値として変更しない。
+
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
 実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。

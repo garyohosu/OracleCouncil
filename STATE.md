@@ -205,6 +205,9 @@ stateDiagram-v2
       優先順位:
       withheld > conflicting > unverified
       > partially_verified > verified
+      user_premiseのcontradictedは、
+      supported/verifiedな訂正Claimがある場合、
+      単独では公開ブロックにしない。
     end note
     note left of completed_withheld
       「処理成功」と「回答公開可否」は別軸。

@@ -1,11 +1,16 @@
 import pytest
 
 from oracle_council.classification import classify, is_withheld
-from oracle_council.models import Claim, ClaimImportance, ClaimStatus, ResultClassification
+from oracle_council.models import Claim, ClaimImportance, ClaimRole, ClaimStatus, ResultClassification
 
 
-def claim(importance, status, claim_id="c1"):
-    return Claim(claim_id, ClaimImportance(importance), ClaimStatus(status))
+def claim(importance, status, claim_id="c1", role="proposed_answer"):
+    return Claim(
+        claim_id,
+        ClaimImportance(importance),
+        ClaimStatus(status),
+        claim_role=ClaimRole(role),
+    )
 
 
 # Stage 1: safety gate (SPEC §15.3)
@@ -57,3 +62,40 @@ def test_priority_conflicting_beats_partially_verified():
         claim("minor", "unverified", "c3"),
     ]
     assert classify(claims) is ResultClassification.CONFLICTING
+
+
+def test_false_premise_contradiction_does_not_withhold_supported_correction():
+    claims = [
+        claim("critical", "contradicted", "premise", role="user_premise"),
+        claim("critical", "verified", "correction"),
+        claim("major", "supported", "context"),
+    ]
+
+    assert is_withheld(claims) is False
+    assert classify(claims) is ResultClassification.VERIFIED
+
+
+def test_false_premise_without_supported_correction_still_withholds():
+    claims = [
+        claim("critical", "contradicted", "premise", role="user_premise"),
+        claim("critical", "unverified", "correction"),
+    ]
+
+    assert is_withheld(claims) is True
+    assert classify(claims) is ResultClassification.WITHHELD
+
+
+def test_user_premise_conflict_without_unique_correction_stays_conflicting():
+    claims = [
+        claim("critical", "contradicted", "premise", role="user_premise"),
+        claim("critical", "conflicting", "correction"),
+    ]
+
+    assert classify(claims) is ResultClassification.CONFLICTING
+
+
+def test_only_contradicted_user_premise_still_withholds():
+    claims = [claim("critical", "contradicted", "premise", role="user_premise")]
+
+    assert is_withheld(claims) is True
+    assert classify(claims) is ResultClassification.WITHHELD

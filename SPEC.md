@@ -534,6 +534,16 @@ MVPでは`critical`と`major`を合わせて最大5 Claimを、importance、clai
 
 Claim Extractorが初期値を提案し、VerifierがEvidenceとの関係を踏まえて確定する。Auditorは重要度の誤判定を指摘できる。
 
+### 10.4.1 Claim role
+
+`claim_role`は次のEnumとする。省略時は後方互換のため`proposed_answer`とする。
+
+- `user_premise`: ユーザー質問に含まれる前提。Evidenceで反証された場合は訂正材料として扱う
+- `proposed_answer`: 回答本文として採用予定のClaim
+- `contextual`: 回答を理解するための補足Claim
+
+`user_premise`が`contradicted`であっても、対応する`proposed_answer`または`contextual`の訂正Claimが`verified`/`supported`であれば、それだけを理由に回答全体を`withheld`にしない。訂正Claimが不足、`unverified`、`conflicting`、`contradicted`であれば従来どおり保留対象になる。
+
 ### 10.5 Claim状態
 
 - `verified`: 高品質な根拠で確認できた

@@ -292,6 +292,8 @@ class Orchestrator:
                 "responses": state.responses,
                 "claims": [c.__dict__ for c in state.claims],
                 "evidence": state.evidence,
+                "critique": state.critique,
+                "final_answer": state.final_answer,
             }
             result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
             state.calls += 1
@@ -353,7 +355,9 @@ class Orchestrator:
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
             self._collect_evidence(run_id, state)
         elif phase == "verify":
-            state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
+            state.claims = _merge_verified_claims(state.claims, output.get("claims", []))
+        elif phase == "criticize":
+            state.critique = output.get("critique", "")
         elif phase == "synthesize":
             state.final_answer = output["answer"]
         elif phase == "audit":
@@ -529,6 +533,43 @@ def _evidence_snapshot(state: "_RunState") -> tuple[dict, ...]:
     return tuple(deepcopy(item) for item in state.evidence)
 
 
+def _merge_verified_claims(existing: tuple[Claim, ...], verified: list[dict]) -> tuple[Claim, ...]:
+    if not existing:
+        return tuple(Claim.from_dict(item) for item in verified)
+    by_id = {
+        item.get("claim_id"): item
+        for item in verified
+        if isinstance(item, dict) and isinstance(item.get("claim_id"), str)
+    }
+    consumed: set[int] = set()
+    merged: list[Claim] = []
+    for index, claim in enumerate(existing):
+        raw = by_id.get(claim.claim_id)
+        if raw is not None:
+            consumed.add(verified.index(raw))
+        if raw is None and index < len(verified) and isinstance(verified[index], dict):
+            raw = verified[index]
+            consumed.add(index)
+        if raw is None:
+            merged.append(claim)
+            continue
+        merged.append(
+            Claim.from_dict(
+                {
+                    "claim_id": claim.claim_id,
+                    "importance": raw.get("importance", claim.importance.value),
+                    "status": raw.get("status", claim.status.value),
+                    "text": raw.get("text") if raw.get("text") else claim.text,
+                    "claim_role": raw.get("claim_role", claim.claim_role.value),
+                }
+            )
+        )
+    for index, raw in enumerate(verified):
+        if index not in consumed and isinstance(raw, dict):
+            merged.append(Claim.from_dict(raw))
+    return tuple(merged)
+
+
 def _evidence_metrics(evidence_count: int = 0) -> dict[str, Any]:
     return {
         "search_count": 0,
@@ -600,6 +641,7 @@ class _RunState:
         self.responses: list[dict] = []
         self.claims: tuple[Claim, ...] = ()
         self.evidence: list[dict] = []
+        self.critique = ""
         self.final_answer: str | None = None
         self.auditor_approved = False
         self.audit_status: str | None = None

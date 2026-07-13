@@ -430,6 +430,100 @@ def test_major_unverified_publishes_as_partially_verified_when_others_verified()
     assert result.exit_code == EXIT_OK
 
 
+def test_verify_merges_status_without_losing_claim_text_or_ids():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            {
+                "claims": [
+                    {
+                        "claim_id": "premise",
+                        "importance": "critical",
+                        "status": "unverified",
+                        "claim_role": "user_premise",
+                        "text": "The legal adult age is still 20.",
+                    },
+                    {
+                        "claim_id": "correction",
+                        "importance": "critical",
+                        "status": "unverified",
+                        "claim_role": "proposed_answer",
+                        "text": "The legal adult age is 18.",
+                    },
+                ]
+            },
+            {
+                "claims": [
+                    {"claim_id": "renamed-by-verifier", "importance": "critical", "status": "contradicted"},
+                    {"claim_id": "also-renamed", "importance": "critical", "status": "verified"},
+                ]
+            },
+            {"critique": "correctable false premise"},
+            {"answer": "The premise is wrong; the legal adult age is 18."},
+        ],
+        [{"answer": "B"}, {"status": "approved"}],
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert [(claim.claim_id, claim.text, claim.claim_role.value, claim.status.value) for claim in result.claims] == [
+        ("premise", "The legal adult age is still 20.", "user_premise", "contradicted"),
+        ("correction", "The legal adult age is 18.", "proposed_answer", "verified"),
+    ]
+    assert result.result_classification is ResultClassification.VERIFIED
+    assert result.exit_code == EXIT_OK
+
+
+def test_false_premise_correction_with_supported_context_is_publishable():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            {
+                "claims": [
+                    {
+                        "claim_id": "premise",
+                        "importance": "critical",
+                        "status": "unverified",
+                        "claim_role": "user_premise",
+                        "text": "The premise is wrong.",
+                    },
+                    {
+                        "claim_id": "correction",
+                        "importance": "critical",
+                        "status": "unverified",
+                        "claim_role": "proposed_answer",
+                        "text": "The correction is supported.",
+                    },
+                    {
+                        "claim_id": "context",
+                        "importance": "major",
+                        "status": "unverified",
+                        "claim_role": "contextual",
+                        "text": "A related limit remains unchanged.",
+                    },
+                ]
+            },
+            {
+                "claims": [
+                    {"claim_id": "premise", "importance": "critical", "status": "contradicted"},
+                    {"claim_id": "correction", "importance": "critical", "status": "verified"},
+                    {"claim_id": "context", "importance": "major", "status": "supported"},
+                ]
+            },
+            {"critique": "publish correction"},
+            {"answer": "The premise is wrong; the correction is supported."},
+        ],
+        [{"answer": "B"}, {"status": "approved"}],
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.result_classification is ResultClassification.VERIFIED
+    assert result.final_answer == "The premise is wrong; the correction is supported."
+    assert result.exit_code == EXIT_OK
+
+
 def test_changes_required_then_approved_publishes_revised_answer():
     storage = InMemoryStorageBackend()
     orchestrator, adapter_a, adapter_b = build(
