@@ -1,58 +1,48 @@
 # Oracle Council
 
-Oracle Council is an experimental, auditable multi-agent verification CLI.
+Oracle Council は、複数のAI CLIと外部Evidenceを使って回答を検証する、実験的な監査可能CLIです。
 
-It asks multiple AI CLI adapters for independent answers, extracts factual
-claims, collects external evidence, verifies the claims, synthesizes an answer,
-and audits the result before publishing it. The current MVP supports a fully
-deterministic fake mode for normal development and an opt-in real mode that can
-use Claude Code, Codex CLI, Claude Code WebSearch, and HTTP evidence fetching.
+複数Agentに独立回答させ、検証可能なClaimを抽出し、外部Evidenceを収集し、Claimを検証し、統合回答を作り、最後に別Agentで監査してから公開します。通常開発では外部AIやネットワークを使わないFake modeを使い、明示した場合だけClaude Code、Codex CLI、Claude Code WebSearch、HTTP取得を使う実経路を通します。
 
-## Current Status
+## 現在の到達点
 
-The MVP has completed these milestones:
+MVPとして次の縦断動作まで確認済みです。
 
-- Real Claude + real Codex + real Web Evidence end-to-end run completed.
-- `CliSearchProvider` is wired into `oracle ask` behind explicit
-  `--evidence-provider cli-search`.
-- `WebEvidenceProvider.collect()` supports the Phase 0 compatibility path.
-- JSON output includes sanitized Evidence summaries.
-- `evidence_collect` records elapsed time, search/fetch counts, outcomes, and
-  error-code metrics.
-- Non-ASCII evidence URLs are normalized before HTTP fetching.
-- Invalid adapter output can expose only fixed-format, allowlisted structural
-  diagnostics.
-- False-premise claims can be separated from proposed-answer claims with
-  `claim_role`.
-- X-8 fixed evaluation set and guarded runner are available.
+- 実Claude + 実Codex + 実Web EvidenceのE2Eが完走済み
+- `CliSearchProvider`を`oracle ask --evidence-provider cli-search`で明示選択可能
+- `WebEvidenceProvider.collect()`はPhase 0互換経路として接続済み
+- JSON出力にsanitized Evidence概要を表示
+- `evidence_collect`で所要時間、検索/fetch件数、outcome、エラーコード別metricsを記録
+- 非ASCII Evidence URL/IRIをHTTP取得前に正規化
+- Adapterの`INVALID_OUTPUT`は固定形式allowlistの安全な構造診断だけを外部JSONへ出力
+- 誤前提Claimと回答Claimを`claim_role`で分離
+- X-8固定評価セットと安全ガード付きrunnerを用意
 
-This is still an MVP. The full SPEC §10.2 evidence engine, counter-search,
-authority classification, viewer support, and automated large-scale evaluation
-are not complete.
+まだMVPです。完全なSPEC §10.2 Evidence収集エンジン、反証検索、authority分類、Viewer対応、大規模な自動評価は未実装です。
 
-## Requirements
+## 必要環境
 
-- Python 3.11 or newer
-- `py` launcher on Windows
-- Development dependencies from `.[dev]`
+- Python 3.11以上
+- Windowsでは`py` launcherを使用
+- 開発依存は`.[dev]`
 
-Install locally:
+初回セットアップ:
 
 ```powershell
 py -m pip install -e ".[dev]"
 ```
 
-Run the normal test suite:
+通常テスト:
 
 ```powershell
 py -m pytest
 ```
 
-The default pytest configuration excludes `live` tests.
+pytest設定では、既定で`live`マーカー付きテストを除外します。
 
-## Basic Usage
+## 基本実行
 
-Fake mode is deterministic and does not invoke external AI or network access:
+Fake modeは決定的で、外部AIやネットワークを起動しません。
 
 ```powershell
 py -m oracle_council.cli ask "富士山の標高は何メートルですか？" `
@@ -61,13 +51,11 @@ py -m oracle_council.cli ask "富士山の標高は何メートルですか？" 
   --no-store
 ```
 
-Manual evidence can be supplied with `--evidence-file`. If neither
-`--evidence-file` nor `--evidence-provider` is specified, the CLI keeps the
-historical default and uses `FakeEvidenceProvider`.
+手動Evidenceは`--evidence-file`で指定できます。`--evidence-file`も`--evidence-provider`も省略した場合は、後方互換のため`FakeEvidenceProvider`を使います。
 
-## Experimental Web Evidence
+## 実験的Web Evidence
 
-The experimental web path is enabled only when explicitly selected:
+Web Evidence経路は明示指定時だけ有効です。
 
 ```powershell
 py -m oracle_council.cli ask "富士山の標高は何メートルですか？" `
@@ -77,7 +65,7 @@ py -m oracle_council.cli ask "富士山の標高は何メートルですか？" 
   --no-store
 ```
 
-`cli-search` builds:
+`cli-search`指定時は次を構築します。
 
 ```python
 WebEvidenceProvider(
@@ -86,12 +74,11 @@ WebEvidenceProvider(
 )
 ```
 
-This path can invoke Claude Code WebSearch and external HTTP fetching. Do not
-run it in normal unit tests. Tests must mock subprocesses and HTTP access.
+この経路はClaude Code WebSearchと外部HTTP取得を実行し得ます。通常のunit testでは使わず、subprocessとHTTP取得をFakeまたはMockに差し替えてください。
 
-## Real Agent Run
+## 実Agent実行
 
-A full real run consumes external AI usage and network access:
+本番構成の実行は外部AI利用枠とネットワークを消費します。
 
 ```powershell
 py -m oracle_council.cli ask "富士山の標高は何メートルですか？" `
@@ -101,12 +88,11 @@ py -m oracle_council.cli ask "富士山の標高は何メートルですか？" 
   --no-store
 ```
 
-Use this only as an intentional live check. Do not retry failed live runs
-without recording that a run was attempted.
+live確認として明示された場合だけ実行してください。失敗時も、実行した事実を記録せずに再試行しないでください。
 
-## JSON Output Boundaries
+## JSON出力の境界
 
-Top-level `evidence` contains only sanitized summaries:
+トップレベル`evidence`に出すのは、次のsanitized概要だけです。
 
 - `evidence_id`
 - `claim_id`
@@ -118,21 +104,19 @@ Top-level `evidence` contains only sanitized summaries:
 - `retrieved_at`
 - `excerpt`
 
-Evidence body content, prompts, raw stdout/stderr, headers, cookies, tokens,
-environment values, diagnostics, and unknown keys are not exposed.
+Evidence本文全体、prompt、生stdout/stderr、headers、cookies、tokens、環境変数、diagnostics、未知キーは出力しません。
 
-`phases[].metrics` contains counters and code-count dictionaries only. URLs,
-queries, excerpts, titles, and raw exception text are not stored in metrics.
+`phases[].metrics`は、件数カウンターとエラーコード別件数だけを保持します。URL、検索クエリ、excerpt、title、生例外本文はmetricsに入れません。
 
-## X-8 Evaluation Runner
+## X-8固定評価runner
 
-The fixed evaluation set is in:
+固定評価セットは次にあります。
 
 ```text
 evaluation/x8/eval-set-v1.json
 ```
 
-Dry-run example:
+dry-run例:
 
 ```powershell
 py scripts/run_x8_evaluation.py `
@@ -143,22 +127,18 @@ py scripts/run_x8_evaluation.py `
   --dry-run
 ```
 
-Live evaluation results must be written outside the repository, conventionally:
+live評価結果はリポジトリ外に保存します。慣例は次です。
 
 ```text
 C:\PROJECT\OracleCouncil-evals\x8\<HEAD>\
 ```
 
-Each question is one-run-only per output directory. The runner writes
-`attempted.json` before launching the external command, and failed attempts must
-not be deleted or retried. Generated evaluation outputs must not be committed.
+各質問は、同一output directory内で1回だけ実行できます。runnerは外部コマンド起動直前に`attempted.json`を書きます。失敗、不正JSON、timeoutでもattemptedを削除せず、同じ質問を再実行しないでください。生成された評価結果をGitへ追加しないでください。
 
-## Development Notes
+## 開発メモ
 
-- Use `py`, not `python`, in this Windows environment.
-- Keep storage format changes explicit and reviewed.
-- Do not run `claude`, `codex`, WebSearch, or live/expensive tests unless a task
-  explicitly asks for a live check.
-- Do not edit saved X-8 evaluation results; treat them as immutable baseline
-  data.
-- Commit only intentional source, test, and documentation changes.
+- このWindows環境では`python`ではなく`py`を使います。
+- Storage形式の変更は明示的にレビューしてください。
+- 明示依頼がない限り、`claude`、`codex`、WebSearch、live/expensive testは実行しません。
+- 保存済みX-8評価結果は基準値として扱い、編集しません。
+- commit対象は、意図したsource、test、document変更だけに限定します。
