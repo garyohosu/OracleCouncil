@@ -30,8 +30,14 @@ def test_structured_429_rate_limit_text_is_rate_limited():
     assert classify_cli_error(stdout, "") == "RATE_LIMITED"
 
 
-def test_structured_401_is_auth_required():
-    stdout = json.dumps({"is_error": True, "api_error_status": 401, "result": "unauthorized"})
+@pytest.mark.parametrize("status", [401, 403])
+def test_structured_auth_status_is_auth_required(status):
+    stdout = json.dumps({"is_error": True, "api_error_status": status, "result": "request rejected"})
+    assert classify_cli_error(stdout, "") == "AUTH_REQUIRED"
+
+
+def test_structured_unauthorized_is_auth_required():
+    stdout = json.dumps({"is_error": True, "result": "unauthorized"})
     assert classify_cli_error(stdout, "") == "AUTH_REQUIRED"
 
 
