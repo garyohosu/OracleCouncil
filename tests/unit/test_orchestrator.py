@@ -1,9 +1,13 @@
+from datetime import datetime, timedelta, timezone
+import itertools
+
 import pytest
 
 from oracle_council.assignment import InsufficientAgentsError, RegisteredAgent
 from oracle_council.budget import TokenBudget
 from oracle_council.fakes import FakeEvidenceProvider, ScriptedAgentAdapter
-from oracle_council.models import AgentFailure, ResultClassification, RunStatus
+from oracle_council.models import AgentFailure, EvidenceCollectionResult, PhaseStatus, ResultClassification, RunStatus, SearchError
+import oracle_council.orchestrator as orchestrator_module
 from oracle_council.orchestrator import EXIT_FAILED, EXIT_OK, EXIT_WITHHELD, Orchestrator
 from oracle_council.storage import InMemoryStorageBackend, StorageWriteError
 
@@ -23,6 +27,14 @@ def build_raw(a_script, b_script, budget=None, storage=None, store_content=False
 
 def claims_output(status, importance="major"):
     return {"claims": [{"claim_id": "claim-1", "importance": importance, "status": status}]}
+
+
+def claims_with_text(*claims):
+    return {"claims": list(claims)}
+
+
+def phase_by_name(result):
+    return {phase.phase: phase for phase in result.phases}
 
 
 def build(
@@ -108,6 +120,183 @@ def test_run_result_contains_collected_evidence_after_happy_path():
         {"evidence_id": "ev-1", "claim_id": "claim-1", "url": "https://example.com"},
     )
     assert result.metadata.evidence_count == len(result.evidence) == 1
+
+
+def test_evidence_collect_timing_wraps_collection_with_fake_clock(monkeypatch):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ticks = (base + timedelta(seconds=i) for i in itertools.count())
+    observed = {}
+
+    monkeypatch.setattr(orchestrator_module, "utc_now", lambda: next(ticks))
+
+    class TimedEvidenceProvider:
+        def collect(self, claims):
+            observed["during_collect"] = orchestrator_module.utc_now()
+            return [{"evidence_id": "ev-1"}]
+
+    orchestrator, _, _ = build(evidence_provider=TimedEvidenceProvider())
+    result = orchestrator.run_verify("q")
+    phase = phase_by_name(result)["evidence_collect"]
+
+    assert phase.started_at < observed["during_collect"] < phase.finished_at
+    assert int((phase.finished_at - phase.started_at).total_seconds() * 1000) > 0
+    assert phase.success_count == 1
+
+
+def test_evidence_collect_no_evidence_still_counts_success():
+    orchestrator, _, _ = build(evidence_provider=FakeEvidenceProvider([]))
+    result = orchestrator.run_verify("q")
+    phase = phase_by_name(result)["evidence_collect"]
+
+    assert phase.status is PhaseStatus.SUCCEEDED
+    assert phase.success_count == 1
+    assert phase.outcome == "no_evidence"
+    assert phase.metrics["evidence_count"] == 0
+
+
+def test_evidence_collect_search_error_records_failed_phase_and_run(monkeypatch):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ticks = (base + timedelta(seconds=i) for i in itertools.count())
+    monkeypatch.setattr(orchestrator_module, "utc_now", lambda: next(ticks))
+
+    class FailingEvidenceProvider:
+        def collect(self, claims):
+            raise SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak")
+
+    orchestrator, _, _ = build(evidence_provider=FailingEvidenceProvider())
+    result = orchestrator.run_verify("q")
+    phase = phase_by_name(result)["evidence_collect"]
+
+    assert result.status is RunStatus.FAILED
+    assert result.exit_code == 3
+    assert result.result_classification is ResultClassification.UNVERIFIED
+    assert result.evidence == ()
+    assert phase.status is PhaseStatus.FAILED
+    assert phase.success_count == 0
+    assert phase.error_code == "SEARCH_QUOTA_EXCEEDED"
+    assert phase.error_summary == "evidence_collect execution ended with SEARCH_QUOTA_EXCEEDED."
+    assert phase.finished_at is not None
+    assert phase.metrics["search_error_codes"] == {"SEARCH_QUOTA_EXCEEDED": 1}
+    assert "raw stderr" not in phase.error_summary
+
+
+def test_evidence_collect_search_error_keeps_partial_evidence_and_metrics():
+    class PartiallyFailingEvidenceProvider:
+        def collect_with_metrics(self, claims):
+            error = SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak")
+            error.partial_evidence = (
+                {"evidence_id": "web-claim-a-1", "claim_id": "claim-a", "nested": {"value": "original"}},
+                {"evidence_id": "web-claim-a-2", "claim_id": "claim-a"},
+            )
+            error.evidence_metrics = {
+                "search_count": 2,
+                "candidate_count": 2,
+                "fetch_attempt_count": 2,
+                "fetch_success_count": 2,
+                "fetch_failure_count": 0,
+                "evidence_count": 2,
+                "target_claim_count": 2,
+                "claims_with_evidence_count": 1,
+                "search_error_codes": {"SEARCH_QUOTA_EXCEEDED": 1},
+                "fetch_error_codes": {},
+            }
+            raise error
+
+    orchestrator, _, _ = build(
+        evidence_provider=PartiallyFailingEvidenceProvider(),
+        verify_claims=claims_output("verified"),
+    )
+    result = orchestrator.run_verify("q")
+    phase = phase_by_name(result)["evidence_collect"]
+
+    assert result.status is RunStatus.FAILED
+    assert result.exit_code == 3
+    assert result.evidence == (
+        {"evidence_id": "web-claim-a-1", "claim_id": "claim-a", "nested": {"value": "original"}},
+        {"evidence_id": "web-claim-a-2", "claim_id": "claim-a"},
+    )
+    assert phase.status is PhaseStatus.FAILED
+    assert phase.success_count == 0
+    assert phase.finished_at is not None
+    assert phase.metrics == {
+        "search_count": 2,
+        "candidate_count": 2,
+        "fetch_attempt_count": 2,
+        "fetch_success_count": 2,
+        "fetch_failure_count": 0,
+        "evidence_count": 2,
+        "target_claim_count": 2,
+        "claims_with_evidence_count": 1,
+        "search_error_codes": {"SEARCH_QUOTA_EXCEEDED": 1},
+        "fetch_error_codes": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [
+        (
+            {
+                "evidence_count": 1,
+                "target_claim_count": 1,
+                "claims_with_evidence_count": 1,
+                "fetch_failure_count": 0,
+            },
+            "evidence_found",
+        ),
+        (
+            {
+                "evidence_count": 1,
+                "target_claim_count": 1,
+                "claims_with_evidence_count": 1,
+                "fetch_failure_count": 1,
+            },
+            "partial_evidence",
+        ),
+        (
+            {
+                "evidence_count": 1,
+                "target_claim_count": 2,
+                "claims_with_evidence_count": 1,
+                "fetch_failure_count": 0,
+            },
+            "partial_evidence",
+        ),
+        (
+            {
+                "evidence_count": 0,
+                "target_claim_count": 1,
+                "claims_with_evidence_count": 0,
+                "fetch_failure_count": 0,
+            },
+            "no_evidence",
+        ),
+    ],
+)
+def test_evidence_collect_outcome_uses_detailed_metrics(metrics, expected):
+    class MetricsEvidenceProvider:
+        def collect_with_metrics(self, claims):
+            evidence = [{"evidence_id": "ev-1"}] if metrics["evidence_count"] else []
+            return EvidenceCollectionResult(evidence=tuple(evidence), metrics=metrics)
+
+    orchestrator, _, _ = build(evidence_provider=MetricsEvidenceProvider())
+    result = orchestrator.run_verify("q")
+
+    assert phase_by_name(result)["evidence_collect"].outcome == expected
+
+
+def test_evidence_collect_fallback_provider_does_not_infer_partial():
+    class FallbackProvider:
+        def collect(self, claims):
+            return [{"evidence_id": "ev-1"}]
+
+    orchestrator, _, _ = build(evidence_provider=FallbackProvider())
+    result = orchestrator.run_verify("q")
+    phase = phase_by_name(result)["evidence_collect"]
+
+    assert phase.outcome == "evidence_found"
+    assert phase.metrics["evidence_count"] == 1
+    assert phase.metrics["fetch_failure_count"] == 0
 
 
 def test_run_result_evidence_is_empty_when_run_fails_before_collection():

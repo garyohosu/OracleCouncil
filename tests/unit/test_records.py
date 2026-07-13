@@ -4,7 +4,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 
 import oracle_council.orchestrator as orchestrator_module
-from oracle_council.models import AgentFailure, PhaseStatus, ResultClassification
+from oracle_council.models import AgentFailure, EvidenceCollectionResult, PhaseRecord, PhaseStatus, ResultClassification
 from oracle_council.storage import InMemoryStorageBackend
 
 from test_orchestrator import build, build_raw, claims_output
@@ -18,6 +18,33 @@ def phase_by_name(result):
     return {p.phase: p for p in result.phases}
 
 
+def test_phase_record_metrics_default_is_per_instance():
+    first = PhaseRecord("phase-1", "run-1", "respond", 1)
+    second = PhaseRecord("phase-2", "run-1", "verify", 1)
+
+    first.metrics["count"] = 1
+
+    assert second.metrics == {}
+
+
+def test_evidence_collection_result_snapshots_evidence_and_metrics():
+    evidence = [{"evidence_id": "ev-1", "nested": {"value": "original"}}]
+    metrics = {"evidence_count": 1, "fetch_error_codes": {"FETCH_FAILED": 1}}
+    result = EvidenceCollectionResult(evidence=evidence, metrics=metrics)
+
+    evidence[0]["evidence_id"] = "changed"
+    evidence[0]["nested"]["value"] = "changed"
+    metrics["evidence_count"] = 99
+    metrics["fetch_error_codes"]["FETCH_FAILED"] = 99
+
+    assert result.evidence == ({"evidence_id": "ev-1", "nested": {"value": "original"}},)
+    assert result.metrics == {"evidence_count": 1, "fetch_error_codes": {"FETCH_FAILED": 1}}
+    assert result.evidence[0] is not evidence[0]
+    assert result.evidence[0]["nested"] is not evidence[0]["nested"]
+    assert result.metrics is not metrics
+    assert result.metrics["fetch_error_codes"] is not metrics["fetch_error_codes"]
+
+
 def test_happy_path_phase_and_execution_counts_match():
     orchestrator, _, _ = build()
     result = orchestrator.run_verify("q")
@@ -27,7 +54,9 @@ def test_happy_path_phase_and_execution_counts_match():
     phases = phase_by_name(result)
     assert all(p.status is PhaseStatus.SUCCEEDED for p in result.phases)
     assert (phases["respond"].success_count, phases["respond"].minimum_success_count) == (2, 2)
+    assert phases["evidence_collect"].success_count == 1
     assert phases["evidence_collect"].outcome == "evidence_found"
+    assert phases["evidence_collect"].metrics["evidence_count"] == 1
     assert all(p.started_at is not None and p.finished_at is not None for p in result.phases)
     assert all(e.elapsed_ms >= 0 for e in result.executions)
 

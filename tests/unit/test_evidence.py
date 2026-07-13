@@ -125,6 +125,19 @@ class RecordingSearchProvider:
         return list(self.results_by_query.get(query, []))
 
 
+class SequencedSearchProvider:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def search(self, query, limit):
+        self.calls.append((query, limit))
+        response = self.responses.pop(0)
+        if isinstance(response, SearchError):
+            raise response
+        return list(response)
+
+
 class RecordingCollectFetcher:
     def __init__(self, documents=None, failures=None):
         self.documents = documents or {}
@@ -146,6 +159,26 @@ def result(url, rank, title=None):
 
 
 class TestWebEvidenceProviderCollect:
+    def test_collect_delegates_to_collect_with_metrics_once(self):
+        class CountingWebEvidenceProvider(WebEvidenceProvider):
+            def __init__(self):
+                self.calls = 0
+
+            def collect_with_metrics(self, claims):
+                self.calls += 1
+                return super().collect_with_metrics(claims)
+
+        searcher = RecordingSearchProvider({"q": [result("https://example.com/a", 1)]})
+        provider = CountingWebEvidenceProvider()
+        provider._fetcher = RecordingCollectFetcher()
+        provider._searcher = searcher
+
+        evidence = provider.collect([{"claim_id": "claim-1", "importance": "major", "text": "q"}])
+
+        assert provider.calls == 1
+        assert [item["url"] for item in evidence] == ["https://example.com/a"]
+        assert searcher.calls == [("q", 5)]
+
     def test_collect_processes_critical_then_major_by_claim_id_and_skips_minor(self):
         searcher = RecordingSearchProvider(
             {
@@ -231,6 +264,81 @@ class TestWebEvidenceProviderCollect:
         assert fetcher.calls == ["https://example.com/fail", "https://example.com/ok"]
         assert [item["url"] for item in evidence] == ["https://example.com/ok"]
 
+    def test_collect_with_metrics_counts_search_candidates_and_fetches(self):
+        searcher = RecordingSearchProvider(
+            {
+                "q1": [
+                    result("https://example.com/fail", 1),
+                    result("https://example.com/ok", 2),
+                ],
+                "q2": [
+                    result("https://example.com/none", 3),
+                ],
+            }
+        )
+        fetcher = RecordingCollectFetcher(failures={"https://example.com/fail", "https://example.com/none"})
+        collected = WebEvidenceProvider(fetcher, searcher).collect_with_metrics(
+            [
+                {"claim_id": "claim-1", "importance": "critical", "text": "q1"},
+                {"claim_id": "claim-2", "importance": "major", "text": "q2"},
+                {"claim_id": "claim-3", "importance": "minor", "text": "minor"},
+            ]
+        )
+
+        assert [item["url"] for item in collected.evidence] == ["https://example.com/ok"]
+        assert collected.metrics == {
+            "search_count": 2,
+            "candidate_count": 3,
+            "fetch_attempt_count": 3,
+            "fetch_success_count": 1,
+            "fetch_failure_count": 2,
+            "evidence_count": 1,
+            "target_claim_count": 2,
+            "claims_with_evidence_count": 1,
+            "search_error_codes": {},
+            "fetch_error_codes": {"FETCH_FAILED": 2},
+        }
+        assert collected.metrics["fetch_success_count"] + collected.metrics["fetch_failure_count"] == collected.metrics["fetch_attempt_count"]
+        assert collected.metrics["fetch_success_count"] == collected.metrics["evidence_count"]
+        assert collected.metrics["claims_with_evidence_count"] <= collected.metrics["target_claim_count"]
+
+    def test_collect_with_metrics_search_error_carries_partial_evidence_and_metrics(self):
+        searcher = SequencedSearchProvider(
+            [
+                [result("https://example.com/a", 1), result("https://example.com/b", 2)],
+                SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak"),
+            ]
+        )
+        fetcher = RecordingCollectFetcher()
+        provider = WebEvidenceProvider(fetcher, searcher)
+
+        with pytest.raises(SearchError) as excinfo:
+            provider.collect_with_metrics(
+                [
+                    {"claim_id": "claim-a", "importance": "critical", "text": "q1"},
+                    {"claim_id": "claim-b", "importance": "major", "text": "q2"},
+                ]
+            )
+
+        error = excinfo.value
+        assert [item["evidence_id"] for item in error.partial_evidence] == [
+            "web-claim-a-1",
+            "web-claim-a-2",
+        ]
+        assert error.evidence_metrics == {
+            "search_count": 2,
+            "candidate_count": 2,
+            "fetch_attempt_count": 2,
+            "fetch_success_count": 2,
+            "fetch_failure_count": 0,
+            "evidence_count": 2,
+            "target_claim_count": 2,
+            "claims_with_evidence_count": 1,
+            "search_error_codes": {"SEARCH_QUOTA_EXCEEDED": 1},
+            "fetch_error_codes": {},
+        }
+        assert fetcher.calls == ["https://example.com/a", "https://example.com/b"]
+
     def test_collect_returns_no_evidence_when_all_fetches_fail_for_claim(self):
         searcher = RecordingSearchProvider({"q": [result("https://example.com/fail", 1)]})
         fetcher = RecordingCollectFetcher(failures={"https://example.com/fail"})
@@ -246,6 +354,7 @@ class TestWebEvidenceProviderCollect:
         with pytest.raises(SearchError) as excinfo:
             provider.collect([{"claim_id": "claim-1", "importance": "major", "text": "q"}])
         assert excinfo.value.code == "SEARCH_QUOTA_EXCEEDED"
+        assert excinfo.value.evidence_metrics["search_error_codes"] == {"SEARCH_QUOTA_EXCEEDED": 1}
 
     def test_collect_is_stable_for_same_input_and_results(self):
         claims = [{"claim_id": "claim-1", "importance": "major", "text": "q"}]

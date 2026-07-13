@@ -1580,4 +1580,22 @@ Storage契約は変更しない。JSONLへEvidence本文や概要を新規保存
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続とEvidence監査概要JSON出力完了。既回答72問、未回答27問。*
+### X-7. Evidence収集フェーズの計測とエラー観測
+
+**重要度**: Major
+**箇所**: `models.py` / `orchestrator.py` / `evidence.py` / `cli.py` / `scripts/collect_metrics.py`
+**回答**: 確定。`PhaseRecord`へ`metrics: dict[str, Any] = field(default_factory=dict)`を追加し、`evidence_collect`では検索回数、候補件数、fetch試行/成功/失敗件数、Evidence件数、対象Claim件数、Evidence取得済みClaim件数、SearchError/EvidenceFetchErrorのコード別件数を記録する。全PhaseのJSONに`metrics`を出し、metricsなしPhaseは`{}`とする。
+
+`EvidenceCollectionResult`を追加し、`WebEvidenceProvider.collect_with_metrics()`でEvidenceとmetricsを同時に返す。既存`collect()`は後方互換のため維持し、`collect_with_metrics()`のEvidenceだけを返す。Orchestratorは`collect_with_metrics()`があるProviderでは詳細metricsを使い、Fake/Manual等のfallback Providerでは従来どおりEvidence有無だけで`outcome`を決める。`last_metrics`のようなProvider内部可変状態は使わない。
+
+`evidence_collect.success_count`はEvidence件数ではなく収集処理の正常完了回数とし、正常終了ならEvidence 0件でも`1`、SearchError等でPhase失敗なら`0`とする。`outcome`は`PhaseRecord.outcome`を正本とし、metrics内へ重複保存しない。詳細metricsがある場合は、Evidence 0件なら`no_evidence`、fetch失敗またはEvidenceなし対象Claimがあれば`partial_evidence`、全対象ClaimにEvidenceがありfetch失敗なしなら`evidence_found`とする。
+
+Run開始後の`SearchError`は`evidence_collect`を`failed`にし、`error_code=<SearchError.code>`、`metrics.search_error_codes`、`finished_at`を記録してRunを`failed`/exit 3にする。CLI JSONの外部statusはX-5互換で`verification_unavailable`とし、messageは`web evidence unavailable: <code>`だけを出す。個別URLの`EvidenceFetchError`はRunを失敗させず、fetch失敗件数とコード別件数へ集計して次候補へ進む。
+
+Storage契約は変更しない。Phase metricsはin-memory `PhaseRecord`、RunResult、実行直後のCLI JSON、`collect_metrics.py`の安全なフラット項目に限定し、JSONL保存や`history show`、`--store-content`、Evidence本文保存は拡張しない。
+
+**テスト**: metrics既定値独立、EvidenceCollectionResultのdeepcopy snapshot、fake clockによるevidence_collect計測、正常/0件/SearchErrorのsuccess_count、途中SearchErrorの部分Evidence/metrics保持、outcome規則、WebEvidenceProvider metrics、SearchErrorのPhase/Run/CLI JSON記録、fetch失敗集計、metrics sanitize、collect_metrics.pyの新旧JSON互換を追加。182テスト全パス。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測を完了。既回答73問、未回答27問。*

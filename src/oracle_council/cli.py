@@ -166,6 +166,19 @@ _EVIDENCE_SUMMARY_KEYS = (
 
 _EVIDENCE_TEXT_SUMMARY_KEYS = set(_EVIDENCE_SUMMARY_KEYS) - {"rank"}
 
+_PHASE_METRIC_KEYS = {
+    "search_count",
+    "candidate_count",
+    "fetch_attempt_count",
+    "fetch_success_count",
+    "fetch_failure_count",
+    "evidence_count",
+    "target_claim_count",
+    "claims_with_evidence_count",
+    "search_error_codes",
+    "fetch_error_codes",
+}
+
 
 def evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
@@ -186,7 +199,31 @@ def evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def phase_metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in metrics.items():
+        if key not in _PHASE_METRIC_KEYS:
+            continue
+        if type(value) is int and value >= 0:
+            summary[key] = value
+        elif isinstance(value, dict):
+            summary[key] = {
+                str(code): count
+                for code, count in value.items()
+                if isinstance(code, str) and type(count) is int and count >= 0
+            }
+    return summary
+
+
+def _web_evidence_error_code(result: RunResult) -> str | None:
+    for phase in result.phases:
+        if phase.phase == "evidence_collect" and phase.status and phase.status.value == "failed" and phase.error_code:
+            return phase.error_code
+    return None
+
+
 def output_run_result(result: RunResult, use_json: bool) -> int:
+    web_error_code = _web_evidence_error_code(result)
     if use_json:
         executions = [
             {
@@ -206,6 +243,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "status": phase.status.value if phase.status else None,
                 "success_count": phase.success_count,
                 "error_code": phase.error_code,
+                "outcome": phase.outcome,
                 # Metrics collection (P-4 experiment plan): per-phase wall time,
                 # not just pass/fail, so a slow phase can be told apart from a
                 # failed one when comparing runs.
@@ -216,13 +254,16 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                     if phase.started_at and phase.finished_at
                     else None
                 ),
+                "metrics": phase_metrics_summary(phase.metrics),
             }
             for phase in result.phases
         ]
+        status = "verification_unavailable" if web_error_code else result.status.value
         payload = {
             "schema_version": "1.0",
             "run_id": result.run_id,
-            "status": result.status.value,
+            "status": status,
+            "exit_code": result.exit_code,
             "mode": "verify",
             "question": {
                 "original": "元の質問",
@@ -267,8 +308,13 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "elapsed_ms": result.metadata.elapsed_ms if result.metadata else None,
             },
         }
+        if web_error_code:
+            payload["message"] = f"web evidence unavailable: {web_error_code}"
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     else:
+        if web_error_code:
+            sys.stderr.write(f"Stop: web evidence unavailable: {web_error_code} (verification_unavailable)\n")
+            return result.exit_code
         if result.status in (RunStatus.COMPLETED, RunStatus.PARTIAL):
             if result.exit_code == 0:
                 print(result.final_answer)

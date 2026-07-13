@@ -11,7 +11,7 @@ import yaml
 from oracle_council.cli import output_run_result, main
 from oracle_council.evidence import ManualEvidenceProvider, WebEvidenceProvider
 from oracle_council.fakes import FakeEvidenceProvider
-from oracle_council.models import ResultClassification, RunResult, RunStatus, SearchError
+from oracle_council.models import PhaseRecord, PhaseStatus, ResultClassification, RunResult, RunStatus, SearchError
 from oracle_council.storage import JSONLStorageBackend
 
 
@@ -89,6 +89,12 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert data["answer"]["result_classification"] == "verified"
         assert data["evidence"] == [{"evidence_id": "ev-1"}]
         assert data["metadata"]["evidence_count"] == len(data["evidence"]) == 1
+        assert all("metrics" in phase for phase in data["phases"])
+        assert next(phase for phase in data["phases"] if phase["phase"] == "respond")["metrics"] == {}
+        evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+        assert evidence_phase["success_count"] == 1
+        assert evidence_phase["outcome"] == "evidence_found"
+        assert evidence_phase["metrics"]["evidence_count"] == 1
 
 
 def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, capsys, monkeypatch):
@@ -267,6 +273,34 @@ class SearchErrorProvider:
         raise SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak")
 
 
+class PartialSearchErrorProvider:
+    def collect_with_metrics(self, claims):
+        error = SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak")
+        error.partial_evidence = (
+            {
+                "evidence_id": "web-claim-a-1",
+                "claim_id": "claim-a",
+                "url": "https://example.com/a",
+                "title": "safe title",
+                "excerpt": "safe excerpt",
+                "content": "secret full body",
+            },
+        )
+        error.evidence_metrics = {
+            "search_count": 2,
+            "candidate_count": 1,
+            "fetch_attempt_count": 1,
+            "fetch_success_count": 1,
+            "fetch_failure_count": 0,
+            "evidence_count": 1,
+            "target_claim_count": 2,
+            "claims_with_evidence_count": 1,
+            "search_error_codes": {"SEARCH_QUOTA_EXCEEDED": 1},
+            "fetch_error_codes": {},
+        }
+        raise error
+
+
 def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(temp_config, capsys):
     with patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
          patch("oracle_council.cli.SafeHttpFetcher"), \
@@ -277,13 +311,46 @@ def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(t
     assert exit_code == 3
     assert captured.err == ""
     data = json.loads(captured.out)
-    assert data == {
-        "schema_version": "1.0",
-        "run_id": None,
-        "status": "verification_unavailable",
-        "exit_code": 3,
-        "message": "web evidence unavailable: SEARCH_QUOTA_EXCEEDED",
-    }
+    assert data["schema_version"] == "1.0"
+    assert data["run_id"]
+    assert data["status"] == "verification_unavailable"
+    assert data["exit_code"] == 3
+    assert data["message"] == "web evidence unavailable: SEARCH_QUOTA_EXCEEDED"
+    evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+    assert evidence_phase["status"] == "failed"
+    assert evidence_phase["success_count"] == 0
+    assert evidence_phase["error_code"] == "SEARCH_QUOTA_EXCEEDED"
+    assert evidence_phase["finished_at"] is not None
+    assert evidence_phase["metrics"]["search_error_codes"] == {"SEARCH_QUOTA_EXCEEDED": 1}
+    assert "raw stderr" not in captured.out
+
+
+def test_cli_ask_search_error_json_keeps_partial_sanitized_evidence(temp_config, capsys):
+    with patch("oracle_council.cli.WebEvidenceProvider", return_value=PartialSearchErrorProvider()), \
+         patch("oracle_council.cli.SafeHttpFetcher"), \
+         patch("oracle_council.cli.CliSearchProvider"):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+    assert exit_code == 3
+    assert captured.err == ""
+    assert data["status"] == "verification_unavailable"
+    assert data["run_id"]
+    assert data["evidence"] == [
+        {
+            "evidence_id": "web-claim-a-1",
+            "claim_id": "claim-a",
+            "url": "https://example.com/a",
+            "title": "safe title",
+            "excerpt": "safe excerpt",
+        }
+    ]
+    assert evidence_phase["status"] == "failed"
+    assert evidence_phase["metrics"]["evidence_count"] == 1
+    assert evidence_phase["metrics"]["search_count"] == 2
+    assert "secret full body" not in captured.out
     assert "raw stderr" not in captured.out
 
 
@@ -437,6 +504,48 @@ def test_json_evidence_summary_does_not_serialize_nested_allowed_values(capsys):
         "secret body",
     ):
         assert forbidden not in rendered
+
+
+def test_json_phase_metrics_summary_excludes_unsafe_values(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        exit_code=0,
+        phases=(
+            PhaseRecord(
+                phase_id="phase-1",
+                run_id="run-test",
+                phase="evidence_collect",
+                minimum_success_count=1,
+                status=PhaseStatus.SUCCEEDED,
+                success_count=1,
+                metrics={
+                    "search_count": 1,
+                    "candidate_count": 5,
+                    "fetch_attempt_count": -1,
+                    "query": "secret query",
+                    "url": "https://example.com/secret",
+                    "fetch_error_codes": {"FETCH_FAILED": 1, "NEGATIVE": -1, "bad": "secret"},
+                    "diagnostics": {"prompt": "secret prompt"},
+                },
+            ),
+        ),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["phases"][0]["metrics"] == {
+        "search_count": 1,
+        "candidate_count": 5,
+        "fetch_error_codes": {"FETCH_FAILED": 1},
+    }
+    rendered = json.dumps(data, ensure_ascii=False)
+    assert "secret query" not in rendered
+    assert "https://example.com/secret" not in rendered
+    assert "secret prompt" not in rendered
 
 
 def test_json_evidence_empty_without_evidence(capsys):

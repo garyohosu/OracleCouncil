@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -246,6 +247,17 @@ class PhaseRecord:
     error_code: str | None = None
     error_summary: str | None = None
     outcome: str | None = None  # EvidenceOutcome; evidence_collect only
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EvidenceCollectionResult:
+    evidence: tuple[dict[str, Any], ...] = ()
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence", tuple(deepcopy(item) for item in self.evidence))
+        object.__setattr__(self, "metrics", deepcopy(self.metrics))
 
 
 @dataclass(frozen=True)

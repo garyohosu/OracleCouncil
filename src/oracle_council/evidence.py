@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Iterable, Protocol
+from typing import Callable, Iterable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import BaseHandler, Request, build_opener
 
-from .models import SearchResult
+from .models import EvidenceCollectionResult, SearchError, SearchResult
 
 
 class EvidenceFetchError(RuntimeError):
@@ -156,6 +157,9 @@ class WebEvidenceProvider:
                 "fetched_at": document.fetched_at}
 
     def collect(self, claims: list[dict]) -> list[dict]:
+        return list(self.collect_with_metrics(claims).evidence)
+
+    def collect_with_metrics(self, claims: list[dict]) -> EvidenceCollectionResult:
         """Phase-0 compatibility bridge for Orchestrator.collect(claims).
 
         This is intentionally narrower than the full SPEC §10.2 collection
@@ -177,20 +181,34 @@ class WebEvidenceProvider:
         )[:5]
 
         evidence: list[dict] = []
+        metrics = _empty_evidence_metrics()
+        metrics["target_claim_count"] = len(selected)
         for claim in selected:
             claim_id = str(claim.get("claim_id", ""))
             query = str(claim.get("text", ""))
-            results = sorted(
-                self._searcher.search(query, 5)[:5],
-                key=lambda result: result.rank,
-            )
+            metrics["search_count"] += 1
+            try:
+                results = sorted(
+                    self._searcher.search(query, 5)[:5],
+                    key=lambda result: result.rank,
+                )
+            except SearchError as exc:
+                metrics["evidence_count"] = len(evidence)
+                _increment_code(metrics["search_error_codes"], exc.code)
+                setattr(exc, "evidence_metrics", deepcopy(metrics))
+                setattr(exc, "partial_evidence", tuple(deepcopy(item) for item in evidence))
+                raise
+            metrics["candidate_count"] += len(results)
             successes = 0
             for result in results:
                 if successes >= 3:
                     break
+                metrics["fetch_attempt_count"] += 1
                 try:
                     document = self._fetcher.fetch(result.url)
-                except EvidenceFetchError:
+                except EvidenceFetchError as exc:
+                    metrics["fetch_failure_count"] += 1
+                    _increment_code(metrics["fetch_error_codes"], exc.code)
                     continue
                 evidence.append(
                     {
@@ -211,8 +229,31 @@ class WebEvidenceProvider:
                     }
                 )
                 successes += 1
-        return evidence
+                metrics["fetch_success_count"] += 1
+            if successes > 0:
+                metrics["claims_with_evidence_count"] += 1
+        metrics["evidence_count"] = len(evidence)
+        return EvidenceCollectionResult(evidence=tuple(evidence), metrics=metrics)
 
 
 def _importance_value(value) -> str:
     return getattr(value, "value", value)
+
+
+def _empty_evidence_metrics() -> dict:
+    return {
+        "search_count": 0,
+        "candidate_count": 0,
+        "fetch_attempt_count": 0,
+        "fetch_success_count": 0,
+        "fetch_failure_count": 0,
+        "evidence_count": 0,
+        "target_claim_count": 0,
+        "claims_with_evidence_count": 0,
+        "search_error_codes": {},
+        "fetch_error_codes": {},
+    }
+
+
+def _increment_code(codes: dict, code: str) -> None:
+    codes[code] = codes.get(code, 0) + 1

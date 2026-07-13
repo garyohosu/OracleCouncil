@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from itertools import count
-from typing import Sequence
+from typing import Any, Sequence
 from uuid import uuid4
 
 from .assignment import AssignmentPlan, RegisteredAgent, plan_assignments
@@ -17,6 +17,7 @@ from .models import (
     AuditIssueStatus,
     BudgetRequest,
     Claim,
+    EvidenceCollectionResult,
     PhaseRecord,
     PhaseStatus,
     ResultClassification,
@@ -24,6 +25,7 @@ from .models import (
     RunMetadataRecord,
     RunResult,
     RunStatus,
+    SearchError,
     utc_now,
 )
 from .storage import StorageBackend, StorageWriteError
@@ -34,6 +36,7 @@ from .storage import StorageBackend, StorageWriteError
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_INSUFFICIENT_AGENTS = 3
+EXIT_VERIFICATION_UNAVAILABLE = 3
 EXIT_WITHHELD = 4
 
 _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
@@ -53,7 +56,7 @@ _UNAVAILABLE_ERROR_CODES = frozenset(
 _MINIMUM_SUCCESS = {
     "respond": 2,
     "claim_extract": 1,
-    "evidence_collect": 0,
+    "evidence_collect": 1,
     "verify": 1,
     "criticize": 1,
     "synthesize": 1,
@@ -247,7 +250,23 @@ class Orchestrator:
             # included every phase after it, because _finish()'s fallback
             # was the only place finished_at ever got set on success.
             record.finished_at = utc_now()
-            self._apply_output(run_id, phase, result.output, state)
+            try:
+                self._apply_output(run_id, phase, result.output, state)
+            except SearchError:
+                self._append(
+                    run_id,
+                    "agent_execution_succeeded",
+                    {
+                        "phase": phase,
+                        "execution_id": execution_id,
+                        "agent_id": agent.agent_id,
+                        **({"retry_of": retry_of} if retry_of else {}),
+                    },
+                )
+                return self._finish(
+                    run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state,
+                    EXIT_VERIFICATION_UNAVAILABLE,
+                )
             self._append(
                 run_id,
                 "agent_execution_succeeded",
@@ -330,11 +349,7 @@ class Orchestrator:
             state.responses.append(output)
         elif phase == "claim_extract":
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
-            state.evidence = self._evidence_provider.collect([c.__dict__ for c in state.claims])
-            record = state.phase(run_id, "evidence_collect")
-            record.status = PhaseStatus.SUCCEEDED
-            record.outcome = "evidence_found" if state.evidence else "no_evidence"
-            record.finished_at = utc_now()
+            self._collect_evidence(run_id, state)
         elif phase == "verify":
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
         elif phase == "synthesize":
@@ -452,6 +467,44 @@ class Orchestrator:
         if self._storage is not None:
             self._storage.append(run_id, RunEvent(run_id, event_type, payload))
 
+    def _collect_evidence(self, run_id: str, state: "_RunState") -> None:
+        record = state.phase(run_id, "evidence_collect")
+        record.started_at = utc_now()
+        try:
+            claims = [c.__dict__ for c in state.claims]
+            collect_with_metrics = getattr(self._evidence_provider, "collect_with_metrics", None)
+            if callable(collect_with_metrics):
+                result = collect_with_metrics(claims)
+                detailed = True
+            else:
+                evidence = self._evidence_provider.collect(claims)
+                result = EvidenceCollectionResult(
+                    evidence=tuple(evidence),
+                    metrics=_evidence_metrics(evidence_count=len(evidence)),
+                )
+                detailed = False
+        except SearchError as error:
+            metrics = _metrics_from_search_error(error)
+            partial = getattr(error, "partial_evidence", ())
+            state.evidence = [deepcopy(item) for item in partial]
+            record.status = PhaseStatus.FAILED
+            record.success_count = 0
+            record.error_code = error.code
+            record.error_summary = _summary("evidence_collect", error.code)
+            record.metrics = metrics
+            record.finished_at = utc_now()
+            raise
+
+        state.evidence = [dict(item) for item in result.evidence]
+        metrics = _normalized_evidence_metrics(result.metrics, len(state.evidence))
+        record.status = PhaseStatus.SUCCEEDED
+        record.success_count = 1
+        record.error_code = None
+        record.error_summary = None
+        record.metrics = metrics
+        record.outcome = _evidence_outcome(metrics, detailed)
+        record.finished_at = utc_now()
+
 
 def _elapsed_ms(started_at, finished_at) -> int:
     return int((finished_at - started_at).total_seconds() * 1000)
@@ -465,6 +518,70 @@ def _summary(phase: str, error_code: str) -> str:
 
 def _evidence_snapshot(state: "_RunState") -> tuple[dict, ...]:
     return tuple(deepcopy(item) for item in state.evidence)
+
+
+def _evidence_metrics(evidence_count: int = 0) -> dict[str, Any]:
+    return {
+        "search_count": 0,
+        "candidate_count": 0,
+        "fetch_attempt_count": 0,
+        "fetch_success_count": 0,
+        "fetch_failure_count": 0,
+        "evidence_count": evidence_count,
+        "target_claim_count": 0,
+        "claims_with_evidence_count": 0,
+        "search_error_codes": {},
+        "fetch_error_codes": {},
+    }
+
+
+def _normalized_evidence_metrics(metrics: dict[str, Any], evidence_count: int) -> dict[str, Any]:
+    normalized = _evidence_metrics(evidence_count=evidence_count)
+    for key in (
+        "search_count",
+        "candidate_count",
+        "fetch_attempt_count",
+        "fetch_success_count",
+        "fetch_failure_count",
+        "evidence_count",
+        "target_claim_count",
+        "claims_with_evidence_count",
+    ):
+        value = metrics.get(key, normalized[key])
+        normalized[key] = value if type(value) is int and value >= 0 else normalized[key]
+    for key in ("search_error_codes", "fetch_error_codes"):
+        value = metrics.get(key, {})
+        if isinstance(value, dict):
+            normalized[key] = {
+                str(code): count
+                for code, count in value.items()
+                if isinstance(code, str) and type(count) is int and count >= 0
+            }
+    normalized["evidence_count"] = evidence_count
+    return normalized
+
+
+def _metrics_from_search_error(error: SearchError) -> dict[str, Any]:
+    partial = getattr(error, "partial_evidence", ())
+    metrics = _normalized_evidence_metrics(getattr(error, "evidence_metrics", {}), len(partial))
+    codes = metrics["search_error_codes"]
+    if not codes.get(error.code):
+        codes[error.code] = 1
+    return metrics
+
+
+def _evidence_outcome(metrics: dict[str, Any], detailed: bool) -> str:
+    evidence_count = metrics["evidence_count"]
+    if evidence_count == 0:
+        return "no_evidence"
+    if not detailed:
+        return "evidence_found"
+    if (
+        metrics["fetch_failure_count"] > 0
+        or metrics["claims_with_evidence_count"] < metrics["target_claim_count"]
+    ):
+        return "partial_evidence"
+    return "evidence_found"
 
 
 class _RunState:

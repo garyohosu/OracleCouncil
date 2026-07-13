@@ -130,6 +130,27 @@ evidence_id, claim_id, url, title, source, rank, content_type, retrieved_at, exc
 - その前提として`PYTHONPATH=(Resolve-Path .\src).Path`を設定し、このcloneのsrcを読むことを確認する
 - live実行はClaude/Codex利用枠と外部HTTPを消費するため、再試行なしの1回限定で行う
 
+## 4-8. Evidence収集Phaseの計測（X-7）
+
+実装済み（2026-07-13、X-7確定）。`evidence_collect`のPhaseRecordを収集前に作成し、`started_at`/`finished_at`/`elapsed_ms`が実際の収集処理を囲むようにした。`success_count`はEvidence件数ではなく収集処理の正常完了回数で、正常終了ならEvidence 0件でも`1`、SearchError等のPhase失敗なら`0`。
+
+`PhaseRecord.metrics`を追加し、`evidence_collect`では次を記録する:
+
+```text
+search_count, candidate_count, fetch_attempt_count, fetch_success_count,
+fetch_failure_count, evidence_count, target_claim_count,
+claims_with_evidence_count, search_error_codes, fetch_error_codes
+```
+
+metricsにはURL、title、excerpt、本文、検索語、prompt、stdout/stderr、環境変数を入れない。CLI JSONの`phases[]`には全Phaseで`metrics`を出し、metricsなしPhaseは`{}`。Storage契約は変更しておらず、JSONL保存や`history show`にはPhase metricsを新規保存しない。
+
+`WebEvidenceProvider.collect_with_metrics()`を追加し、既存`collect()`は後方互換でEvidenceだけを返す。Run開始後のSearchErrorは内部的に`evidence_collect failed`/Run failed/exit 3へ記録し、外部CLI JSONではX-5互換の`verification_unavailable`を返す。個別URLのEvidenceFetchErrorはRunを失敗させず、件数とコード別件数を記録して継続する。
+
+次の優先作業:
+
+- 代表質問5〜10問を1回ずつ実行し、完走率、classification、Evidence件数、フェーズ別所要時間、検索/fetch失敗率を測る
+- `collect_metrics.py`のフラットEvidence metricsを使い、検索が遅いのか、fetchが失敗しているのか、AI処理が遅いのかを切り分ける
+
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
 実装中に「仕様の穴」と見えた3件は、検証の結果、SPEC v0.3.5/v0.3.6の改訂で既に解消されていた（criticalのconflicting→row1、minorのcontradicted→row4、row5の拡張により表は網羅的）。逆に実装側がv0.3.4の表を前提にした齟齬（minorのみ全て確認済み→仕様は`verified`、実装は`partially_verified`）があり、修正済み。防御的既定値`partially_verified`は到達不能だが残している。

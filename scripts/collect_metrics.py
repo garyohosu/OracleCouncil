@@ -69,7 +69,41 @@ def run_council(question: str, *, timeout: int = 300) -> dict:
     except json.JSONDecodeError:
         payload = {"status": "harness_parse_error", "stderr": process.stderr[-2000:]}
     payload["_wall_elapsed_ms"] = wall_elapsed_ms
+    payload.update(evidence_metric_fields(payload))
     return payload
+
+
+def evidence_metric_fields(payload: dict) -> dict:
+    metrics = {}
+    for phase in payload.get("phases", []):
+        if phase.get("phase") == "evidence_collect":
+            metrics = phase.get("metrics") or {}
+            break
+    return {
+        "evidence_search_count": _int_metric(metrics, "search_count"),
+        "evidence_candidate_count": _int_metric(metrics, "candidate_count"),
+        "evidence_fetch_attempt_count": _int_metric(metrics, "fetch_attempt_count"),
+        "evidence_fetch_success_count": _int_metric(metrics, "fetch_success_count"),
+        "evidence_fetch_failure_count": _int_metric(metrics, "fetch_failure_count"),
+        "evidence_count": _int_metric(metrics, "evidence_count"),
+        "evidence_search_error_codes": _code_metrics(metrics.get("search_error_codes")),
+        "evidence_fetch_error_codes": _code_metrics(metrics.get("fetch_error_codes")),
+    }
+
+
+def _int_metric(metrics: dict, key: str) -> int:
+    value = metrics.get(key)
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _code_metrics(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(code): count
+        for code, count in value.items()
+        if isinstance(code, str) and type(count) is int and count >= 0
+    }
 
 
 def run_single_agent_baseline(question: str, *, timeout: int = 120) -> dict:

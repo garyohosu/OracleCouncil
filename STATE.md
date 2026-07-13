@@ -90,6 +90,8 @@ stateDiagram-v2
       Phase.statusは処理成否、EvidenceOutcomeは根拠の結果。
       evidence_found / conflicting_evidenceもPhase成功と両立する。
       evidence_collectはAgentExecutionを生成しない。
+      success_countは収集処理の正常完了回数であり、
+      Evidence件数はPhase.metrics.evidence_countへ記録する。
       未処理Claimはunverified。
       AI/token予算不足のBUDGET_EXCEEDEDとは別コード。
     end note

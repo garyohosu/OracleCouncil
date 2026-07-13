@@ -259,6 +259,16 @@
 - **期待する終了コード**: N/A
 - **未確定仕様への依存**: なし（X-6確定）
 
+#### **UT-CLI-X7-01: Phase metrics JSON出力**
+- **テストレベル**: UT
+- **対象クラス/機能**: `output_run_result` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §15.7, §17.1 / UC: Evidence収集計測を監査する / SEQ: 1
+- **入力**: `PhaseRecord.metrics`を持つRunResultとmetricsなしPhase。
+- **モック/Fixture**: `RunResult`, `PhaseRecord`
+- **期待結果**: `phases[]`へ既存フィールドを維持したまま`outcome`と`metrics`を出す。metricsなしPhaseは`{}`。metricsは既知キー、int値、コード別int件数だけを出し、URL、本文、title、excerpt、検索語、prompt、stdout/stderr、環境変数、未知キーを出さない。
+- **期待する終了コード**: `0`
+- **未確定仕様への依存**: なし（X-7確定）
+
 ---
 
 ### 2.2 Orchestrator
@@ -286,6 +296,36 @@
 - **期待結果**: Evidence収集後の正常RunResultに`evidence`が含まれる。Evidence収集前に失敗したRunResultは空。Evidence収集後に後続Phaseで失敗してもEvidenceが残る。withheld経路でも収集済みならEvidenceが残る。`RunResult.evidence`は内部stateまたはProviderの可変listを参照せず、Evidence辞書とネスト値も独立したsnapshotである。
 - **期待する終了コード**: scenarioごとにSPEC §13.4対応表を適用
 - **未確定仕様への依存**: なし（X-6確定）
+
+#### **UT-ORCH-X7-01: evidence_collect計測とsuccess_count**
+- **テストレベル**: UT
+- **対象クラス/機能**: `Orchestrator.run_verify` / `PhaseRecord.metrics`
+- **関連仕様・UC・SEQ**: SPEC §15.7, §15.8 / UC: Evidence収集を監査する / SEQ: 1
+- **前提条件**: EvidenceProviderが正常終了、0件、SearchErrorの各結果を返せること。
+- **モック/Fixture**: `FakeEvidenceProvider`, fake clock, `ScriptedAgentAdapter`
+- **期待結果**: `evidence_collect.started_at`が収集前、`finished_at`が収集後に設定され、fake clockで`elapsed_ms > 0`を確認できる。正常終了ならEvidence 0件でも`success_count=1`、SearchErrorなら`success_count=0`。
+- **期待する終了コード**: 正常系`0`、SearchError系`3`
+- **未確定仕様への依存**: なし（X-7確定）
+
+#### **UT-ORCH-X7-02: evidence_collect outcome決定**
+- **テストレベル**: UT
+- **対象クラス/機能**: `Orchestrator` / `PhaseRecord.outcome`
+- **関連仕様・UC・SEQ**: SPEC §15.7 / UC: EvidenceOutcomeを監査する / SEQ: 1
+- **入力**: Evidence 0件、一部fetch失敗、Evidenceなし対象Claimあり、全対象ClaimにEvidenceあり、fallback Provider。
+- **モック/Fixture**: `EvidenceCollectionResult`, fake EvidenceProvider
+- **期待結果**: 0件は`no_evidence`、一部fetch失敗またはEvidenceなし対象Claimありは`partial_evidence`、全対象Claim成功は`evidence_found`。fallback Providerでは詳細metricsがないためEvidence有無だけで従来どおり判定し、`partial_evidence`を推測しない。
+- **期待する終了コード**: `0`
+- **未確定仕様への依存**: なし（X-7確定）
+
+#### **UT-ORCH-X7-03: SearchErrorのPhase/Run記録**
+- **テストレベル**: UT
+- **対象クラス/機能**: `Orchestrator` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §13.4, §15.7, §17.1 / UC: 検証機能利用不能を安全に返す / SEQ: 1
+- **入力**: EvidenceProviderが`SearchError("SEARCH_QUOTA_EXCEEDED")`を送出するRun。途中までに部分Evidenceとmetricsがあるケースを含む。
+- **モック/Fixture**: Fake EvidenceProvider, CLI JSON
+- **期待結果**: 内部Runは`failed`、`evidence_collect.status=failed`、`success_count=0`、`error_code=SEARCH_QUOTA_EXCEEDED`、`metrics.search_error_codes`に1件を記録する。途中まで取得済みのEvidenceとmetricsはRunResultへ残る。CLI JSONは`status=verification_unavailable`、exit 3、実run_id、failed phase、sanitized partial Evidenceを含み、生stdout/stderr、検索prompt、環境変数、例外全文を出さない。
+- **期待する終了コード**: `3`
+- **未確定仕様への依存**: なし（X-7確定）
 
 #### **UT-ORCH-02: Agent選定ロジック**
 - **テストレベル**: UT
@@ -769,6 +809,16 @@
 - **期待結果**: `critical`を`major`より先に、同重要度では`claim_id`順に最大5 Claimだけ処理する。各Claimの`text`で`search(limit=5)`を1回呼び、rank順にfetchし、fetch成功はClaimごと最大3件、抜粋は1,200文字以下。`minor`は検索しない。`EvidenceFetchError`は該当URLだけスキップし、`SearchError`は上位へ送出する。本文取得は注入されたfetcherだけを通る。Evidence順序と`evidence_id`は同じ入力で安定し、`authority/directness/stance/freshness`は保守的な値になる。
 - **期待する終了コード**: N/A
 - **未確定仕様への依存**: なし（X-5確定、完全な§10.2収集エンジンは対象外）
+
+#### **UT-EP-X7-01: WebEvidenceProvider collect_with_metrics**
+- **テストレベル**: UT
+- **対象クラス/機能**: `WebEvidenceProvider.collect_with_metrics` / `evidence.py`
+- **関連仕様・UC・SEQ**: SPEC §10.2, §15.7 / UC: Evidence収集を計測する / SEQ: 1
+- **入力**: critical/major/minor Claim、rank欠番を含むSearchResult、成功/失敗するFake fetcher。
+- **モック/Fixture**: `RecordingSearchProvider`, `RecordingCollectFetcher`
+- **期待結果**: 既存`collect()`のEvidence順序・上限を維持しつつ、`search_count`、`candidate_count`、`fetch_attempt_count`、`fetch_success_count`、`fetch_failure_count`、`evidence_count`、`target_claim_count`、`claims_with_evidence_count`、`search_error_codes`、`fetch_error_codes`を正確に返す。個別`EvidenceFetchError`はコード別件数へ集計して継続し、`SearchError`はmetricsを付けて上位へ送出する。
+- **期待する終了コード**: N/A
+- **未確定仕様への依存**: なし（X-7確定）
 
 #### **UT-EP-06: Evidence件数上限制御**
 - **テストレベル**: UT
