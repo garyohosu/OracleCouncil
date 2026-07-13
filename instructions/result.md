@@ -161,3 +161,14 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - `py -m pytest`: **258 passed, 6 deselected**; `git diff --check`: passed.
 - Live, real Claude, real Codex, q04, WebSearch, HTTP, and expensive evaluation were not executed.
 - Changed files: `src/oracle_council/adapters/claude.py`, `tests/unit/test_claude_transport.py`, `tests/unit/test_adapter_unicode.py`, `instructions/result.md`, and `hikitsugi.md`.
+## X-8.11 q04 Claude stdin live re-evaluation (2026-07-13)
+
+- HEAD and `origin/main`: `05714b7`; precheck, import smoke test, dry-run, and normal tests passed.
+- `py -m pytest`: **258 passed, 6 deselected**; `git diff --check`: passed before live execution.
+- One approved live run was executed in `C:\\PROJECT\\OracleCouncil-evals\\x8\\05714b7-q04-claude-stdin`.
+- Result: `exit_code=4`, `status=completed`, `classification=withheld`, `timed_out=false`, `acceptance_status=not_assessed`.
+- Run ID: `7d42b9c7-a0c5-4df3-9ad8-92f5340b7e31`; agent calls: `9`; participants: `claude-code`, `codex-cli`.
+- `respond`, `claim_extract`, `evidence_collect`, `verify`, `criticize`, `synthesize`, and `audit` all succeeded. `synthesize` had `success_count=2`; `audit` had `success_count=2`. The X-8.9 `synthesize COMMAND_NOT_FOUND` did not recur.
+- Evidence: 14 items; searches 5; candidates 25; fetch attempts 23; fetch successes 14; fetch failures 9; outcome `partial_evidence`.
+- `json_parse_status=valid`; `leakage_check=passed_structural_check`; no error codes were reported.
+- The q04 acceptance status remained `not_assessed`; no claim was made from raw model output. Raw stdout/stderr, prompts, tokens, and evaluation artifacts were not added to Git.
