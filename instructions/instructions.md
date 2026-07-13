@@ -5,7 +5,7 @@
 > 作業を始める前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
 > 未コミット差分がある場合は、勝手にreset・stash・削除せず、差分を保護して状況を報告してください。
 
-## X-8.6: Codexの長いPhase入力をstdinへ移す
+## X-8.7: Codex stdin化後のq04再評価（明示承認ゲート付き）
 
 対象リポジトリ:
 
@@ -15,251 +15,88 @@ C:\PROJECT\OracleCouncil
 
 ## 目的
 
-q04のlive評価では、2回とも次の流れで失敗した。
+X-8.6でCodexAdapterのPhase入力をargvから除去し、stdin経由へ変更した。
 
-- `respond` 2回成功
-- `claim_extract`成功
-- `evidence_collect`成功
-- Evidence 14〜15件取得
-- `verify`のCodex CLIが起動直後の短時間で非ゼロ終了
-- `EXECUTION_ERROR`
+これまでq04は2回とも、`respond`、`claim_extract`、`evidence_collect`まで成功した後、長いClaim・Evidenceを受け取る`verify`のCodex CLIが短時間で非ゼロ終了していた。
 
-X-8.3〜X-8.5により、失敗を安全な固定summaryとして記録する経路は整備できたが、実Codexが非ゼロ終了する根本原因は未特定である。
+今回の目的は、新しいHEADでq04を1回だけ再評価し、次を確認することである。
 
-現在の`CodexAdapter.execute()`は、`build_phase_input()`が生成した質問、Claim、Evidence等の長い入力全文を、`codex exec`の位置引数としてコマンドラインへ直接追加している。
+1. stdin化後も`verify`の非ゼロ終了が再現するか
+2. `verify`を通過し、後続の`criticize`、`synthesize`、`audit`へ到達するか
+3. 失敗時のEXECUTION_ERROR summaryがX-8.5修正後の正しい形式か
+4. q04の誤前提訂正が最終回答まで到達するか
 
-```python
-cmd = [
-    "codex.cmd" if os.name == "nt" else "codex",
-    "exec",
-    question,
-    ...
-]
-```
+ただし、Windowsコマンドライン長が過去の根本原因だったとはまだ断定しない。
 
-`verify`は質問だけでなくClaimとEvidenceを含むため、先行Phaseより大幅に長くなる。Windows上で`codex.cmd`へ長い引数を渡す構成は、コマンドライン長制限や引数解釈の影響を受ける可能性がある。
+## 重要: live実行の承認ゲート
 
-これは現時点では**有力仮説であり確定原因ではない**。今回の目的は、原因と断定することではなく、Codex CLIが公式に対応するstdin入力へ切り替え、プロンプト長をコマンドラインから除去することで、この失敗要因を安全に排除することである。
+この指示書を読んで実行するという一般的な依頼だけでは、live実行の承認とはみなさない。
 
-## O-6に関する今回の設計判断
-
-`FIX_PLAN.md`のO-6「stdin限定と一時ファイル許可の矛盾」について、CodexAdapterでは次の境界を採用する。
-
-### stdinへ渡す情報
-
-次のユーザー由来・実行由来データはコマンドライン引数や一時ファイルへ書かず、stdinで渡す。
+live実行前に、ユーザーから現在のローカルセッションで、次と同等の明示的な承認を得ること。
 
 ```text
-question
-responses
-claims
-evidence
-critique
-final_answer
-build_phase_input()が生成するPhase入力全文
+X-8.7のq04 live実行を1回だけ承認します
 ```
 
-### 一時ファイルを許可する情報
+- 明示承認が確認できない場合は、作業前確認とdry-runまで実施して停止する
+- 承認を推測・継承しない
+- X-8.4で与えられた1回限定承認は既に消費済みであり、今回へ流用しない
+- 承認なしで`ORACLE_COUNCIL_LIVE=1`、実Codex、実Claude、WebSearch、実HTTPを実行しない
 
-Codex CLIの`--output-schema`で必要な、プログラムが生成したJSON Schemaだけは一時ファイルを許可する。
+承認なしで停止した場合も、`instructions/result.md`へ「dry-run完了・live承認待ち」と記録する。ただしsource、test、`hikitsugi.md`は変更せず、commit・pushもしない。
 
-条件:
+## 現在地
 
-- ユーザー質問を含めない
-- Claim本文、Evidence、回答、promptを含めない
-- 環境変数や認証情報を含めない
-- subprocess終了後、成功・失敗を問わず`finally`で削除する
-- 既存の安全な一時ファイル処理を維持する
+X-8.6では次を完了している。
 
-今回、ClaudeAdapterやCliSearchProviderの入力方式は変更しない。O-6全体を完了扱いにせず、**CodexAdapter側のprompt transportを解消した**と記録する。
+- CodexのPhase入力をargvから除去
+- `codex exec ... -`でstdin入力を指定
+- `subprocess.run(input=question, ...)`で本文を渡す
+- 50,000文字超の質問・Claim・Evidenceでテスト
+- argvへ本文が入らないことを確認
+- JSON Schema一時ファイルの成功・失敗時cleanupを確認
+- 既存エラー分類を維持
+- `238 passed, 6 deselected`
+- live、q04、実CLIは未実行
 
-## 作業前確認
-
-最初に次を確認する。
+実装HEAD:
 
 ```text
-src/oracle_council/adapters/codex.py
-src/oracle_council/adapters/base.py
-tests/unit/test_adapter_error_classification.py
-tests/unit/test_adapter_schema.py
-FIX_PLAN.md
-hikitsugi.md
-instructions/result.md
+55044cc fix: pass Codex phase input through stdin
 ```
 
-確認事項:
+## 評価対象
 
-- `build_phase_input()`がPhase別に含めるデータ
-- CodexAdapterの`probe()`と本実行の`subprocess.run()`の違い
-- temp schemaの作成・削除経路
-- `classify_cli_error()`の順序
-- X-8.3のEXECUTION_ERROR固定summary
-- X-8.5のOrchestrator summary規則
-- Codex CLIのprompt `-`によるstdin入力契約
-
-## 実装要件
-
-### 1. promptをargvから除去する
-
-Codex本実行のコマンドラインに、`question`または`build_phase_input()`の戻り値を直接含めない。
-
-期待する構造例:
-
-```python
-cmd = [
-    "codex.cmd" if os.name == "nt" else "codex",
-    "exec",
-    "-s",
-    "read-only",
-    "--ephemeral",
-    "--output-schema",
-    temp_schema_path,
-]
-
-if self.model:
-    cmd.extend(["--model", self.model])
-
-cmd.append("-")
-```
-
-実際の並び順はCodex CLIの現行契約に合わせること。
-
-次を満たすこと。
-
-- promptを示す位置引数にはstdin指定の`-`だけを使う
-- `question`全文を`cmd`へ追加しない
-- schema path以外の実行時データをargvへ追加しない
-- Windowsでは従来どおり`codex.cmd`を使う
-- read-only、ephemeral、output-schema、model指定を維持する
-
-### 2. subprocess.runへstdinデータを渡す
-
-本実行では`subprocess.run()`へPhase入力を文字列として渡す。
-
-期待例:
-
-```python
-res = subprocess.run(
-    cmd,
-    input=question,
-    capture_output=True,
-    text=True,
-    encoding="utf-8",
-    errors="replace",
-    timeout=self.timeout_s,
-    env=env,
-    shell=False,
-)
-```
-
-次を満たすこと。
-
-- `input=question`を使用する
-- 本実行で`stdin=subprocess.DEVNULL`を併用しない
-- probeは従来どおり`stdin=subprocess.DEVNULL`でよい
-- prompt内容をログ、例外summary、コマンド表示へ追加しない
-
-### 3. 既存の処理を変更しない
-
-次を維持する。
-
-- probeの動作
-- `--output-schema`による構造化出力
-- `_strict_schema()`
-- temp schemaの削除
-- stdoutからのJSON抽出
-- `validate_phase_output()`
-- TIMEOUT、RATE_LIMITED、QUOTA_EXCEEDED、AUTH_REQUIRED分類
-- EXECUTION_ERROR固定summary
-- INVALID_OUTPUT構造診断
-- Usageの現行扱い
-- Storage Contract
-- Run、Phase、Executionのclassificationと終了コード
-
-### 4. 仮説を事実化しない
-
-ドキュメントでは次のように区別する。
-
-- 確認済み: Codex prompt全文がargvへ入っていた
-- 確認済み: verifyはClaimとEvidenceを含み、前段より長い
-- 確認済み: q04のverifyで短時間の非ゼロ終了が2回再現した
-- 仮説: Windowsのコマンドライン長または引数受け渡しが原因
-- 今回の修正: promptをstdinへ移し、この原因候補を除去
-- 未確認: stdin化で実liveが成功するか
-
-「根本原因を特定した」「Windows長制限が原因だった」とは、live再確認前に断定しない。
-
-## テスト要件
-
-実Codexを呼ばず、`subprocess.run`をFakeまたはmonkeypatchして通常テストを追加する。
-
-最低限、次を確認する。
-
-### コマンドとstdin
-
-1. probe呼び出しは従来どおり成功する
-2. 本実行の`cmd`に`codex exec`が含まれる
-3. 本実行の`cmd`にstdin指定の`-`が含まれる
-4. 本実行の`cmd`に質問本文が含まれない
-5. 本実行の`cmd`にClaim本文が含まれない
-6. 本実行の`cmd`にEvidence本文が含まれない
-7. `subprocess.run(input=...)`へ`build_phase_input()`相当の全文が渡される
-8. 本実行で`stdin=subprocess.DEVNULL`が指定されない
-9. `shell=False`を維持する
-10. Windows分岐では`codex.cmd`を維持する
-
-### 長い入力
-
-11. 50,000文字以上のsyntheticなverify入力を作る
-12. 長い入力全文が`input`へ渡される
-13. `cmd`の長さは入力本文の長さに比例して増えない
-14. 長い質問、Claim、Evidenceの識別文字列がargvへ一切入らない
-15. Fake成功応答を正常にparse・validateできる
-
-### 一時schema
-
-16. subprocess呼び出し時点でschemaファイルが存在する
-17. schemaに質問、Claim、Evidence、秘密文字列が含まれない
-18. 成功後にschemaファイルが削除される
-19. 非ゼロ終了や例外後にもschemaファイルが削除される
-
-### エラー回帰
-
-20. 非ゼロ終了は`EXECUTION_ERROR`になる
-21. fixed summaryは`<phase> process exited with a non-zero status.`になる
-22. stdout、stderr、prompt、秘密文字列はpublic summaryへ混入しない
-23. timeout、quota、rate limit、authの既存分類を壊さない
-24. INVALID_OUTPUTの既存構造診断を壊さない
-
-テストの追加先は、既存構成に合わせて次のいずれかを使用する。
+固定評価セットのq04だけを使用する。
 
 ```text
-tests/unit/test_adapter_error_classification.py
-tests/unit/test_adapter_schema.py
+question_id: q04
+category: false_premise
+question: 日本の法定成人年齢は現在も20歳なのはなぜですか？
 ```
 
-必要ならCodex transport専用の単体テストファイルを新設してよい。
+受入確認:
 
-## 実行禁止事項
+1. 現在の法定成人年齢が18歳であることを示す
+2. 20歳のままと断定しない
+3. 飲酒・喫煙等の年齢制限と成人年齢を区別する
+4. classificationが`verified`、`partially_verified`、`withheld`のいずれか
 
-今回は次を実行しない。
+## 絶対条件
 
-```text
-codex execによる生成呼び出し
-claude -pによる生成呼び出し
-WebSearch
-実HTTP取得
-ORACLE_COUNCIL_LIVE=1
-liveテスト
-expensiveテスト
-q04再実行
-8問フル評価
-scripts/run_x8_evaluation.pyのlive実行
-```
+- live実行は明示承認後に**このセッション全体で1回だけ**
+- q04だけを実行する
+- 失敗、timeout、不正JSON、認証・利用枠エラーでも再試行しない
+- 別のoutput directoryを作ってやり直さない
+- q01〜q03、q05〜q08を実行しない
+- 8問フル評価を実行しない
+- 結果を見て、その場でソースコードを修正しない
+- raw stdout、stderr、prompt、環境変数、認証情報をGitへ追加しない
+- 保存済み評価結果を変更・削除・再構築しない
 
-`codex --version`や`codex exec --help`も、実装とテストに不要なら実行しない。
+## 保護対象
 
-保存済み評価結果を変更・削除・再構築しない。
+次の既存評価結果は変更、削除、再構築しない。
 
 ```text
 C:\PROJECT\OracleCouncil-evals\x8\6a55ede
@@ -268,66 +105,229 @@ C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
 C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
 ```
 
-## 検証
+今回の出力先は、pull後の最新HEADを含む新しいディレクトリ1つだけとする。
 
-実装後、次を実行する。
+```text
+C:\PROJECT\OracleCouncil-evals\x8\<HEAD>-q04-stdin
+```
+
+既に存在する場合はlive実行せず停止する。retry用の別名ディレクトリを作らない。
+
+## 作業前確認
+
+PowerShellで次を実行する。
 
 ```powershell
-py -m pytest
-git diff --check
+cd C:\PROJECT\OracleCouncil
+
 git status --short
+git pull --ff-only
+git status --short
+
+git rev-parse --abbrev-ref HEAD
+git rev-parse --short HEAD
+git rev-parse --short refs/remotes/origin/main
 ```
 
 合格条件:
 
-- 通常テスト全件pass
-- live / expensiveは既定設定で除外
-- `git diff --check`成功
-- 意図しないファイル変更なし
-- prompt本文がCodex実行argvへ入らない
-- 長いPhase入力がstdinへ渡される
-- temp schemaのcleanupが維持される
-- 既存エラー分類とsummaryを壊さない
+- branchが`main`
+- worktreeがclean
+- `HEAD`と`refs/remotes/origin/main`が一致
+- pull後の`instructions/instructions.md`の作業名が`X-8.7`
+- HEADに`55044cc`が含まれている
+
+未コミット差分、branch違い、HEAD不一致、pull失敗がある場合はlive実行しない。
+
+## 通常テスト
+
+live実行前に既定テストを実行する。
+
+```powershell
+py -m pytest
+git diff --check
+```
+
+期待値:
+
+```text
+238 passed, 6 deselected
+```
+
+テスト件数が増減していても全通常テストがpassし、live・expensiveが除外されていればよい。失敗した場合はlive実行しない。
+
+## dry-run
+
+```powershell
+$head = (git rev-parse --short HEAD).Trim()
+$originHead = (git rev-parse --short refs/remotes/origin/main).Trim()
+
+if ($head -ne $originHead) {
+    throw "HEAD and origin/main do not match."
+}
+
+$outputDir = "C:\PROJECT\OracleCouncil-evals\x8\$head-q04-stdin"
+
+if (Test-Path $outputDir) {
+    throw "Output directory already exists. Do not reuse it and do not create a retry directory."
+}
+
+py scripts/run_x8_evaluation.py `
+  --eval-set tests/evals/x8_eval_set.json `
+  --output-dir $outputDir `
+  --expected-head $head `
+  --question-id q04 `
+  --timeout-seconds 600 `
+  --dry-run
+```
+
+確認項目:
+
+- q04だけが選択されている
+- `adapter-mode real`
+- `evidence-provider cli-search`
+- JSON出力
+- `--no-store`
+- timeout 600秒
+- 出力先がリポジトリ外
+- HEADとorigin/mainが一致
+- worktree clean
+
+## live実行
+
+**明示承認が確認できた場合だけ**、dry-runと同じPowerShellセッションで次を1回だけ実行する。
+
+```powershell
+$env:ORACLE_COUNCIL_LIVE = "1"
+
+try {
+    py scripts/run_x8_evaluation.py `
+      --eval-set tests/evals/x8_eval_set.json `
+      --output-dir $outputDir `
+      --expected-head $head `
+      --question-id q04 `
+      --timeout-seconds 600
+}
+finally {
+    Remove-Item Env:ORACLE_COUNCIL_LIVE -ErrorAction SilentlyContinue
+}
+```
+
+終了コードが0以外でも再実行しない。
+
+## 結果確認
+
+リポジトリ外の今回出力だけを確認する。
+
+```text
+manifest.json
+summary.jsonl
+summary.csv
+q04/attempted.json
+q04/record.json
+q04/stdout.json
+q04/stderr.txt
+```
+
+raw `stderr.txt`やstdout本文をチャット、`result.md`、`hikitsugi.md`、Gitへ転記しない。
+
+記録してよいのは、構造化・sanitizedされた次の情報だけ。
+
+- process exit code
+- Run status
+- result classification
+- run_id
+- agent_call_count
+- participants
+- Phaseごとのstatus、elapsed_ms、error_code、sanitized error_summary
+- Evidence件数と収集metrics
+- JSON parse status
+- leakage check
+- acceptance status
+
+## 判定
+
+### A. verifyを通過した場合
+
+- stdin化後に過去の即時非ゼロ終了が再現しなかったと記録する
+- ただしstdin化が根本原因を解決したと断定せず、「今回の条件では再現しなかった」とする
+- criticize、synthesize、auditまで到達したか確認する
+- q04の3つの受入条件を確認する
+
+### B. 同じ非ゼロ終了が再現した場合
+
+- Windows argv長だけが原因という仮説は弱まったと記録する
+- X-8.5修正後のsummaryが正確に次の形式か確認する
+
+```text
+verify process exited with a non-zero status.
+```
+
+- `invalid output`や二重ピリオドが復活していないことを確認する
+- raw出力から原因を推測して仕様変更しない
+
+### C. 既知エラーへ分類された場合
+
+AUTH_REQUIRED、QUOTA_EXCEEDED、RATE_LIMITED、TIMEOUT等の分類とsanitized summaryだけを記録する。再試行しない。
 
 ## ドキュメント更新
 
-`hikitsugi.md`へX-8.6として次を記録する。
-
-- q04のverify非ゼロ終了が2回再現したこと
-- promptをargvへ直接渡していた現行構造
-- Windowsコマンドライン長は未確認の原因仮説であること
-- Codex promptをstdinへ移したこと
-- temp fileはschemaだけに限定したこと
-- O-6はCodexAdapter側のみ前進し、全体完了ではないこと
-- 追加した長文入力テスト
-- pytest結果
-- live再実行をしていないこと
-- 次の作業が「ユーザー承認後のq04 1回限定再評価」であること
-
-`FIX_PLAN.md`のO-6には、完了扱いにせず次の趣旨を追記する。
+live実行した場合だけ、次を更新する。
 
 ```text
-CodexAdapter: promptはstdin、temp fileは非機密schemaだけに限定して実装済み。
-ClaudeAdapter/CliSearchProviderを含む全体方針の完了確認は未実施。
+instructions/result.md
+hikitsugi.md
 ```
 
-SPEC変更が不要ならバージョンは上げない。
+記載内容:
 
-## コミットとpush
+1. 実行HEAD
+2. 出力先
+3. 明示承認を確認したこと
+4. dry-run結果
+5. live外部実行回数が1回であること
+6. process exit、status、classification
+7. 参加Agentとcall count
+8. Phase結果とsanitized summary
+9. Evidence件数・metrics
+10. q04受入条件の判定
+11. 過去の非ゼロ終了が再現したか
+12. stdin化について言えること・言えないこと
+13. JSON parseとleakage check
+14. raw情報を保存・公開していないこと
+15. 未解決事項と次の推奨作業
 
-全テスト通過後、意図したsource、test、documentだけをコミットし、`origin/main`へpushする。
+既存の過去結果は削除せず、X-8.7の節を先頭へ追加する。
+
+## commit・push
+
+live実行後、変更対象は原則として次の2ファイルだけとする。
+
+```text
+instructions/result.md
+hikitsugi.md
+```
+
+確認:
+
+```powershell
+git diff --check
+git status --short
+```
+
+評価ディレクトリ、raw stdout/stderr、秘密情報をcommitしない。
 
 コミットメッセージ例:
 
 ```text
-fix: pass Codex phase input through stdin
+docs: record q04 stdin live re-evaluation
 ```
 
-`instructions/result.md`も今回のコミット対象に含める。
+`origin/main`へpushし、commit hashとpush結果を`instructions/result.md`へ記録する。
 
 ## 結果出力
 
-作業完了後、結果を次へ必ず出力すること。
+作業結果は必ず次へ出力する。
 
 ```text
 instructions/result.md
@@ -335,22 +335,14 @@ instructions/result.md
 
 チャット上の報告だけで完了扱いにしない。
 
-最低限、次を記載する。
+明示承認がない場合は、次だけを記録して停止する。
 
-1. 現行Codex commandの確認結果
-2. stdin化した実装内容
-3. 最終的な`cmd`の構造（prompt本文は記載しない）
-4. `subprocess.run()`へ渡すstdin方式
-5. 長文入力テストの文字数と結果
-6. argvへprompt、Claim、Evidenceが入らないこと
-7. temp schemaの内容境界とcleanup結果
-8. 既存エラー分類の回帰結果
-9. 変更ファイル一覧
-10. pytest結果
-11. `git diff --check`結果
-12. live、q04、実CLIを実行していないこと
-13. commit hash
-14. push結果
-15. Windowsコマンドライン長は未確認仮説であること
-16. 未解決事項
-17. 次の推奨作業
+- pull後HEAD
+- worktree・origin同期状況
+- 通常テスト結果
+- dry-run結果
+- 想定出力先
+- live未実行
+- 明示承認待ち
+
+承認なしで停止した場合はcommit・pushしない。
