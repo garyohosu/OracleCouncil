@@ -142,7 +142,6 @@ class ClaudeAdapter:
         cmd = [
             "claude",
             "-p",
-            prompt,
             "--tools",
             "",
             "--output-format",
@@ -164,7 +163,7 @@ class ClaudeAdapter:
                 errors="replace",
                 timeout=self.timeout_s,
                 env=env,
-                stdin=subprocess.DEVNULL,
+                input=prompt,
                 shell=False,
             )
             err_text = res.stderr + "\n" + res.stdout

@@ -27,7 +27,9 @@ def test_claude_adapter_accepts_japanese_question_with_mocked_subprocess(monkeyp
 
     assert result.output == {"answer": "ok"}
     cmd, kwargs = calls[0]
-    assert any("富士山" in part for part in cmd)
+    assert all("富士山" not in part for part in cmd)
+    assert "富士山" in kwargs["input"]
+    assert "stdin" not in kwargs
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
 

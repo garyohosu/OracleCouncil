@@ -151,3 +151,13 @@ q04 live、実CLI、実WebSearch、実HTTP、expensive評価、X-8 runnerのlive
 - No source or test changes were made from this live result. The remaining issue is external CLI availability for the `synthesize` phase.
 
 The live re-evaluation was completed once after user approval. The remaining unresolved issue is external CLI availability during `synthesize`; existing evaluation artifacts were not modified.
+## X-8.10 Claude phase input stdin transport (2026-07-13)
+
+- X-8.9 context: `synthesize` was assigned to Claude and failed with sanitized `COMMAND_NOT_FOUND`; no live rerun was performed.
+- `ClaudeAdapter.execute()` now removes the user-derived Phase prompt from argv and passes the complete prompt through `subprocess.run(input=prompt, ...)`.
+- The production Phase invocation no longer uses `stdin=subprocess.DEVNULL`; `probe()` and `CliSearchProvider` were unchanged.
+- Added `tests/unit/test_claude_transport.py` covering a 50,000-character `synthesize` input, argv exclusion, stdin contents, command flags, JSON envelope parsing, and Phase output validation.
+- Updated the existing Unicode transport test to assert Claude input is carried by stdin rather than argv.
+- `py -m pytest`: **258 passed, 6 deselected**; `git diff --check`: passed.
+- Live, real Claude, real Codex, q04, WebSearch, HTTP, and expensive evaluation were not executed.
+- Changed files: `src/oracle_council/adapters/claude.py`, `tests/unit/test_claude_transport.py`, `tests/unit/test_adapter_unicode.py`, `instructions/result.md`, and `hikitsugi.md`.

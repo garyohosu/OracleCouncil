@@ -301,3 +301,12 @@ User approval was obtained for exactly one live run. On HEAD `0bdf5ca`, the q04 
 Sanitized result: `exit_code=1`, `status=failed`, `classification=unverified`, `run_id=d462fda2-85f6-4702-80d0-0d8ae560989e`, `agent_call_count=6`, participants `codex-cli` and `claude-code`. `respond`, `claim_extract`, `evidence_collect`, `verify`, and `criticize` succeeded. `synthesize` failed with `COMMAND_NOT_FOUND` and summary `synthesize execution ended with COMMAND_NOT_FOUND.`; `audit` was not reached.
 
 Evidence metrics were 15 evidence items, 5 searches, 25 candidates, 20 fetch attempts, 15 fetch successes, and 5 fetch failures. JSON parsing was valid and leakage checking passed. The run did not reproduce `AUTH_REQUIRED`, but this cannot establish whether X-8.7 was a genuine authentication failure or a prior partial-match misclassification. Raw stdout/stderr and other sensitive artifacts were not read into the report or committed. No source/test changes were made; the remaining issue is external CLI availability during `synthesize`.
+## 4-21. X-8.10 Claude Phase input stdin transport
+
+X-8.9 ended after `criticize` because Claude-assigned `synthesize` returned sanitized `COMMAND_NOT_FOUND`. X-8.10 did not infer the root cause and did not run live or real Claude/Codex.
+
+`ClaudeAdapter.execute()` now keeps only fixed CLI flags in argv and passes the complete `_build_prompt(..., build_phase_input(...))` result through `input=prompt`. The production Phase call no longer supplies `stdin=DEVNULL`; `probe()` and `CliSearchProvider` remain unchanged. JSON envelope extraction, Phase validation, usage accounting, error classification, retry behavior, and storage contracts were preserved.
+
+Added a Fake subprocess transport test with a 50,000-character `synthesize` input, asserting sensitive input is absent from argv and present in stdin, and that the Claude JSON envelope still becomes a validated `AgentResult`. Updated the Unicode transport regression test to the same stdin contract.
+
+`py -m pytest` passed: **258 passed, 6 deselected**. `git diff --check` passed. Live, q04, real Claude, real Codex, WebSearch, HTTP, and expensive evaluation were not executed.
