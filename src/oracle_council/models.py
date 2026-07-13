@@ -287,4 +287,5 @@ class RunResult:
     phases: tuple[PhaseRecord, ...] = ()
     executions: tuple[AgentExecutionRecord, ...] = ()
     metadata: RunMetadataRecord | None = None
+    evidence: tuple[dict[str, Any], ...] = ()
 

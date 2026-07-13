@@ -1566,4 +1566,18 @@ CLIでは`SearchError`を`verification_unavailable`/exit 3へ変換し、message
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続完了。既回答71問、未回答27問。*
+### X-6. 収集済みEvidenceの安全なJSON監査概要
+
+**重要度**: Major
+**箇所**: `models.py` / `orchestrator.py` / `cli.py` / `tests/unit/test_orchestrator.py` / `tests/unit/test_cli.py`
+**回答**: 確定。`RunResult`へ`evidence: tuple[dict, ...] = ()`を末尾フィールドとして追加し、OrchestratorのRun終了時に`state.evidence`のdeepcopy snapshotを渡すようにした。正常完了、withheld、audit保留、Agent失敗、Budget失敗、Storage失敗のRunResult生成経路を対象にし、Evidence収集前の終了では空tupleになる。
+
+`output_run_result(..., use_json=True)`では`result.evidence`を直接出さず、許可リスト方式の`evidence_summary()`を通す。JSONへ出す項目は`evidence_id`、`claim_id`、`url`、`title`、`source`、`rank`、`content_type`、`retrieved_at`、`excerpt`のみ。`excerpt`はJSON表示時だけ最大400文字へ制限する。許可キーでもdict/list等のネスト値は直接出さない。`content`、`body`、`raw_content`、`prompt`、`stdout`、`stderr`、`environment`、`headers`、`cookies`、`tokens`、`diagnostics`、`notes`、未知キーは出力しない。
+
+Storage契約は変更しない。JSONLへEvidence本文や概要を新規保存せず、`history show`や`--store-content`の境界も変更しない。今回の変更は実行直後のJSON監査性改善に限定する。
+
+**テスト**: RunResult保持、収集前失敗は空、収集後の後続失敗・withheldでも保持、Evidence snapshot化、Fake/Manual/Web相当のJSON出力、不足フィールド耐性、400文字制限、禁止キー非出力、ネスト値の非出力、Evidenceなし空配列、非JSON表示不変を追加。163テスト全パス。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続とEvidence監査概要JSON出力完了。既回答72問、未回答27問。*

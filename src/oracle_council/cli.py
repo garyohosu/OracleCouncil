@@ -151,6 +151,41 @@ def exit_stop(status: str, exit_code: int, message: str, use_json: bool) -> int:
     return exit_code
 
 
+_EVIDENCE_SUMMARY_KEYS = (
+    "evidence_id",
+    "claim_id",
+    "url",
+    "title",
+    "source",
+    "rank",
+    "content_type",
+    "retrieved_at",
+    "excerpt",
+)
+
+
+_EVIDENCE_TEXT_SUMMARY_KEYS = set(_EVIDENCE_SUMMARY_KEYS) - {"rank"}
+
+
+def evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in _EVIDENCE_SUMMARY_KEYS:
+        if key not in item:
+            continue
+        value = item[key]
+        if key == "rank":
+            if type(value) in (int, float):
+                summary[key] = value
+            continue
+        if key == "excerpt":
+            summary[key] = value[:400] if isinstance(value, str) else ""
+        elif key in _EVIDENCE_TEXT_SUMMARY_KEYS:
+            summary[key] = value if isinstance(value, str) else ""
+        else:  # pragma: no cover - defensive for future summary keys.
+            summary[key] = value
+    return summary
+
+
 def output_run_result(result: RunResult, use_json: bool) -> int:
     if use_json:
         executions = [
@@ -212,7 +247,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 }
                 for c in result.claims
             ],
-            "evidence": [],
+            "evidence": [evidence_summary(item) for item in result.evidence],
             "agent_call_count": result.call_count,
             "executions": executions,
             "phases": phases,

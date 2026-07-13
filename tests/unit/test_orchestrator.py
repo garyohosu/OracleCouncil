@@ -5,15 +5,15 @@ from oracle_council.budget import TokenBudget
 from oracle_council.fakes import FakeEvidenceProvider, ScriptedAgentAdapter
 from oracle_council.models import AgentFailure, ResultClassification, RunStatus
 from oracle_council.orchestrator import EXIT_FAILED, EXIT_OK, EXIT_WITHHELD, Orchestrator
-from oracle_council.storage import InMemoryStorageBackend
+from oracle_council.storage import InMemoryStorageBackend, StorageWriteError
 
 
-def build_raw(a_script, b_script, budget=None, storage=None, store_content=False):
+def build_raw(a_script, b_script, budget=None, storage=None, store_content=False, evidence_provider=None):
     adapter_a = ScriptedAgentAdapter(a_script)
     adapter_b = ScriptedAgentAdapter(b_script)
     orchestrator = Orchestrator(
         [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
-        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        evidence_provider or FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
         budget or TokenBudget(input_limit=10**6, output_limit=10**6),
         storage,
         store_content=store_content,
@@ -32,6 +32,7 @@ def build(
     verify_claims=None,
     budget=None,
     storage=None,
+    evidence_provider=None,
 ):
     """Two agents: config order assigns agent-a everything except audit (agent-b).
 
@@ -52,7 +53,7 @@ def build(
     )
     orchestrator = Orchestrator(
         [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
-        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        evidence_provider or FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
         budget or TokenBudget(input_limit=10**6, output_limit=10**6),
         storage,
     )
@@ -93,6 +94,98 @@ def test_verify_happy_path_makes_seven_calls_across_two_agents():
         if e.event_type == "agent_execution_succeeded" and e.payload["phase"] == "respond"
     ]
     assert len(set(responders)) == 2  # §6.3: two distinct responders
+
+
+def test_run_result_contains_collected_evidence_after_happy_path():
+    orchestrator, _, _ = build(
+        evidence_provider=FakeEvidenceProvider(
+            [{"evidence_id": "ev-1", "claim_id": "claim-1", "url": "https://example.com"}]
+        )
+    )
+    result = orchestrator.run_verify("q")
+
+    assert result.evidence == (
+        {"evidence_id": "ev-1", "claim_id": "claim-1", "url": "https://example.com"},
+    )
+    assert result.metadata.evidence_count == len(result.evidence) == 1
+
+
+def test_run_result_evidence_is_empty_when_run_fails_before_collection():
+    budget = TokenBudget(input_limit=10**6, output_limit=10**6, call_limit=1)
+    orchestrator, _, _ = build(budget=budget)
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert result.evidence == ()
+    assert result.metadata.evidence_count == 0
+
+
+def test_run_result_keeps_evidence_when_later_phase_fails():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            claims_output("unverified"),
+            AgentFailure("AUTH_REQUIRED"),
+        ],
+        [{"answer": "B"}],
+        evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+    )
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert result.evidence == ({"evidence_id": "ev-1"},)
+    assert result.metadata.evidence_count == 1
+
+
+def test_withheld_run_result_keeps_collected_evidence():
+    orchestrator, _, _ = build(
+        verify_status="unverified",
+        importance="critical",
+        evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+    )
+    result = orchestrator.run_verify("q")
+
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.evidence == ({"evidence_id": "ev-1"},)
+    assert result.metadata.evidence_count == 1
+
+
+def test_run_result_evidence_is_snapshot_not_provider_list_alias():
+    class MutableEvidenceProvider:
+        def __init__(self):
+            self.evidence = [{"evidence_id": "ev-1", "nested": {"value": "original"}}]
+
+        def collect(self, claims):
+            return self.evidence
+
+    provider = MutableEvidenceProvider()
+    orchestrator, _, _ = build(evidence_provider=provider)
+    result = orchestrator.run_verify("q")
+
+    provider.evidence[0]["evidence_id"] = "changed"
+    provider.evidence[0]["nested"]["value"] = "changed"
+    provider.evidence.append({"evidence_id": "ev-2"})
+    assert result.evidence == ({"evidence_id": "ev-1", "nested": {"value": "original"}},)
+    assert result.evidence[0] is not provider.evidence[0]
+    assert result.evidence[0]["nested"] is not provider.evidence[0]["nested"]
+
+
+def test_storage_failure_after_evidence_collection_keeps_evidence_snapshot():
+    class FailsAfterEvidenceCollection:
+        def append(self, run_id, event):
+            if event.event_type == "agent_execution_succeeded" and event.payload["phase"] == "claim_extract":
+                raise StorageWriteError("simulated storage failure")
+            return event
+
+    orchestrator, _, _ = build(
+        storage=FailsAfterEvidenceCollection(),
+        evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+    )
+    result = orchestrator.run_verify("q")
+
+    assert result.status is RunStatus.FAILED
+    assert result.exit_code == EXIT_FAILED
+    assert result.evidence == ({"evidence_id": "ev-1"},)
 
 
 def test_critical_unverified_withholds_after_four_calls():

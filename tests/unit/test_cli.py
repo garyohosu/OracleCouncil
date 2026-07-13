@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from oracle_council.cli import main
+from oracle_council.cli import output_run_result, main
 from oracle_council.evidence import ManualEvidenceProvider, WebEvidenceProvider
 from oracle_council.fakes import FakeEvidenceProvider
 from oracle_council.models import ResultClassification, RunResult, RunStatus, SearchError
@@ -68,6 +68,7 @@ def test_cli_ask_happy_path(temp_config, capsys, tmp_path):
         captured = capsys.readouterr()
         # Non-json: stdout contains answer, stderr contains progress
         assert "Mock final synthesized answer." in captured.out
+        assert "ev-1" not in captured.out
         assert "Starting Oracle Council..." in captured.err
         assert "[1/7]" in captured.err
 
@@ -86,6 +87,8 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert data["status"] == "completed"
         assert data["answer"]["text"] == "Mock final synthesized answer."
         assert data["answer"]["result_classification"] == "verified"
+        assert data["evidence"] == [{"evidence_id": "ev-1"}]
+        assert data["metadata"]["evidence_count"] == len(data["evidence"]) == 1
 
 
 def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, capsys, monkeypatch):
@@ -127,6 +130,46 @@ def test_cli_ask_manual_evidence_file(temp_config, capsys, tmp_path):
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "completed"
     assert data["metadata"]["evidence_count"] == 2
+    assert data["evidence"] == [
+        {
+            "evidence_id": "ev-manual-1",
+            "claim_id": "claim-1",
+            "url": "https://example.com/a",
+        },
+        {
+            "evidence_id": "ev-manual-2",
+            "claim_id": "claim-1",
+            "url": "https://example.com/b",
+        },
+    ]
+
+
+def test_cli_ask_manual_evidence_summary_tolerates_missing_and_unknown_fields(temp_config, capsys, tmp_path):
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "claim-1": [
+                    {
+                        "evidence_id": "ev-manual-1",
+                        "content": "secret body",
+                        "stdout": "raw stdout",
+                        "prompt": "raw prompt",
+                        "unknown": "ignored",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-file", str(evidence_path)])
+
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["evidence"] == [{"evidence_id": "ev-manual-1", "claim_id": "claim-1"}]
+    assert "secret body" not in json.dumps(data, ensure_ascii=False)
+    assert "raw stdout" not in json.dumps(data, ensure_ascii=False)
+    assert "raw prompt" not in json.dumps(data, ensure_ascii=False)
 
 
 class CaptureOrchestrator:
@@ -253,6 +296,162 @@ def test_cli_ask_cli_search_does_not_fallback_to_fake_provider(temp_config, caps
     capsys.readouterr()
     assert exit_code == 3
     assert not fake_provider.called
+
+
+def test_json_evidence_summary_allows_only_safe_web_fields_and_caps_excerpt(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        exit_code=0,
+        evidence=(
+            {
+                "evidence_id": "web-claim-1-1",
+                "claim_id": "claim-1",
+                "url": "https://example.com",
+                "title": "Example",
+                "source": "claude-code-websearch",
+                "rank": 1,
+                "content_type": "text/html",
+                "retrieved_at": "2026-07-13T00:00:00+00:00",
+                "excerpt": "x" * 401,
+                "content": "full body must not leak",
+                "body": "body must not leak",
+                "raw_content": "raw must not leak",
+                "stdout": "stdout must not leak",
+                "stderr": "stderr must not leak",
+                "prompt": "prompt must not leak",
+                "environment": {"TOKEN": "secret"},
+                "headers": {"Authorization": "secret"},
+                "cookies": "secret",
+                "tokens": "secret",
+                "diagnostics": "secret",
+                "notes": "internal note",
+                "unknown": "ignored",
+            },
+        ),
+    )
+
+    exit_code = output_run_result(result, use_json=True)
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    item = data["evidence"][0]
+    assert exit_code == 0
+    assert set(item) == {
+        "evidence_id",
+        "claim_id",
+        "url",
+        "title",
+        "source",
+        "rank",
+        "content_type",
+        "retrieved_at",
+        "excerpt",
+    }
+    assert len(item["excerpt"]) == 400
+    rendered = json.dumps(data, ensure_ascii=False)
+    for forbidden in (
+        "full body must not leak",
+        "body must not leak",
+        "raw must not leak",
+        "stdout must not leak",
+        "stderr must not leak",
+        "prompt must not leak",
+        "TOKEN",
+        "Authorization",
+        "internal note",
+        "ignored",
+    ):
+        assert forbidden not in rendered
+
+
+def test_json_evidence_summary_non_string_excerpt_is_safe(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        exit_code=0,
+        evidence=({"evidence_id": "ev-1", "excerpt": {"not": "string"}},),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["evidence"] == [{"evidence_id": "ev-1", "excerpt": ""}]
+
+
+def test_json_evidence_summary_does_not_serialize_nested_allowed_values(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        exit_code=0,
+        evidence=(
+            {
+                "evidence_id": {"stdout": "raw stdout"},
+                "claim_id": ["prompt", "raw prompt"],
+                "url": {"environment": {"TOKEN": "secret"}},
+                "title": {"headers": {"Authorization": "secret"}},
+                "source": {"cookies": "secret"},
+                "rank": {"tokens": "secret"},
+                "content_type": {"diagnostics": "secret"},
+                "retrieved_at": {"unknown": "secret"},
+                "excerpt": {"body": "secret body"},
+            },
+        ),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["evidence"] == [
+        {
+            "evidence_id": "",
+            "claim_id": "",
+            "url": "",
+            "title": "",
+            "source": "",
+            "content_type": "",
+            "retrieved_at": "",
+            "excerpt": "",
+        }
+    ]
+    rendered = json.dumps(data, ensure_ascii=False)
+    for forbidden in (
+        "stdout",
+        "raw stdout",
+        "prompt",
+        "raw prompt",
+        "environment",
+        "TOKEN",
+        "headers",
+        "Authorization",
+        "cookies",
+        "tokens",
+        "diagnostics",
+        "unknown",
+        "secret body",
+    ):
+        assert forbidden not in rendered
+
+
+def test_json_evidence_empty_without_evidence(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        exit_code=0,
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["evidence"] == []
 
 
 def test_cli_ask_evidence_file_unreadable_is_configuration_error(temp_config, capsys, tmp_path):

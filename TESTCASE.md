@@ -240,6 +240,25 @@
 - **期待する終了コード**: `3`
 - **未確定仕様への依存**: なし（X-5確定）
 
+#### **UT-CLI-X6-01: JSON Evidence監査概要**
+- **テストレベル**: UT
+- **対象クラス/機能**: `output_run_result` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §14, §16.3, §17.1 / UC: Evidenceを監査する / SEQ: 1
+- **入力**: `RunResult.evidence`にFake、Manual、Web相当のEvidenceを含むJSON出力
+- **モック/Fixture**: `RunResult`, `FakeEvidenceProvider`, `ManualEvidenceProvider`, Fake Web Evidence
+- **期待結果**: トップレベル`evidence`へ`evidence_id`、`claim_id`、`url`、`title`、`source`、`rank`、`content_type`、`retrieved_at`、`excerpt`の存在する項目だけを出力する。`excerpt`は最大400文字。不足フィールドで例外にならず、Evidenceなしでは空配列。`metadata.evidence_count`と出力件数が正常ケースで一致する。
+- **期待する終了コード**: `0`
+- **未確定仕様への依存**: なし（X-6確定）
+
+#### **UT-CLI-X6-02: JSON Evidence情報漏えい防止**
+- **テストレベル**: UT
+- **対象クラス/機能**: `evidence_summary` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §16.3, §17.1 / UC: Evidenceを安全に監査する / SEQ: 1
+- **入力**: Evidence辞書に`content`、`body`、`raw_content`、`prompt`、`stdout`、`stderr`、`environment`、`headers`、`cookies`、`tokens`、`diagnostics`、`notes`、未知キーを含める
+- **期待結果**: 許可9項目以外はJSONへ出力されない。許可キーにdict/list等のネスト値が入っていても直接出さない。検索プロンプト、CLI stdout/stderr、環境変数、HTTP header/cookie、本文全体、内部notesが漏れない。
+- **期待する終了コード**: N/A
+- **未確定仕様への依存**: なし（X-6確定）
+
 ---
 
 ### 2.2 Orchestrator
@@ -257,6 +276,16 @@
 - **期待するAgent呼び出し回数**: 7回
 - **期待する保存イベント**: `run_created`, `phase_started`, `agent_execution_started`, `agent_execution_succeeded`, `phase_succeeded`, `run_completed` が sequence 順に記録されること。`evidence_collect`はAgentExecutionを作らずPhaseイベントのみ（M-4確定）。Phaseイベントのフィールドは§15.8正式モデル（S-2確定）に従う。
 - **未確定仕様への依存**: なし（S-2確定）
+
+#### **UT-ORCH-X6-01: RunResult Evidence保持**
+- **テストレベル**: UT
+- **対象クラス/機能**: `Orchestrator.run_verify` / `RunResult`
+- **関連仕様・UC・SEQ**: SPEC §10.2, §15.8 / UC: Evidenceを監査する / SEQ: 1
+- **前提条件**: EvidenceProviderがEvidenceを返すこと。
+- **モック/Fixture**: `FakeEvidenceProvider`, `ScriptedAgentAdapter`
+- **期待結果**: Evidence収集後の正常RunResultに`evidence`が含まれる。Evidence収集前に失敗したRunResultは空。Evidence収集後に後続Phaseで失敗してもEvidenceが残る。withheld経路でも収集済みならEvidenceが残る。`RunResult.evidence`は内部stateまたはProviderの可変listを参照せず、Evidence辞書とネスト値も独立したsnapshotである。
+- **期待する終了コード**: scenarioごとにSPEC §13.4対応表を適用
+- **未確定仕様への依存**: なし（X-6確定）
 
 #### **UT-ORCH-02: Agent選定ロジック**
 - **テストレベル**: UT

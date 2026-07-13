@@ -108,9 +108,27 @@ WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())
 
 未実施・未実装:
 
-- 実機WebSearch E2Eは未実行（今回の通常テストではClaude Code、WebSearch、実HTTPを起動していない）
+- Fake Agent＋実Claude WebSearch＋実HTTP取得の1回限定スモークは成功済み（2026-07-13）。`metadata.evidence_count=2`、`evidence_collect=succeeded`、全7フェーズ完走、作業ツリーcleanを確認
 - 反証検索、authority判定、registrable domain独立性判定、90秒制限、24MB制限などの完全なSPEC §10.2収集処理は未実装
 - 否定ケースのlive確認と外部検索サービス選定は引き続き未実施
+
+## 4-7. Evidence監査概要のJSON出力（X-6）
+
+実装済み（2026-07-13、X-6確定）。`RunResult`へ収集済みEvidenceのdeepcopy snapshotを保持し、`oracle ask --json`のトップレベル`evidence`へ安全な概要だけを出力する。
+
+出力許可項目は次の9項目のみ:
+
+```text
+evidence_id, claim_id, url, title, source, rank, content_type, retrieved_at, excerpt
+```
+
+`excerpt`はJSON表示時だけ最大400文字。許可キーでもdict/list等のネスト値は直接出さない。`content`、`body`、`raw_content`、`prompt`、`stdout`、`stderr`、`environment`、`headers`、`cookies`、`tokens`、`diagnostics`、`notes`、未知キーは出力しない。Storage契約は変更していないため、JSONL保存や`history show`のEvidence表示は未対応のまま。
+
+次の優先作業:
+
+- 実Claude＋実Codex＋実WebSearchの1回限定E2Eを実行し、回答、Claim抽出、Web Evidence、検証、統合回答を1つのJSONで監査する
+- その前提として`PYTHONPATH=(Resolve-Path .\src).Path`を設定し、このcloneのsrcを読むことを確認する
+- live実行はClaude/Codex利用枠と外部HTTPを消費するため、再試行なしの1回限定で行う
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 

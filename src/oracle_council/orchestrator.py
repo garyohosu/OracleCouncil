@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from itertools import count
 from typing import Sequence
 from uuid import uuid4
@@ -180,7 +181,13 @@ class Orchestrator:
             return self._withheld_by_audit(run_id, state)
         except StorageWriteError:
             return RunResult(
-                run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state.calls, EXIT_FAILED
+                run_id=run_id,
+                status=RunStatus.FAILED,
+                result_classification=ResultClassification.UNVERIFIED,
+                final_answer=None,
+                call_count=state.calls,
+                exit_code=EXIT_FAILED,
+                evidence=_evidence_snapshot(state),
             )
         finally:
             self._budget.assert_settled()
@@ -417,17 +424,18 @@ class Orchestrator:
             content_saved=self._store_content,
         )
         result = RunResult(
-            run_id,
-            status,
-            classification,
-            answer,
-            state.calls,
-            exit_code,
-            state.claims,
-            tuple(state.issues),
-            tuple(state.phases.values()),
-            tuple(state.executions),
-            metadata,
+            run_id=run_id,
+            status=status,
+            result_classification=classification,
+            final_answer=answer,
+            call_count=state.calls,
+            exit_code=exit_code,
+            claims=state.claims,
+            audit_issues=tuple(state.issues),
+            phases=tuple(state.phases.values()),
+            executions=tuple(state.executions),
+            metadata=metadata,
+            evidence=_evidence_snapshot(state),
         )
         self._append(
             run_id,
@@ -453,6 +461,10 @@ def _summary(phase: str, error_code: str) -> str:
     """Fixed template only (SPEC §15.8): never raw stderr, exception text,
     question fragments, or paths. Bounded well under the 200-char limit."""
     return f"{phase} execution ended with {error_code}."[:200]
+
+
+def _evidence_snapshot(state: "_RunState") -> tuple[dict, ...]:
+    return tuple(deepcopy(item) for item in state.evidence)
 
 
 class _RunState:
