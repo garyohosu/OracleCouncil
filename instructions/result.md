@@ -137,4 +137,17 @@ q04 live、実CLI、実WebSearch、実HTTP、expensive評価、X-8 runnerのlive
 
 ## 12. 未解決事項と次の作業
 
-未解決の根本原因は外部CLIへ再実行していないため不明。ユーザー承認後、新しい評価ディレクトリでq04を1回限定再評価する。既存の保存済み評価結果は変更しない。
+## X-8.9 q04 live re-evaluation (2026-07-13)
+
+- HEAD and `origin/main`: `0bdf5ca`; worktree was clean.
+- Import smoke test and dry-run passed.
+- One approved live run was executed in `C:\\PROJECT\\OracleCouncil-evals\\x8\\0bdf5ca-q04-authfix`.
+- Result: `exit_code=1`, `status=failed`, `classification=unverified`, `timed_out=false`.
+- Run ID: `d462fda2-85f6-4702-80d0-0d8ae560989e`; agent calls: `6`; participants: `codex-cli`, `claude-code`.
+- `respond`, `claim_extract`, `evidence_collect`, `verify`, and `criticize` succeeded. `synthesize` failed with `COMMAND_NOT_FOUND` and sanitized summary `synthesize execution ended with COMMAND_NOT_FOUND.`; `audit` was not reached.
+- Evidence: 15 items; searches 5; candidates 25; fetch attempts 20; fetch successes 15; fetch failures 5; outcome `partial_evidence`.
+- `json_parse_status=valid`; `leakage_check=passed_structural_check`; acceptance was `not_assessed`.
+- The run did not reproduce `AUTH_REQUIRED`; this does not prove the X-8.7 cause. Raw stdout/stderr, prompts, tokens, and external evaluation artifacts were not added to Git.
+- No source or test changes were made from this live result. The remaining issue is external CLI availability for the `synthesize` phase.
+
+The live re-evaluation was completed once after user approval. The remaining unresolved issue is external CLI availability during `synthesize`; existing evaluation artifacts were not modified.

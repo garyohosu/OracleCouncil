@@ -294,3 +294,10 @@ X-8.7の`AUTH_REQUIRED`は真の認証切れか、旧分類器の部分一致に
 `authoritative source`、`authority lookup`、`authentic response`、`author field`、`OAuth documentation`、`login page documentation`、単独の`authorization policy`はAUTH_REQUIREDにしない。明示パターンに一致しない非ゼロ終了はEXECUTION_ERRORへ戻る。認証情報・probe・login status・Adapter引数・stdin transport・Storage Contract・公開境界は変更していない。
 
 明示的認証失敗と誤分類防止の通常テストを追加し、`py -m pytest`は255 passed / 6 deselected。live、expensive、q04、実CLI、`codex login status`、WebSearch、HTTPは実行していない。次は承認後のローカル認証状態確認またはq04 1回限定再評価。
+## 4-20. X-8.9 q04 live re-evaluation
+
+User approval was obtained for exactly one live run. On HEAD `0bdf5ca`, the q04 run completed once in `C:\\PROJECT\\OracleCouncil-evals\\x8\\0bdf5ca-q04-authfix`.
+
+Sanitized result: `exit_code=1`, `status=failed`, `classification=unverified`, `run_id=d462fda2-85f6-4702-80d0-0d8ae560989e`, `agent_call_count=6`, participants `codex-cli` and `claude-code`. `respond`, `claim_extract`, `evidence_collect`, `verify`, and `criticize` succeeded. `synthesize` failed with `COMMAND_NOT_FOUND` and summary `synthesize execution ended with COMMAND_NOT_FOUND.`; `audit` was not reached.
+
+Evidence metrics were 15 evidence items, 5 searches, 25 candidates, 20 fetch attempts, 15 fetch successes, and 5 fetch failures. JSON parsing was valid and leakage checking passed. The run did not reproduce `AUTH_REQUIRED`, but this cannot establish whether X-8.7 was a genuine authentication failure or a prior partial-match misclassification. Raw stdout/stderr and other sensitive artifacts were not read into the report or committed. No source/test changes were made; the remaining issue is external CLI availability during `synthesize`.
