@@ -220,6 +220,26 @@
 - **期待結果**: SPEC §13.4の対応表どおりに変換されること。`completed`/`partial`（公開回答あり）=0、`failed`/`internal_error`=1、`needs_clarification`/`strict_required`/`invalid_arguments`=2、`verification_unavailable`/`insufficient_agents`/`auth_required`/`configuration_error`=3、`withheld`=4、`cancelled_by_user`=130。
 - **未確定仕様への依存**: なし（R-1確定）
 
+#### **UT-CLI-13: evidence-provider選択**
+- **テストレベル**: UT
+- **対象クラス/機能**: `OracleCLI.ask` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §10.2, §13.1 / UC: Evidenceを選択して検証する / SEQ: 1
+- **入力**: `oracle ask "質問"`、`--evidence-file evidence.json`、`--evidence-provider fake`、`--evidence-provider cli-search`
+- **モック/Fixture**: `FakeAgentAdapter`, `FakeEvidenceProvider`, `ManualEvidenceProvider`, `FakeSafeHttpFetcher`, `FakeCliSearchProvider`
+- **期待結果**: 省略時はFake、`--evidence-file`単独はManual、`--evidence-provider fake`はFake、`--evidence-provider cli-search`は`WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())`を構築すること。通常テストでは実Claude、WebSearch、実HTTPを起動しない。
+- **期待する終了コード**: `0`
+- **未確定仕様への依存**: なし（X-5確定）
+
+#### **UT-CLI-14: evidence-provider競合とSearchError変換**
+- **テストレベル**: UT
+- **対象クラス/機能**: `OracleCLI.ask` / `cli.py`
+- **関連仕様・UC・SEQ**: SPEC §13.4, §16.3 / UC: Evidence利用不能を受け取る / SEQ: 1
+- **入力**: `--evidence-file evidence.json --evidence-provider fake`、および`--evidence-provider cli-search --json`で`SearchError("SEARCH_QUOTA_EXCEEDED")`
+- **モック/Fixture**: `FakeAgentAdapter`, `SearchError`を送出するFake WebEvidenceProvider
+- **期待結果**: 同時指定は`configuration_error`/exit 3。`SearchError`は`verification_unavailable`/exit 3へ変換し、messageは`web evidence unavailable: <code>`のみ。`--json`時はstdoutが単一JSONで、生stdout、生stderr、プロンプト、環境変数を含まない。cli-search選択時にFakeEvidenceProviderへ暗黙fallbackしない。
+- **期待する終了コード**: `3`
+- **未確定仕様への依存**: なし（X-5確定）
+
 ---
 
 ### 2.2 Orchestrator
@@ -710,6 +730,16 @@
 - **対象クラス/機能**: `WebEvidenceProvider` / `evidence/web.py`
 - **関連仕様・UC・SEQ**: SPEC §10.2
 - **期待結果**: 検索エンジンAPI（Brave, SerpAPI等）の個別ライブラリがカプセル化され、Orchestrator側にはプロバイダー固有のオブジェクトが漏出しないこと。
+
+#### **UT-EP-X5-01: WebEvidenceProvider Phase 0 collect互換**
+- **テストレベル**: UT
+- **対象クラス/機能**: `WebEvidenceProvider.collect` / `evidence.py`
+- **関連仕様・UC・SEQ**: SPEC §10.2, §16.2 / UC: Evidenceを検索・取得 / SEQ: 1
+- **入力**: `critical`、`major`、`minor` Claimの混在リスト
+- **モック/Fixture**: `FakeSearchProvider`, `FakeSafeHttpFetcher`
+- **期待結果**: `critical`を`major`より先に、同重要度では`claim_id`順に最大5 Claimだけ処理する。各Claimの`text`で`search(limit=5)`を1回呼び、rank順にfetchし、fetch成功はClaimごと最大3件、抜粋は1,200文字以下。`minor`は検索しない。`EvidenceFetchError`は該当URLだけスキップし、`SearchError`は上位へ送出する。本文取得は注入されたfetcherだけを通る。Evidence順序と`evidence_id`は同じ入力で安定し、`authority/directness/stance/freshness`は保守的な値になる。
+- **期待する終了コード**: N/A
+- **未確定仕様への依存**: なし（X-5確定、完全な§10.2収集エンジンは対象外）
 
 #### **UT-EP-06: Evidence件数上限制御**
 - **テストレベル**: UT

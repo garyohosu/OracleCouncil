@@ -12,11 +12,11 @@ import yaml
 
 from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments
 from .budget import TokenBudget
-from .evidence import ManualEvidenceProvider
+from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
-from .models import AgentFailure, AgentRequest, AgentResult, RunResult, RunStatus, Usage
+from .models import AgentFailure, AgentRequest, AgentResult, RunResult, RunStatus, SearchError, Usage
 from .orchestrator import Orchestrator
-from .adapters import ClaudeAdapter, CodexAdapter
+from .adapters import CliSearchProvider, ClaudeAdapter, CodexAdapter
 from .storage import (
     JSONLStorageBackend,
     StorageCorruptionError,
@@ -286,6 +286,14 @@ def cmd_ask(args) -> int:
     if "unavailable_trigger" in args.question:
         return exit_stop("verification_unavailable", 3, "検証機能が利用できません", args.json)
 
+    if args.evidence_file and args.evidence_provider:
+        return exit_stop(
+            "configuration_error",
+            3,
+            "--evidence-file and --evidence-provider cannot be used together",
+            args.json,
+        )
+
     # Core Orchestrator Run
     try:
         config_data = load_config()
@@ -353,9 +361,9 @@ def cmd_ask(args) -> int:
     else:
         storage = JSONLStorageBackend(Path("data"))
 
-    # Evidence: --evidence-file switches to the manual provider (SPEC §10.2)
-    # with fixed documents; the fake provider remains the default until the
-    # real web provider is wired in.
+    # Evidence provider selection. The historical behavior is preserved:
+    # no option -> FakeEvidenceProvider, --evidence-file -> ManualEvidenceProvider.
+    # cli-search is an explicit experimental path only.
     if args.evidence_file:
         try:
             with open(args.evidence_file, "r", encoding="utf-8") as stream:
@@ -370,6 +378,11 @@ def cmd_ask(args) -> int:
             return exit_stop(
                 "configuration_error", 3, "evidence file must be a JSON object or array", args.json
             )
+    elif args.evidence_provider == "cli-search":
+        evidence_provider = WebEvidenceProvider(
+            fetcher=SafeHttpFetcher(),
+            searcher=CliSearchProvider(),
+        )
     else:
         evidence_provider = FakeEvidenceProvider([{"evidence_id": "ev-1"}])
 
@@ -388,6 +401,13 @@ def cmd_ask(args) -> int:
     try:
         result = orchestrator.run_verify(args.question)
         return output_run_result(result, args.json)
+    except SearchError as e:
+        return exit_stop(
+            "verification_unavailable",
+            3,
+            f"web evidence unavailable: {e.code}",
+            args.json,
+        )
     except InsufficientAgentsError as e:
         return exit_stop("insufficient_agents", 3, str(e), args.json)
     except Exception as e:
@@ -577,6 +597,15 @@ def main(args: list[str] | None = None) -> int:
         "--evidence-file",
         default=None,
         help="JSON file with manual evidence (claim_id -> documents mapping, or a list)",
+    )
+    ask_parser.add_argument(
+        "--evidence-provider",
+        choices=["fake", "cli-search"],
+        default=None,
+        help=(
+            "Evidence provider to use: fake, or experimental cli-search "
+            "(uses Claude Code WebSearch)"
+        ),
     )
 
     # agents

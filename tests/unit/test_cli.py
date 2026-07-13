@@ -9,6 +9,9 @@ import pytest
 import yaml
 
 from oracle_council.cli import main
+from oracle_council.evidence import ManualEvidenceProvider, WebEvidenceProvider
+from oracle_council.fakes import FakeEvidenceProvider
+from oracle_council.models import ResultClassification, RunResult, RunStatus, SearchError
 from oracle_council.storage import JSONLStorageBackend
 
 
@@ -124,6 +127,132 @@ def test_cli_ask_manual_evidence_file(temp_config, capsys, tmp_path):
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "completed"
     assert data["metadata"]["evidence_count"] == 2
+
+
+class CaptureOrchestrator:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        CaptureOrchestrator.instances.append(self)
+
+    def run_verify(self, question):
+        return RunResult(
+            "run-test",
+            RunStatus.COMPLETED,
+            ResultClassification.VERIFIED,
+            "captured answer",
+            0,
+            0,
+        )
+
+
+def capture_provider():
+    CaptureOrchestrator.instances = []
+    return patch("oracle_council.cli.Orchestrator", CaptureOrchestrator)
+
+
+def test_cli_ask_default_evidence_provider_remains_fake(temp_config, capsys):
+    with capture_provider():
+        assert main(["ask", "q", "--json", "--no-store"]) == 0
+    capsys.readouterr()
+    provider = CaptureOrchestrator.instances[0].kwargs["evidence_provider"]
+    assert isinstance(provider, FakeEvidenceProvider)
+
+
+def test_cli_ask_evidence_provider_fake_selects_fake(temp_config, capsys):
+    with capture_provider():
+        assert main(["ask", "q", "--json", "--no-store", "--evidence-provider", "fake"]) == 0
+    capsys.readouterr()
+    provider = CaptureOrchestrator.instances[0].kwargs["evidence_provider"]
+    assert isinstance(provider, FakeEvidenceProvider)
+
+
+def test_cli_ask_evidence_file_only_selects_manual_provider(temp_config, capsys, tmp_path):
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps({"claim-1": [{"evidence_id": "ev"}]}), encoding="utf-8")
+    with capture_provider():
+        assert main(["ask", "q", "--json", "--no-store", "--evidence-file", str(evidence_path)]) == 0
+    capsys.readouterr()
+    provider = CaptureOrchestrator.instances[0].kwargs["evidence_provider"]
+    assert isinstance(provider, ManualEvidenceProvider)
+
+
+def test_cli_ask_cli_search_builds_web_provider_with_cli_search_and_safe_fetcher(temp_config, capsys):
+    fetcher = object()
+    searcher = object()
+    with patch("oracle_council.cli.SafeHttpFetcher", return_value=fetcher) as fetcher_cls, \
+         patch("oracle_council.cli.CliSearchProvider", return_value=searcher) as searcher_cls, \
+         capture_provider():
+        assert main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"]) == 0
+    capsys.readouterr()
+    provider = CaptureOrchestrator.instances[0].kwargs["evidence_provider"]
+    assert isinstance(provider, WebEvidenceProvider)
+    assert provider._fetcher is fetcher
+    assert provider._searcher is searcher
+    fetcher_cls.assert_called_once_with()
+    searcher_cls.assert_called_once_with()
+
+
+def test_cli_ask_rejects_evidence_file_and_provider_conflict(temp_config, capsys, tmp_path):
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text("[]", encoding="utf-8")
+    with patch("oracle_council.cli.load_config") as load_config:
+        exit_code = main(
+            [
+                "ask",
+                "q",
+                "--json",
+                "--no-store",
+                "--evidence-file",
+                str(evidence_path),
+                "--evidence-provider",
+                "fake",
+            ]
+        )
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert not load_config.called
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["status"] == "configuration_error"
+    assert data["exit_code"] == 3
+
+
+class SearchErrorProvider:
+    def collect(self, claims):
+        raise SearchError("SEARCH_QUOTA_EXCEEDED", "raw stderr must not leak")
+
+
+def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(temp_config, capsys):
+    with patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
+         patch("oracle_council.cli.SafeHttpFetcher"), \
+         patch("oracle_council.cli.CliSearchProvider"):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data == {
+        "schema_version": "1.0",
+        "run_id": None,
+        "status": "verification_unavailable",
+        "exit_code": 3,
+        "message": "web evidence unavailable: SEARCH_QUOTA_EXCEEDED",
+    }
+    assert "raw stderr" not in captured.out
+
+
+def test_cli_ask_cli_search_does_not_fallback_to_fake_provider(temp_config, capsys):
+    with patch("oracle_council.cli.FakeEvidenceProvider") as fake_provider, \
+         patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
+         patch("oracle_council.cli.SafeHttpFetcher"), \
+         patch("oracle_council.cli.CliSearchProvider"):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+    capsys.readouterr()
+    assert exit_code == 3
+    assert not fake_provider.called
 
 
 def test_cli_ask_evidence_file_unreadable_is_configuration_error(temp_config, capsys, tmp_path):

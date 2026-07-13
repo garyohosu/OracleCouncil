@@ -1552,4 +1552,18 @@ SearchProvider (Protocol):
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProvider実装完了。既回答70問、未回答27問。*
+### X-5. CliSearchProviderのCLI実験接続
+
+**重要度**: Major
+**箇所**: `cli.py` / `evidence.py` / `tests/unit/test_cli.py` / `tests/unit/test_evidence.py`
+**回答**: 確定。`oracle ask`へ`--evidence-provider {fake,cli-search}`を追加した。省略時は従来どおり`FakeEvidenceProvider`、`--evidence-file`単独は従来どおり`ManualEvidenceProvider`、`--evidence-provider fake`はFake、`--evidence-provider cli-search`は`WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())`を構築する。`--evidence-file`と`--evidence-provider`の同時指定は`configuration_error`/exit 3で拒否する。
+
+`WebEvidenceProvider.collect()`はPhase 0互換レイヤーとしてのみ実装した。対象は`critical`/`major`の最大5 Claim、`critical`優先・同重要度は`claim_id`順、各Claimの`text`で`search(limit=5)`を1回、rank順にfetchし、成功はClaimごと最大3件、抜粋は最大1,200文字。`EvidenceFetchError`はそのURLだけスキップし、`SearchError`は握りつぶさず上位へ送出する。Evidenceには`authority: other`、`directness: indirect`、`stance: neutral`、`freshness: unknown`、`notes: experimental cli-search evidence`を付け、正式な§10.2品質判定として扱わない。
+
+CLIでは`SearchError`を`verification_unavailable`/exit 3へ変換し、messageは`web evidence unavailable: <SearchError.code>`だけに限定する。通常テストは`CliSearchProvider`、`SafeHttpFetcher`、subprocess/HTTPをFakeまたはMockへ差し替え、実Claude、WebSearch、実HTTPは起動していない。実機WebSearch E2Eは未実行。
+
+**テスト**: CLI選択・競合・JSONエラー・Fake fallback禁止と、`WebEvidenceProvider.collect()`の順序、上限、fetch失敗スキップ、SearchError伝播、保守的Evidence値を追加。152テスト全パス。
+
+---
+
+*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5確定。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続完了。既回答71問、未回答27問。*

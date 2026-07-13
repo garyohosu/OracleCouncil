@@ -154,3 +154,65 @@ class WebEvidenceProvider:
         return {"url": document.url, "title": result.get("title", ""),
                 "excerpt": document.content[:1200], "content_type": document.content_type,
                 "fetched_at": document.fetched_at}
+
+    def collect(self, claims: list[dict]) -> list[dict]:
+        """Phase-0 compatibility bridge for Orchestrator.collect(claims).
+
+        This is intentionally narrower than the full SPEC §10.2 collection
+        engine: no counter-search, authority scoring, independence analysis,
+        90s run budget, or document-volume budget. It only lets the
+        experimental CLI search path feed conservative evidence candidates
+        into the existing verify flow.
+        """
+        selected = sorted(
+            (
+                claim
+                for claim in claims
+                if _importance_value(claim.get("importance")) in ("critical", "major")
+            ),
+            key=lambda claim: (
+                0 if _importance_value(claim.get("importance")) == "critical" else 1,
+                str(claim.get("claim_id", "")),
+            ),
+        )[:5]
+
+        evidence: list[dict] = []
+        for claim in selected:
+            claim_id = str(claim.get("claim_id", ""))
+            query = str(claim.get("text", ""))
+            results = sorted(
+                self._searcher.search(query, 5)[:5],
+                key=lambda result: result.rank,
+            )
+            successes = 0
+            for result in results:
+                if successes >= 3:
+                    break
+                try:
+                    document = self._fetcher.fetch(result.url)
+                except EvidenceFetchError:
+                    continue
+                evidence.append(
+                    {
+                        "evidence_id": f"web-{claim_id}-{result.rank}",
+                        "claim_id": claim_id,
+                        "url": document.url,
+                        "title": result.title,
+                        "excerpt": document.content[:1200],
+                        "content_type": document.content_type,
+                        "retrieved_at": document.fetched_at or result.retrieved_at,
+                        "source": result.source,
+                        "rank": result.rank,
+                        "authority": "other",
+                        "directness": "indirect",
+                        "stance": "neutral",
+                        "freshness": "unknown",
+                        "notes": "experimental cli-search evidence",
+                    }
+                )
+                successes += 1
+        return evidence
+
+
+def _importance_value(value) -> str:
+    return getattr(value, "value", value)

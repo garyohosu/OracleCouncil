@@ -4,6 +4,7 @@ import pytest
 
 from oracle_council.evidence import (
     EvidenceFetchError,
+    FetchedEvidence,
     ManualEvidenceProvider,
     SafeHttpFetcher,
     WebEvidenceProvider,
@@ -109,6 +110,150 @@ class TestSearchProviderContract:
         provider = WebEvidenceProvider(fetcher=fetcher, searcher=FakeSearchProvider([]))
         provider.fetch({"url": "https://example.com/x", "title": "T"})
         assert fetcher.calls == ["https://example.com/x"]
+
+
+class RecordingSearchProvider:
+    def __init__(self, results_by_query=None, failure=None):
+        self.results_by_query = results_by_query or {}
+        self.failure = failure
+        self.calls = []
+
+    def search(self, query, limit):
+        self.calls.append((query, limit))
+        if self.failure:
+            raise self.failure
+        return list(self.results_by_query.get(query, []))
+
+
+class RecordingCollectFetcher:
+    def __init__(self, documents=None, failures=None):
+        self.documents = documents or {}
+        self.failures = set(failures or [])
+        self.calls = []
+
+    def fetch(self, url):
+        self.calls.append(url)
+        if url in self.failures:
+            raise EvidenceFetchError("FETCH_FAILED")
+        return self.documents.get(
+            url,
+            FetchedEvidence(url, "", f"body for {url}", "text/plain", "2026-07-13T00:00:00+00:00"),
+        )
+
+
+def result(url, rank, title=None):
+    return SearchResult(url, title or f"Title {rank}", "snippet", rank, "fake-search", "2026-07-13T00:00:00+00:00")
+
+
+class TestWebEvidenceProviderCollect:
+    def test_collect_processes_critical_then_major_by_claim_id_and_skips_minor(self):
+        searcher = RecordingSearchProvider(
+            {
+                "critical b": [result("https://example.com/cb", 1)],
+                "critical a": [result("https://example.com/ca", 1)],
+                "major a": [result("https://example.com/ma", 1)],
+            }
+        )
+        provider = WebEvidenceProvider(RecordingCollectFetcher(), searcher)
+        provider.collect(
+            [
+                {"claim_id": "claim-b", "importance": "critical", "text": "critical b"},
+                {"claim_id": "claim-minor", "importance": "minor", "text": "minor"},
+                {"claim_id": "claim-a", "importance": "critical", "text": "critical a"},
+                {"claim_id": "claim-c", "importance": "major", "text": "major a"},
+            ]
+        )
+        assert searcher.calls == [("critical a", 5), ("critical b", 5), ("major a", 5)]
+
+    def test_collect_limits_target_claims_to_five(self):
+        claims = [
+            {"claim_id": f"claim-{i}", "importance": "major", "text": f"q{i}"}
+            for i in range(7)
+        ]
+        searcher = RecordingSearchProvider({f"q{i}": [result(f"https://example.com/{i}", 1)] for i in range(7)})
+        WebEvidenceProvider(RecordingCollectFetcher(), searcher).collect(claims)
+        assert [query for query, _ in searcher.calls] == ["q0", "q1", "q2", "q3", "q4"]
+
+    def test_collect_fetches_rank_order_and_caps_successes_per_claim_at_three(self):
+        searcher = RecordingSearchProvider(
+            {
+                "q": [
+                    result("https://example.com/3", 3),
+                    result("https://example.com/1", 1),
+                    result("https://example.com/2", 2),
+                    result("https://example.com/4", 4),
+                ]
+            }
+        )
+        fetcher = RecordingCollectFetcher()
+        evidence = WebEvidenceProvider(fetcher, searcher).collect(
+            [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        )
+        assert fetcher.calls == ["https://example.com/1", "https://example.com/2", "https://example.com/3"]
+        assert [item["rank"] for item in evidence] == [1, 2, 3]
+
+    def test_collect_excerpt_is_capped_and_uses_conservative_fields(self):
+        long_text = "x" * 1300
+        fetcher = RecordingCollectFetcher(
+            {"https://example.com/a": FetchedEvidence("https://example.com/a", "", long_text, "text/html", "2026-07-13T01:00:00+00:00")}
+        )
+        searcher = RecordingSearchProvider({"q": [result("https://example.com/a", 4, "Title A")]})
+        evidence = WebEvidenceProvider(fetcher, searcher).collect(
+            [{"claim_id": "claim-1", "importance": "critical", "text": "q"}]
+        )
+        assert evidence == [
+            {
+                "evidence_id": "web-claim-1-4",
+                "claim_id": "claim-1",
+                "url": "https://example.com/a",
+                "title": "Title A",
+                "excerpt": "x" * 1200,
+                "content_type": "text/html",
+                "retrieved_at": "2026-07-13T01:00:00+00:00",
+                "source": "fake-search",
+                "rank": 4,
+                "authority": "other",
+                "directness": "indirect",
+                "stance": "neutral",
+                "freshness": "unknown",
+                "notes": "experimental cli-search evidence",
+            }
+        ]
+
+    def test_collect_skips_only_failed_fetch_urls_and_continues_claim(self):
+        searcher = RecordingSearchProvider(
+            {"q": [result("https://example.com/fail", 1), result("https://example.com/ok", 2)]}
+        )
+        fetcher = RecordingCollectFetcher(failures={"https://example.com/fail"})
+        evidence = WebEvidenceProvider(fetcher, searcher).collect(
+            [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        )
+        assert fetcher.calls == ["https://example.com/fail", "https://example.com/ok"]
+        assert [item["url"] for item in evidence] == ["https://example.com/ok"]
+
+    def test_collect_returns_no_evidence_when_all_fetches_fail_for_claim(self):
+        searcher = RecordingSearchProvider({"q": [result("https://example.com/fail", 1)]})
+        fetcher = RecordingCollectFetcher(failures={"https://example.com/fail"})
+        assert WebEvidenceProvider(fetcher, searcher).collect(
+            [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        ) == []
+
+    def test_collect_propagates_search_error(self):
+        provider = WebEvidenceProvider(
+            RecordingCollectFetcher(),
+            RecordingSearchProvider(failure=SearchError("SEARCH_QUOTA_EXCEEDED")),
+        )
+        with pytest.raises(SearchError) as excinfo:
+            provider.collect([{"claim_id": "claim-1", "importance": "major", "text": "q"}])
+        assert excinfo.value.code == "SEARCH_QUOTA_EXCEEDED"
+
+    def test_collect_is_stable_for_same_input_and_results(self):
+        claims = [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+        searcher = RecordingSearchProvider({"q": [result("https://example.com/a", 1)]})
+        first = WebEvidenceProvider(RecordingCollectFetcher(), searcher).collect(claims)
+        second = WebEvidenceProvider(RecordingCollectFetcher(), searcher).collect(claims)
+        assert first == second
+        assert [item["evidence_id"] for item in first] == ["web-claim-1-1"]
 
 
 class Response:

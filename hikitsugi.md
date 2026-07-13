@@ -92,13 +92,25 @@ from oracle_council.evidence import SafeHttpFetcher, WebEvidenceProvider
 
 provider = WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())
 ```
-CLIやOrchestratorへはまだ配線していない（`cli.py`は依然`FakeEvidenceProvider`/`ManualEvidenceProvider`のみ）。
+X-5でCLIから実験的に選択可能になった。既定動作は引き続きFakeで、明示指定時だけ`CliSearchProvider`を使う。
 
-## 4-6. 未決定（レビュアー判断待ち）
+## 4-6. CliSearchProviderのCLI実験接続（X-5）
 
-- **CLIへの実接続**: `oracle ask`から`CliSearchProvider`＋`WebEvidenceProvider`を選べるようにするか（`--evidence-file`と並ぶ`--evidence-provider cli-search`のようなオプションが必要）
-- **否定ケースのlive確認**: 意図的に見つかりにくいクエリで検索させ、取得不能URLの扱いを実機で確認するか
-- **実検索サービスの選定**: 外部APIの契約自体は「今は選定しない」で保留中。CliSearchProviderが安定しない場合の代替として維持
+実装済み（2026-07-13、X-5確定）。`oracle ask`に`--evidence-provider {fake,cli-search}`を追加し、`cli-search`明示時だけ次を構築する。
+
+```python
+WebEvidenceProvider(fetcher=SafeHttpFetcher(), searcher=CliSearchProvider())
+```
+
+後方互換性は維持済み: オプション省略は`FakeEvidenceProvider`、`--evidence-file`単独は`ManualEvidenceProvider`、`--evidence-file`と`--evidence-provider`同時指定は`configuration_error`/exit 3。
+
+`WebEvidenceProvider.collect()`はPhase 0互換レイヤーとして最小実装した。`critical`/`major`のみ最大5 Claim、検索はClaimごと1回`limit=5`、fetch成功はClaimごと最大3件、抜粋は1,200文字まで。`EvidenceFetchError`はURL単位でスキップ、`SearchError`はCLIで`verification_unavailable`/exit 3へ変換する。Evidence品質値は保守的に`authority=other`、`directness=indirect`、`stance=neutral`、`freshness=unknown`固定。
+
+未実施・未実装:
+
+- 実機WebSearch E2Eは未実行（今回の通常テストではClaude Code、WebSearch、実HTTPを起動していない）
+- 反証検索、authority判定、registrable domain独立性判定、90秒制限、24MB制限などの完全なSPEC §10.2収集処理は未実装
+- 否定ケースのlive確認と外部検索サービス選定は引き続き未実施
 
 ## 5. 決定表fall-throughの顛末（QandA W-1で確定済み）
 
