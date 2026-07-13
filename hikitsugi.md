@@ -252,3 +252,11 @@ python -m pytest
 現在のAdapter経路では、既知パターンに一致しない非ゼロ終了を`subprocess_nonzero_exit`、起動時の`OSError`を`process_launch_failure`として記録する。`AgentFailure.public_summary`、CLI JSONのExecution/Phase、X-8 runnerの`phase_summary`はいずれもallowlist検証を通す。stdout、stderr、prompt、モデル出力、コマンド全文、パス、環境変数、認証情報、Cookie、HTTP header、検索語、例外本文は外部出力へ出さない。Storage Contract、新しいJSONL項目、Runの終了コード・classification・PhaseStatus、`--no-store`の意味は変更していない。
 
 追加テストは、Claude/Codex双方の非ゼロ終了・起動失敗、固定summary、診断情報の混入拒否、既存分類の回帰、CLI/X-8 summaryのallowlist経路を対象とした。`py -m pytest`は234 passed / 6 deselected。q04 live、実CLI、実WebSearch、実HTTP、expensive評価は指示どおり再実行していない。次の作業は、ユーザー承認後に新しい評価ディレクトリでq04を1回限定再評価すること。今回の診断により、同様の失敗が再発した場合でも少なくとも「非ゼロ終了」か「起動失敗」か、既知エラー分類かを外部へ安全に識別できる。
+
+## 4-15. q04 1回限定live再評価（X-8.4）
+
+2026-07-13、HEAD `bca0c90`でq04だけを新規出力先`C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83`へ1回実行した。dry-runでmain、worktree clean、origin/main一致、real Adapter、CLI search、JSON、`--no-store`を確認し、live外部実行は1回で終了した。失敗後の再試行、別ディレクトリ、他の質問、保存済み評価結果の変更は行っていない。
+
+結果は`status=failed`、`exit_code=1`、`result_classification=unverified`、`run_id=7e891cbe-12f3-4568-bf3f-ea829dc0f962`、`agent_call_count=4`。Claude/Codex双方が参加し、respond、claim_extract、evidence_collect（Evidence 14件、search 5、fetch成功14/18）まで成功したが、verifyが254msで`EXECUTION_ERROR`となった。sanitized summaryには`verify process exited with a non-zero status`相当が現れ、前回のEXECUTION_ERRORは再現した。ただしOrchestrator既存ラップにより外部文言は`verify invalid output: ...`となっており、根本原因は未特定。`json_parse_status=valid`、`leakage_check=passed_structural_check`で、raw stdout/stderr等はGitへ保存していない。
+
+q04の受入確認（18歳への訂正、20歳との混同回避、飲酒・喫煙等との区別）はverify失敗により最終回答へ到達せず未評価。次は実CLIを再実行せず、固定FakeでEXECUTION_ERROR summaryのラップを修正し、通常テストで回帰を防ぐ。
