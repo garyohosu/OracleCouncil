@@ -3,12 +3,12 @@
                   "name":  "antigravity",
                   "command":  [
                                   "agy.exe",
-                                  "--prompt",
                                   "--dangerously-skip-permissions",
                                   "--mode",
                                   "accept-edits",
                                   "--print-timeout",
-                                  "30m"
+                                  "30m",
+                                  "--prompt"
                               ],
                   "prompt_delivery":  "argument",
                   "timeout_seconds":  1800
