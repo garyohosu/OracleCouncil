@@ -67,6 +67,16 @@
 
 実CLI、live評価、q03 DNS failure-boundary、S-9/S-10、L-3は引き続き未着手。
 
+## 0-10. X-8.20でq03 DNS failure-boundaryをFake再現・通常実装・テストで解消済み
+
+X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の漏出経路をFakeで再現・確定し、最小のネットワーク境界修正で通常実装・テスト完了した。実live q03再確認は未実施。T-3（DNS rebinding対策・resolver pinning）、S-9/S-10は本項の対象外で未解決のまま。
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| q03 DNS failure-boundary | `SafeHttpFetcher._validate_url()`のSSRF事前チェックが`self._resolver(hostname)`をtry/exceptの外で呼んでおり、`socket.gaierror`が`fetch()`外へ生のまま漏れ、`WebEvidenceProvider`/`Orchestrator`のいずれの型付きハンドラにも捕捉されず、CLIの汎用`except Exception`まで到達していた。resolver呼び出しを`try/except socket.gaierror`で囲み、既存の一般的network failure code `FETCH_FAILED`へ変換するよう修正した（新規public codeは追加していない）。`URLError(socket.gaierror(...))`側は既存の`except (URLError, TimeoutError, OSError)`で従来から正しく変換されており、その契約を回帰テストで明示的に固定した | `src/oracle_council/evidence.py`（`SafeHttpFetcher._validate_url`）、`tests/unit/test_evidence.py`、`tests/unit/test_cli.py` |
+
+未解決: T-3（DNS rebinding対策、resolver pinning、redirect hop再検証の専用境界）、S-9/S-10、実live q03再評価。
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |

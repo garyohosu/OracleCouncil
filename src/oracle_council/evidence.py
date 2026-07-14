@@ -97,7 +97,21 @@ class SafeHttpFetcher:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username:
             raise EvidenceFetchError("UNSAFE_URL", "only http(s) URLs without credentials are allowed")
-        for address in self._resolver(parsed.hostname):
+        try:
+            addresses = list(self._resolver(parsed.hostname))
+        except socket.gaierror as exc:
+            # The SSRF pre-check resolves the hostname itself, outside
+            # fetch()'s HTTP-open try/except. A DNS resolution failure here
+            # (socket.gaierror) previously propagated raw past this method,
+            # WebEvidenceProvider, and Orchestrator, reaching the CLI's
+            # generic exception handler as an internal_error (X-8.20,
+            # observed in the X-8.14 q03 holdout run). Convert it here, at
+            # the same network boundary that already converts other
+            # resolver/HTTP-open failures, using the existing general
+            # network-failure code (FETCH_FAILED) rather than adding a new
+            # public code for what is just another connectivity failure.
+            raise EvidenceFetchError("FETCH_FAILED", "DNS resolution failed") from exc
+        for address in addresses:
             ip = ipaddress.ip_address(address)
             if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast:
                 raise EvidenceFetchError("UNSAFE_URL", "private or local destination")

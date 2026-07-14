@@ -1,4 +1,6 @@
+import socket
 from email.message import Message
+from urllib.error import URLError
 
 import pytest
 
@@ -502,3 +504,75 @@ def test_redirect_destination_is_validated_again():
     resolver = lambda host: ["127.0.0.1"] if host == "internal.example" else ["93.184.216.34"]
     with pytest.raises(EvidenceFetchError, match="UNSAFE_URL"):
         SafeHttpFetcher(opener=opener, resolver=resolver).fetch("https://example.com")
+
+
+def test_dns_resolution_failure_from_resolver_becomes_typed_fetch_error():
+    """X-8.20 (q03 failure-boundary): the SSRF pre-check calls the resolver
+    directly, outside SafeHttpFetcher.fetch()'s HTTP-open try/except. A raw
+    socket.gaierror there previously propagated uncaught out of fetch(),
+    past WebEvidenceProvider/Orchestrator, to the CLI's generic
+    `except Exception` -> internal_error handler."""
+
+    def resolver(host):
+        raise socket.gaierror(11001, "getaddrinfo failed")
+
+    with pytest.raises(EvidenceFetchError) as excinfo:
+        SafeHttpFetcher(opener=Opener(Response()), resolver=resolver).fetch(
+            "https://dns-fail.example.com/a"
+        )
+
+    assert excinfo.value.code == "FETCH_FAILED"
+    rendered = str(excinfo.value)
+    assert "11001" not in rendered
+    assert "getaddrinfo" not in rendered
+    assert "dns-fail.example.com" not in rendered
+
+
+def test_dns_resolution_failure_wrapped_in_urlerror_becomes_typed_fetch_error():
+    """Regression companion to the resolver-level DNS failure above: some
+    DNS failures surface as URLError(gaierror(...)) from opener.open()
+    instead of raising directly from the resolver. This path was already
+    caught by the existing `except (URLError, TimeoutError, OSError)`
+    clause; this test locks that contract in explicitly for DNS causes."""
+
+    class RaisingOpener:
+        def open(self, request, timeout):
+            raise URLError(socket.gaierror(11001, "getaddrinfo failed"))
+
+    with pytest.raises(EvidenceFetchError) as excinfo:
+        fetcher(RaisingOpener()).fetch("https://dns-fail.example.com/a")
+
+    assert excinfo.value.code == "FETCH_FAILED"
+    rendered = str(excinfo.value)
+    assert "11001" not in rendered
+    assert "getaddrinfo" not in rendered
+    assert "dns-fail.example.com" not in rendered
+
+
+def test_collect_with_metrics_continues_after_raw_dns_failure_and_records_typed_code():
+    """WebEvidenceProvider must treat a raw DNS failure on one candidate the
+    same as any other typed EvidenceFetchError: skip it, keep trying other
+    candidates, and record it in fetch_error_codes (partial-evidence
+    contract, M-4)."""
+
+    def resolver(host):
+        if host == "dns-fail.example.com":
+            raise socket.gaierror(11001, "getaddrinfo failed")
+        return ["93.184.216.34"]
+
+    fetcher_ = SafeHttpFetcher(opener=Opener(Response()), resolver=resolver)
+    searcher = RecordingSearchProvider(
+        {"q": [result("https://dns-fail.example.com/a", 1), result("https://example.com/ok", 2)]}
+    )
+    collected = WebEvidenceProvider(fetcher_, searcher).collect_with_metrics(
+        [{"claim_id": "claim-1", "importance": "major", "text": "q"}]
+    )
+
+    assert [item["url"] for item in collected.evidence] == ["https://example.com/ok"]
+    assert collected.metrics["fetch_attempt_count"] == 2
+    assert collected.metrics["fetch_success_count"] == 1
+    assert collected.metrics["fetch_failure_count"] == 1
+    assert collected.metrics["fetch_error_codes"] == {"FETCH_FAILED": 1}
+    rendered = repr(collected.metrics) + repr(collected.evidence)
+    assert "11001" not in rendered
+    assert "getaddrinfo" not in rendered

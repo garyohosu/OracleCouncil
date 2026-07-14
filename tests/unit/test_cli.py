@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -328,6 +329,20 @@ class InvalidIriSearchProvider:
         ]
 
 
+class SingleUrlSearchProvider:
+    def search(self, query, limit):
+        return [
+            SearchResult(
+                "https://dns-fail.example.com/a",
+                "dns candidate",
+                "snippet",
+                1,
+                "fake-search",
+                "2026-07-13T00:00:00+00:00",
+            )
+        ]
+
+
 def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(temp_config, capsys):
     with patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
          patch("oracle_council.cli.SafeHttpFetcher"), \
@@ -402,6 +417,49 @@ def test_cli_ask_invalid_iri_fetch_error_does_not_become_internal_error(temp_con
     rendered = json.dumps(data, ensure_ascii=False)
     assert "UnicodeEncodeError" not in rendered
     assert "\udcff" not in rendered
+
+
+def test_cli_ask_dns_resolution_failure_does_not_become_internal_error(temp_config, capsys):
+    """X-8.20: reproduces the q03 holdout leak (X-8.14). A DNS resolution
+    failure on a fetch candidate previously propagated as a raw
+    socket.gaierror out of SafeHttpFetcher, uncaught by
+    WebEvidenceProvider/Orchestrator, all the way to cli.py's generic
+    `except Exception` handler -> internal_error / exit_code 1 with the raw
+    `[Errno 11001] getaddrinfo failed` text as the public message.
+
+    This uses the real SafeHttpFetcher (not mocked) with only
+    socket.getaddrinfo faked, per the instructed reproduction shape."""
+    with patch("oracle_council.cli.CliSearchProvider", return_value=SingleUrlSearchProvider()), \
+         patch(
+             "oracle_council.evidence.socket.getaddrinfo",
+             side_effect=socket.gaierror(11001, "getaddrinfo failed"),
+         ):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+
+    assert data["status"] != "internal_error"
+    assert exit_code != 1
+    assert data["oracle_exit_code"] == data["exit_code"]
+    assert data["oracle_exit_code"] == exit_code
+    assert data["run_id"]
+    assert data["evidence"] == []
+
+    evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+    assert evidence_phase["status"] == "succeeded"
+    assert evidence_phase["success_count"] == 1
+    assert evidence_phase["outcome"] == "no_evidence"
+    assert evidence_phase["metrics"]["fetch_attempt_count"] == 1
+    assert evidence_phase["metrics"]["fetch_failure_count"] == 1
+    assert evidence_phase["metrics"]["fetch_error_codes"] == {"FETCH_FAILED": 1}
+
+    rendered = json.dumps(data, ensure_ascii=False)
+    assert "getaddrinfo" not in rendered
+    assert "11001" not in rendered
+    assert "gaierror" not in rendered
+    assert "dns-fail.example.com" not in rendered
 
 
 def test_cli_ask_cli_search_does_not_fallback_to_fake_provider(temp_config, capsys):

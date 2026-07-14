@@ -419,3 +419,31 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 テスト: `tests/unit/test_exit_code_separation.py`（25件）を追加。モデル既定値・保持・compat property・metadata to_dict、Claude/Codex monkeypatched transportで成功0／非0=17保持／returncode 0+malformed・schema不正→INVALID_OUTPUTかつprocess 0／FileNotFound→COMMAND_NOT_FOUNDでNone／Timeout→TIMEOUTでNone、OrchestratorでFake成功=None記録・失敗コード保持と意味的status非上書き・retry/substitution個別コード・metadata event安全性、CLI JSONで成功/failed/withheld/exit_stopの`oracle_exit_code == exit_code`・戻り値一致・`executions[].process_exit_code`存在・`executions[]`に`exit_code`なし、を検証。`py -m pytest`は**292 passed, 6 deselected**（baseline 267から+25）、`git diff --check`成功。
 
 `assignment.py`の`InsufficientAgentsError.exit_code = 3`はOracle側の値でありcli.pyからも読まれていないが、今回の許可変更範囲外のため未変更。実Claude、実Codex、WebSearch、実HTTP、live評価、q01〜q08は実行していない。ドキュメントはQandA（S-8回答確定）、SPEC v0.3.10（§8.5/§13.4/§14/§15.8）、CLASS（processExitCode/oracleExitCode、曖昧なexitCode除去）、TESTCASE（S-8 BLOCKED解除3箇所）、FIX_PLAN（0-9追加、§2からL-5/S-8行を解消済みへ）を更新。未解決はq03 DNS failure-boundary、S-9/S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+
+## X-8.20 q03 DNS failure-boundaryの修正（2026-07-14）
+
+実行前HEADは`f13b043`（X-8.19コミット`f13b043`到達、`cd8422e`/`8bbc076`祖先確認済み、`git status --short`完全に空、`origin/main`一致）。実Claude/Codex、WebSearch、実HTTP、live評価、q03再実行は行っていない。
+
+**q03漏出の正確な原因箇所**: `SafeHttpFetcher.fetch()`のリダイレクトループは各hopの先頭で`self._validate_url(current)`を呼ぶが、この呼び出しは`fetch()`内のどのtry/exceptブロックの外にもあった。`_validate_url()`はSSRF事前チェックのため`self._resolver(parsed.hostname)`（既定は`socket.getaddrinfo`）を直接呼んでおり、DNS解決に失敗すると`socket.gaierror`がそのまま`_validate_url()`→`fetch()`外へ漏れていた。この生例外は`WebEvidenceProvider.fetch()`（個別fetch、無catch）、`WebEvidenceProvider.collect_with_metrics()`（`except EvidenceFetchError`のみ）、`Orchestrator._collect_evidence()`／`_apply_output()`／`_execute_phase()`（いずれも`except SearchError`のみ）のどの型付きハンドラにも一致せず、`run_verify()`全体を素通りしてCLIの`except Exception as e: return exit_stop("internal_error", 1, str(e), args.json)`まで到達し、`message`に`str(socket.gaierror(...))`＝`"[Errno 11001] getaddrinfo failed"`が生のまま出ていた。これがX-8.14 q03の直接原因であることをFakeで確定した。なお`opener.open()`側で発生する`URLError(socket.gaierror(...))`は、既存の`except (URLError, TimeoutError, OSError)`で従来から正しく`EvidenceFetchError("FETCH_FAILED", ...)`へ変換されており、この経路は漏出していなかった（回帰テストで契約を明示的に固定した）。
+
+**再現した例外形**: `socket.gaierror(11001, "getaddrinfo failed")`（resolver直接失敗）と`urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed"))`（HTTP層に包まれた形）の両方をFakeで再現した。前者は修正前に生のまま`SafeHttpFetcher.fetch()`外へ漏れることを確認し、後者は修正前から既に正しく変換されていることを確認した。
+
+**修正した境界**: `SafeHttpFetcher._validate_url()`内の`self._resolver(parsed.hostname)`呼び出しを`try/except socket.gaierror`で囲み、`EvidenceFetchError("FETCH_FAILED", "DNS resolution failed")`へ変換する1箇所だけを変更した。`WebEvidenceProvider`・`Orchestrator`・`cli.py`は無変更（型付きエラーを既存契約どおり処理するだけで済んだ）。CLIへの`except socket.gaierror`や広い`except OSError`の追加は行っていない。
+
+**採用した公開error codeと根拠**: 新規codeは追加せず、既存の`FETCH_FAILED`を使用した。理由は次の2点。(1) 同じ`SafeHttpFetcher.fetch()`内で`URLError`/`TimeoutError`/`OSError`（`socket.gaierror`のスーパークラスを含む）を捕捉する既存の`opener.open()`失敗パスが既に`FETCH_FAILED`を使っており、DNS解決失敗は同種の「一般的network/connectivity failure」であるため。(2) SPEC §10.8は非UTF-8デコード失敗など他の接続時例外も`FETCH_FAILED`に分類しており、DNS専用の別codeは定義されていない。指示書の「既存codeが一般的なnetwork failureを表している場合は、新しいcodeを増やさずそのcodeを使用する」に従った。
+
+**partial-evidence・metrics挙動**: `EvidenceFetchError`へ変換された後は、`WebEvidenceProvider.collect_with_metrics()`の既存per-candidate loopがそのまま処理する（変更不要）。1候補DNS失敗＋他候補成功で`fetch_attempt_count`加算・`fetch_failure_count`加算・`fetch_error_codes.FETCH_FAILED`加算・次候補へ継続・成功分のEvidenceを保持することをテストで確認した。全候補がDNS失敗の場合は既存のno-evidence契約（`evidence_collect`は`succeeded`・`success_count=1`・`outcome=no_evidence`）に従うことをCLI JSONレベルで確認した（新しいRun classificationは作成していない）。
+
+**CLIでのFake結果**: `--evidence-provider cli-search`で`CliSearchProvider`をFakeに差し替え、`socket.getaddrinfo`だけを`gaierror(11001, "getaddrinfo failed")`側で常に失敗させるFake（`SafeHttpFetcher`自体は実クラスをそのまま使用、実HTTP・実DNSは発生しない）で確認した。結果は`status="completed"`・`exit_code=0`・`oracle_exit_code==exit_code`・`run_id`が有効値・`evidence=[]`・`evidence_collect`フェーズが`succeeded`/`success_count=1`/`outcome="no_evidence"`/`fetch_error_codes={"FETCH_FAILED":1}`で、`internal_error`にもgeneric `exit_code=1`にもならないことを確認した。
+
+**raw情報非公開確認**: 上記CLIテストの出力JSON全体を`json.dumps`でシリアライズし、`"getaddrinfo"`、`"11001"`、`"gaierror"`、テスト用hostname`"dns-fail.example.com"`のいずれも含まれないことをassertした。`EvidenceFetchError`側の`str()`にもこれらが含まれないことを別途unit testで確認済み。`oracle_exit_code`・互換`exit_code`・`process_exit_code`の分離は無変更で、この修正では触れていない。
+
+**変更ファイル**: `src/oracle_council/evidence.py`（`SafeHttpFetcher._validate_url`、resolver呼び出しの1箇所）、`tests/unit/test_evidence.py`（DNS単体3件追加）、`tests/unit/test_cli.py`（DNS CLI回帰1件追加）、`FIX_PLAN.md`（§0-10追加）、`hikitsugi.md`（本節）、`instructions/result.md`。`orchestrator.py`・`cli.py`・`models.py`は変更不要だった（既存の型付きエラー処理経路がそのまま機能したため）。
+
+**追加テスト**: `test_dns_resolution_failure_from_resolver_becomes_typed_fetch_error`（resolver直接失敗→`FETCH_FAILED`、raw情報非混入）、`test_dns_resolution_failure_wrapped_in_urlerror_becomes_typed_fetch_error`（`URLError(gaierror)`→既存契約の回帰固定）、`test_collect_with_metrics_continues_after_raw_dns_failure_and_records_typed_code`（WebEvidenceProvider: 1件DNS失敗＋1件成功でpartial evidence、metrics確認）、`test_cli_ask_dns_resolution_failure_does_not_become_internal_error`（CLI JSON全体でinternal_errorにならないこと、raw情報非混入、`oracle_exit_code==exit_code`）。
+
+**対象テスト・全テスト結果**: 修正前に4件のDNSテストのうち3件が失敗し漏出を再現した（`test_dns_resolution_failure_wrapped_in_urlerror_becomes_typed_fetch_error`のみ修正前から成功、既存契約の健全性を確認）。修正後は`tests/unit/test_evidence.py`と`tests/unit/test_cli.py`の対象テストが全件成功（72 passed）。全体`py -m pytest`は**296 passed, 6 deselected**（baseline 292から+4）、`git diff --check`成功、`git status --short`は変更ファイルのみ。
+
+**残っている課題**: T-3（DNS rebinding対策、resolver pinning、redirect hop個別再検証の専用境界）とS-9/S-10は本作業の対象外で未解決のまま。q03の実live再評価は未実施（別途明示承認が必要）。
+
+**次の推奨作業**: ユーザー承認を得た上でのq03 1回限定live再評価、またはS-9/S-10の設計確定。並行作業禁止のとおり、この場では次へ進まない。
