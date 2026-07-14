@@ -1,6 +1,6 @@
 # Oracle Council 状態遷移図
 
-- 対象仕様: `SPEC.md` v0.3.6
+- 対象仕様: `SPEC.md` v0.3.9
 - 参照順: SPEC → QandA確定回答 → SEQUENCE → CLASS → TESTCASE → FIX_PLAN
 - 対象範囲: MVPのRun、Phase、AgentExecution、AuditIssue、公開可否・結果分類
 - 原則: 処理状態、公開可否、結果分類、CLI終了コードを別軸として扱う
@@ -105,7 +105,7 @@ stateDiagram-v2
 
 ## 3. AgentExecution状態遷移
 
-再試行は同じレコードの再遷移ではなく、新しい`AgentExecution`を作り、`retry_of`で元Executionを参照する。
+再試行は同じレコードの再遷移ではなく、新しい`AgentExecution`を作り、`retry_of`で直前Executionを参照する。代替実行も新しいExecutionを作り、`substitute_for`で置換対象を参照する。両フィールドは排他的で、terminal Executionを再利用しない。
 
 ```mermaid
 stateDiagram-v2
@@ -120,7 +120,7 @@ stateDiagram-v2
     running --> cancelled: Ctrl+C / cancel
 
     unavailable --> [*]: AUTH_REQUIRED / QUOTA_EXCEEDED<br/>CLI_NOT_FOUND / UNSUPPORTED_VERSION
-    failed --> retry_pending: RATE_LIMITEDまたは一時障害<br/>再試行枠あり
+    failed --> retry_pending: RATE_LIMITEDまたはTIMEOUT<br/>retry枠あり
     timed_out --> retry_pending: 再試行枠あり
     failed --> compact_pending: CONTEXT_OVERFLOW<br/>決定的縮約が未実施
     retry_pending --> pending_retry: 新Execution作成 / retry_of設定
@@ -129,7 +129,10 @@ stateDiagram-v2
     running_retry --> retry_succeeded: 有効出力
     running_retry --> retry_failed: 再失敗 / 追加再試行なし
     retry_succeeded --> [*]
+    retry_failed --> substitution_pending: substitution枠・候補あり
     retry_failed --> [*]: failed / timed_out / unavailable<br/>またはBUDGET_EXCEEDED
+    substitution_pending --> substitute_running: 新Execution作成 / substitute_for設定
+    substitute_running --> [*]: 成功または元のerror codeでfailed
     succeeded --> [*]
     failed --> [*]: INVALID_OUTPUT / EXECUTION_ERROR<br/>再試行対象外または枠消費済み
     timed_out --> [*]: 再試行枠消費済み
@@ -137,8 +140,9 @@ stateDiagram-v2
     process_tree_stop --> [*]: 5秒後も残存ならkill<br/>残留process 0件
 
     note right of retry_pending
-      同一Execution由来の再試行は最大1回。
-      Run全体の再試行は2回、AI呼出しは12回上限。
+      同一slotのretryは最大1回。
+      Run全体retryは2回、substitutionは別枠1回、AI呼出しは12回上限。
+      substitution後のretryと2人目のsubstituteは行わない。
     end note
     note right of compact_pending
       縮約後も収まらなければBUDGET_EXCEEDED。
@@ -234,7 +238,7 @@ stateDiagram-v2
     released --> [*]
 
     note right of reserved
-      retry / 代替Agentは別Execution・別予約。
+      retry / substitutionは別Execution・別予約。
       12回上限もreserveと同じlockで判定。
     end note
     note right of committed
@@ -248,3 +252,16 @@ stateDiagram-v2
 ```
 
 reserve失敗ではReservationを作らず、新しいAgent呼出しを開始しない。Auditor承認済み回答がある場合だけ`Run.partial + partially_verified + exit 0`で公開し、なければ`Run.failed + BUDGET_EXCEEDED + exit 1`で非公開とする。
+
+## 7. RunAgentAvailability（X-8.16）
+
+```mermaid
+stateDiagram-v2
+    [*] --> available: ExecutionPlan作成・probe/capability適格
+    available --> run_unavailable: AUTH_REQUIRED / QUOTA_EXCEEDED / COMMAND_NOT_FOUND<br/>UNSUPPORTED_VERSION / UNSAFE_CAPABILITY
+    available --> available: TIMEOUT / RATE_LIMITED / EXECUTION_ERROR<br/>（slot-local除外のみ）
+    run_unavailable --> [*]
+    available --> [*]
+```
+
+`RunAgentAvailability`はRun内でのみ有効な候補除外状態であり、Agentの恒久状態を変更しない。hard unavailable Agentは後続phase候補から除外し、TIMEOUT/RATE_LIMITED/EXECUTION_ERRORは失敗したslotの候補からだけ除外する。substitution候補がない場合は`agent_substitution_unavailable`を記録して元のerror codeでPhase/Runをfailedにする。

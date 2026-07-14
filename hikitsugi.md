@@ -39,7 +39,7 @@
 
 1. ~~Responder 2 Agent分離~~ 済（2026-07-12、`assignment.py`）。確認ポイント7点（2 Agent必須・insufficient_agents・Synthesizer≠Auditor・role_priority＋設定順・同一入力同一割当・脱落後の再選定も決定的・暗黙の自己監査なし）をテストで固定済み。insufficient_agentsはV-1準拠でRun生成前に停止（exit 3）
 2. ~~修正・再監査1回~~ 済（2026-07-12、W-2確定・SPEC v0.3.7）。changes_required→同一Synthesizer修正→同一Auditor再監査1回（7→9回）。再監査不承認と初回blockedは`failed`ではなく`withheld`（completed・exit 4・final_answer非公開）。AuditIssueはopen→resolved追跡、revision系4イベント記録。「修正込み10回」の10はClarifier込みの数と照合済み
-3. ~~再試行~~ 済（2026-07-12、W-3確定）。対象はSPEC正本どおりTIMEOUT/RATE_LIMITEDのみ。同一Execution 1回・Run全体2回・retry_of・別予約・失敗履歴保持・起動後失敗は安全側commit。代替Agent選定はM-5確定待ちで未実装（非一時エラーは決定的にfailed）
+3. ~~再試行~~ 済（2026-07-12、W-3確定）。対象はSPEC正本どおりTIMEOUT/RATE_LIMITEDのみ。同一slot 1回・Run全体2回・retry_of・別予約・失敗履歴保持・起動後失敗は安全側commit。代替Agent選定はX-8.16で仕様確定済み・未実装（非一時エラーは現行実装では決定的にfailed）
 4. ~~Phase/AgentExecutionレコードの正式化~~ 済（2026-07-12、W-4確定）。PhaseRecord（min/success_count、skipped/failed、evidence_collectのoutcome）、AgentExecutionRecord（試行ごと、retry_of、error_summary定型200字、raw_diagnosticはstore-contentのみ）、RunMetadataRecordスナップショット（run_*イベントへ埋め込み、再集計しない）。再監査は同一PhaseへのExecution追加。STATE.mdのW-2前の残骸も修正
 5. ~~CLI骨格~~ 済（並行セッション: argparse実装、exit code全表、--json純化、real/fake adapter切替、Windows UTF-8）。W-5でpre-flight probeフィルタとlive test 4分割を追加。**2 Agent実機完走テストはClaude利用上限の解除後に `$env:ORACLE_COUNCIL_LIVE="1"; python -m pytest -m "live and expensive" -vv` で再実行**
 6. **Clarification Engine**（Phase 1）: 決定的ルール→§7.2ステータス。J-4（2ラウンド目のClarifier）が未回答
@@ -339,7 +339,20 @@ This closes out O-6's "real Claude/WebSearch/q04/live confirmation" gap; O-6 is 
 
 Process note: `git stash -u` was used to set the untracked `dream.md` aside for the dry-run/live safety check, then restored immediately after. This worked without incident, but should not become standard practice — before future live evaluation runs, either write `dream.md` after the live run finishes, or commit it deliberately beforehand, so the worktree is clean without needing to stash anything.
 
-Remaining open items are unchanged: J-3, L-5, M-5, S-4–S-10, T-2, T-3 (design-gated FIX_PLAN blockers), J-4 (Clarifier second round), and evaluation of the remaining 7 X-8 questions (q01–q03, q05–q08 — none run live yet; q04 has been exercised repeatedly during transport debugging and is no longer a clean holdout). A full `--all` pass, if attempted, needs `run_in_background`+Monitor or a timeout budget well over 600s per question.
+Remaining open items are unchanged except that X-8.16 now resolves M-5/S-5: J-3, L-5, S-4, S-6–S-10, T-2, T-3 (design-gated FIX_PLAN blockers), J-4 (Clarifier second round), and evaluation of the remaining 7 X-8 questions (q01–q03, q05–q08 — none run live yet; q04 has been exercised repeatedly during transport debugging and is no longer a clean holdout). A full `--all` pass, if attempted, needs `run_in_background`+Monitor or a timeout budget well over 600s per question.
+
+## X-8.16. M-5 / S-5 代替Agent・ExecutionPlan仕様確定（2026-07-14）
+
+X-8.15のq08でClaudeの`synthesize`が`QUOTA_EXCEEDED`となった事実を具体例として、M-5とS-5を同時確定した。これは文書による仕様確定のみで、live、実CLI、HTTP、評価、source/test/config/runner変更は行っていない。
+
+- retryは同一Agent・同一論理slot・同一phaseの新Execution（`retry_of`）で、slotあたり最大1回、Run全体最大2回。
+- substitutionは異なるAgentが同じslot/phaseを引き継ぐ新Execution（`substitute_for`）で、Run全体最大1回。retryとは別枠で、各々別BudgetReservation。13回目は`TokenBudget.reserve()`前に拒否する。
+- retry対象は`TIMEOUT`と`RATE_LIMITED`のみ。`AUTH_REQUIRED`、`QUOTA_EXCEEDED`、`COMMAND_NOT_FOUND`、`UNSUPPORTED_VERSION`、`UNSAFE_CAPABILITY`はRun全体unavailableとして同一Agent retryなしで候補探索、`EXECUTION_ERROR`はslot-local substitution。`INVALID_OUTPUT`、`CONTEXT_OVERFLOW`、`BUDGET_EXCEEDED`、`CANCELLED`、Evidence障害、Run生成前CLI/DNS/設定例外は対象外。
+- Run開始時に`ExecutionPlan`を決定的に構築し、phase/slot/必要成功数/候補順/制約、retry=2、substitution=1、AI call=12を保持する。候補順はprobe/capability、`role_priority`降順、設定順tie-break、失敗・hard unavailable除外、独立性制約の順。
+- Responderは異なる2 Agentを維持し、成功済みのもう一方を代替に使わない。SynthesizerとAuditorは常に別Agentで、Synthesizer候補選定時に別Auditor候補をlook-ahead確保する。
+- 既定2 AgentでSynthesizerがquota切れになり、Codexを代替するとAuditorが残らない場合は、分離要件を破らずRunをfailedにする。q03のDNS失敗は別failure-boundary課題として維持する。
+
+更新文書: `QandA.md`、`SPEC.md` v0.3.9、`CLASS.md`、`SEQUENCE.md`、`STATE.md`、`TESTCASE.md`、`FIX_PLAN.md`、本書、`instructions/result.md`。次はM-5/S-5実装、その後L-5、S-8。
 
 ## 4-25. X-8.14 seven-question holdout evaluation (q04 excluded) — partial, systemic stop at q03
 

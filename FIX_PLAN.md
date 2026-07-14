@@ -1,4 +1,4 @@
-# FIX_PLAN — SPEC v0.3.6 反映版
+# FIX_PLAN — SPEC v0.3.9 反映版
 
 > 設計レビュー、USECASE/SEQUENCE/CLASS/TESTCASE/STATE作成、R-1・M-4・S-1・U-1（v0.3.3）、S-2・T-5（v0.3.4）、V-1〜V-3（v0.3.5）、M-3・S-3・S-7・T-1・T-4（v0.3.6）確定後の状態。
 
@@ -41,6 +41,12 @@
 |---|---|---|
 | O-6 | stdin限定と一時ファイル許可の矛盾。`CodexAdapter`・`ClaudeAdapter`・`CliSearchProvider`のuser-derived入力（Phase入力、検索クエリ）はすべてargvではなくstdin経由で渡し、argvには固定フラグのみを含める。Codexのtemp fileは`--output-schema`用JSON Schemaのみに限定 | `src/oracle_council/adapters/claude.py`・`adapters/codex.py`、Fakeテスト（X-8.10〜X-8.12）、実機live確認（X-8.13、HEAD `8fcdeaf`、q04で`exit_code=0`/`classification=verified`/全7フェーズ成功） |
 
+## 0-6. X-8.16で仕様確定済み・実装未着手
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| M-5 / S-5 | `ExecutionPlan`、決定的候補順、retry=Run全体2回、substitution=Run全体1回、AI call=12回、error code別処理、Responder独立性、Synthesizer/Auditor分離とlook-ahead、可用性scopeを同時確定 | QandA、SPEC §6.2〜§6.4/§8.3、CLASS、SEQUENCE、STATE、TESTCASE |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |
@@ -76,10 +82,8 @@
 | ID | 項目 | 概要 | 依存するテスト設計領域 |
 |---|---|---|---|
 | **J-3** | `quick`の実行グラフ | フェーズ一覧・呼び出し数・出力の確定 | `quick`結合テスト |
-| **L-5** | フェーズ別の構造化出力スキーマ | 6フェーズ分のJSON Schema | 各Adapter / JSON Schema Contract Test |
-| **M-5** | 代替Agent選定と再試行・12回上限 | 呼び出し上限と代替選定の競合解消 | Agent呼び出し上限テスト |
+| **L-5** | フェーズ別の構造化出力スキーマ | 6フェーズ分のJSON Schema。M-5/S-5のExecutionPlanへ接続 | 各Adapter / JSON Schema Contract Test |
 | **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
-| **S-5** | Agent選定・代替表現 | 複数担当・代替候補アロケーションのクラス表現 | Agent選定単体テスト |
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
 | **S-8** | CLI終了コードの分離 | `processExitCode` と `oracleExitCode` のフィールド分離 | CLI / Adapter Contract Test |
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |

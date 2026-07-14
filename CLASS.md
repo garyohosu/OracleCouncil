@@ -1,7 +1,7 @@
 # Oracle Council クラス図
 
 - 対象シーケンス: `SEQUENCE.md`
-- 対象仕様: `SPEC.md` v0.3.6
+- 対象仕様: `SPEC.md` v0.3.9
 - 対象範囲: MVPの`verify`モード、履歴、キャンセル
 - 方針: シーケンスの参加オブジェクトをクラス責務へ割り当て、SPECで定義済みの型だけを確定要素として扱う
 
@@ -26,7 +26,7 @@ classDiagram
         -storage StorageBackend
         +run(command) RunResult
         +cancel(runId) void
-        -selectAgent(phase) AgentAdapter
+        +buildExecutionPlan(runContext) ExecutionPlan
         -classifyClaims(claims, evidence) void
         -deriveCriticalIssues(issues) AuditStatus
     }
@@ -91,6 +91,26 @@ classDiagram
         +release(reservationId) BudgetReservation
         +snapshot() BudgetSnapshot
     }
+    class ExecutionPlan {
+        +runId str
+        +configuredAgentIds str[]
+        +phaseAssignments PhaseAssignment[]
+        +maxRunRetries int
+        +maxRunSubstitutions int
+        +maxAgentCalls int
+    }
+    class PhaseAssignment {
+        +phase AgentPhase
+        +slotIndex int
+        +requiredSuccessCount int
+        +candidateAgentIds str[]
+        +constraints object
+    }
+    class RunAgentAvailability {
+        +agentId str
+        +status str
+        +reasonCode AgentErrorCode
+    }
     class BudgetRequest {
         +runId str
         +executionId str
@@ -127,6 +147,9 @@ classDiagram
     Orchestrator o-- EvidenceProvider
     Orchestrator o-- StorageBackend
     Orchestrator *-- TokenBudget
+    Orchestrator *-- ExecutionPlan
+    ExecutionPlan *-- PhaseAssignment
+    ExecutionPlan *-- RunAgentAvailability
 
     AgentAdapter <|.. ClaudeCodeAdapter
     AgentAdapter <|.. CodexCLIAdapter
@@ -200,6 +223,7 @@ classDiagram
         +errorSummary str
         +rawDiagnostic str
         +retryOf str
+        +substituteFor str
     }
 
     class Claim {
@@ -274,11 +298,12 @@ classDiagram
     Claim "1" *-- "0..*" Evidence
     Run "1" *-- "0..*" AuditIssue
     AgentExecution "0..1" --> "0..1" AgentExecution : retryOf
+    AgentExecution "0..1" --> "0..1" AgentExecution : substituteFor
     Run ..> RunMetadataRecord : metadata snapshot
     RunMetadataRecord ..> RunEvent : persisted as
 
     note for Phase "S-2確定: errorCodeはPhaseErrorCode（evidence_collectはEvidenceErrorCodeも可）。errorSummaryは定型文のみ最大200字redaction済み。rawDiagnosticのみcontent区分。outcomeはevidence_collectのみ使用（M-4）"
-    note for AgentExecution "errorSummaryはPhaseと同じ制限付きmetadata。rawDiagnosticはcontent区分でstore-content指定時のみ保存"
+    note for AgentExecution "errorSummaryはPhaseと同じ制限付きmetadata。rawDiagnosticはcontent区分でstore-content指定時のみ保存。retryOfとsubstituteForは排他的"
     note for AuditIssue "S-2確定: comment以外はmetadata区分。statusのopen->resolvedで再監査の解消を追跡する。accepted_riskはMVP対象外"
     note for Evidence "複数Claimとの共有方法は既存QandA K-4で未確定"
 ```
@@ -539,4 +564,4 @@ classDiagram
 - K-4: 1つのEvidenceDocumentを複数Claimで共有する場合の関連
 - L-5: フェーズ別`structured_output`のschema
 
-S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6で確定し、本書へ反映済み。
+S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6、M-5/S-5はv0.3.9で確定し、本書へ反映済み。S-9、S-10は未解決のまま。

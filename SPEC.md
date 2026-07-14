@@ -1,10 +1,10 @@
 # Oracle Council 仕様書
 
-- 文書バージョン: 0.3.8
+- 文書バージョン: 0.3.9
 - ステータス: MVP設計方針確定版
 - 対象: MVP（Minimum Viable Product）
 - リポジトリ: `garyohosu/OracleCouncil`
-- 最終更新: 2026-07-10
+- 最終更新: 2026-07-14
 
 ## 1. 概要
 
@@ -130,13 +130,13 @@ CLI
 
 Claudeを常にCritic、Geminiを常にVerifierとするような固定割り当ては行わない。役割は実行フェーズごとにOrchestratorが決定する。
 
-選定はランダムではなく、次を用いた決定的なルールとする。
+選定はランダムではなく、Run開始時に構築する`ExecutionPlan`を正本とし、次を用いた決定的なルールとする。
 
 1. Agentが利用可能である
 2. 設定ファイルの`role_priority`に適合する
 3. 必要な出力形式やコンテキスト長を扱える
 4. 同点の場合は設定順
-5. SynthesizerとAuditorは可能な限り別Agentにする
+5. SynthesizerとAuditorは常に別Agentにする
 
 同じ設定、同じ利用可能Agent集合であれば、原則として同じ選定結果になる。
 
@@ -155,14 +155,16 @@ Criticは匿名化された全回答、Claim、Evidenceを受け取り、1回の
 
 重要度`critical`のClaimは、Verifierの判定に加えてAuditorが再確認する。
 
-`verify`のAI呼び出しは通常7回、Clarifierを含め8回、修正を含め10回を上限とする。一時エラーの再試行はRun全体で2回、同一Executionで1回までとし、再試行を含む絶対上限は12回とする。差分スキャン、コンテキスト縮約、Evidence収集はAI呼び出しに数えない決定的なローカル処理とする。
+`verify`のAI呼び出しは通常7回、Clarifierを含め8回、修正を含め10回を基準とする。同一Agent retryはRun全体で2回、substitutionは別枠でRun全体1回、全AI呼び出しは`TokenBudget.reserve()`による12回を絶対上限とする。差分スキャン、コンテキスト縮約、Evidence収集はAI呼び出しに数えない決定的なローカル処理とする。
+
+`ExecutionPlan`は`run_id`、`configured_agent_ids`、`phase_assignments`、`max_run_retries=2`、`max_run_substitutions=1`、`max_agent_calls=12`を持つ。`PhaseAssignment`は`phase`、`slot_index`、`required_success_count`、`candidate_agent_ids`、`constraints`を持ち、候補順はprobe/capability適格、`role_priority`降順、設定順tie-break、失敗Agent・Run全体unavailable Agent除外、独立性制約の順で固定する。`RunAgentAvailability`は`available`/`run_unavailable`と固定理由を記録する。
 
 ### 6.4 参加Agentが少ない場合
 
 - 2 Agent以上: 異なる2 AgentをResponderに選び、通常フローを実行する
 - 1 Agent以下: 独立回答と別Agent監査を満たせないため回答不能
 
-SynthesizerとAuditorは異なる`agent_id`とする。可能なら異なる`adapter_family`を選ぶ。Auditorを確保できない場合は回答を公開しない。
+SynthesizerとAuditorは異なる`agent_id`とする。Synthesizer候補は別Auditor候補が最低1名残るlook-aheadを満たす。Auditor substitutionではSynthesizerを候補から除外し、Auditorを確保できない場合は回答を公開しない。既定2 AgentでSynthesizerがquota失敗した場合、分離を破る代替は行わずRunをfailedにする。
 
 ### 6.5 フェーズ間の汚染対策
 
@@ -277,13 +279,16 @@ agents:
 
 ### 8.3 再試行
 
-- 利用枠超過、認証切れ、CLI未導入は再試行しない
-- 一時的なタイムアウトとレート制限は同一Executionにつき最大1回のみ再試行できる
-- 再試行は新しいAgentExecutionを作り、`retry_of`で元Executionを参照する
-- Run全体の再試行は2回、全AI呼び出しは12回を絶対上限とする
+- retryは同じAgent・同じ論理slot・同じphaseを新しいExecutionで再実行し、`retry_of`で直前Executionを参照する。同一slot最大1回、Run全体最大2回とする。
+- substitutionは異なるAgentが同じslot・phaseを新しいExecutionで引き継ぎ、`substitute_for`で置換対象を参照する。Run全体最大1回で、retry枠を消費しない。
+- `retry_of`と`substitute_for`は同一Executionで同時に設定しない。substitution後のretry、2人目のsubstituteは行わない。
+- retry対象は`TIMEOUT`と`RATE_LIMITED`だけとする。`AUTH_REQUIRED`、`QUOTA_EXCEEDED`、`COMMAND_NOT_FOUND`、`UNSUPPORTED_VERSION`、`UNSAFE_CAPABILITY`は即時substitution候補探索へ進む。`EXECUTION_ERROR`はslot-local substitution対象とする。
+- `INVALID_OUTPUT`、`CONTEXT_OVERFLOW`、`BUDGET_EXCEEDED`、`CANCELLED`、Evidence障害、Run生成前のCLI/DNS/設定例外はM-5 substitution対象外とする。
+- 全AI呼び出しは12回を絶対上限とし、13回目はAgent呼び出し前の`TokenBudget.reserve()`で拒否する。
+- substitution不能時は元のerror codeでPhase/Runをfailedとし、`agent_substitution_unavailable`をmetadata eventへ記録する。substitute選択時は`agent_substitute_selected`を記録する。
 - コンテキスト超過は決定的縮約を1回適用し、収まらなければ`BUDGET_EXCEEDED`で終了する
 - 無限再試行は禁止する
-- 失敗後の代替Agent選定は`role_priority`順で1回だけ許可する
+- 失敗後の代替Agent選定はExecutionPlanの候補順でRun全体1回だけ許可する。設定ファイルをRun途中で再読込しない。
 
 ### 8.4 タイムアウト
 
@@ -1027,6 +1032,8 @@ AgentExecutionは「1 Agentの1回の呼び出し」ごとに1レコードとす
 
 遷移は`pending -> running | skipped | cancelled`、`running -> succeeded | degraded | failed | cancelled`だけを許可する。最低成功数は`respond`=2、`claim_extract`=1、`verify`=1、`criticize`=1、`synthesize`=1、`audit`=1とする。最低数を満たし一部Executionが失敗した場合は`degraded`、満たさなければ`failed`とする。Clarifyは不要なら`skipped`とする。
 
+retryまたはsubstitutionが成功したExecutionは通常成功と同様に`success_count`へ加算する。候補なし・substitute失敗・12回上限拒否で必要成功数を満たせない場合は元のerror codeまたは`BUDGET_EXCEEDED`を保持してPhaseを`failed`とする。
+
 Evidence収集は`evidence_collect` Phaseとして`claim_extract`と`verify`の間に置く。AI呼び出しではないためAgentExecutionを作らず、Phaseレコードだけで管理する。`evidence_collect`は「処理が正常に終わったか」（Phase.status）と「根拠が見つかったか」（EvidenceOutcome）を分離して記録する。
 
 - Phase.status: 検索・取得処理そのものの成否
@@ -1135,6 +1142,10 @@ AuditIssueは`comment`以外をmetadata区分とする。
 - `error_code`
 - `error_summary`
 - `raw_diagnostic`（content区分）
+- `retry_of`（同一Agent retryの直前Execution。substitution時はnull）
+- `substitute_for`（置換対象Execution。retry時はnull）
+
+`retry_of`と`substitute_for`は排他的であり、retry/substitutionごとに新しいExecutionと新しいBudgetReservationを作る。失敗Executionを再利用しない。substitution選定時は`agent_substitute_selected`、候補なし時は`agent_substitution_unavailable`をmetadata eventへ記録する。eventにはraw診断、prompt、質問、回答、環境変数を含めない。
 
 #### Claim
 

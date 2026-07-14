@@ -196,6 +196,7 @@ sequenceDiagram
     participant O as Orchestrator
     participant A as Adapter A
     participant B as Adapter B
+    participant C as Adapter C（第三候補）
     participant S as JSONL Storage
 
     par Responder並列
@@ -208,19 +209,64 @@ sequenceDiagram
     end
 
     O->>S: AgentExecution timed_out を記録
-    O->>B: execute(respond) 再試行（同一Executionにつき1回・retry_of参照・新Execution）
+    O->>B: execute(respond) retry（同一slotにつき1回・retry_of参照・新Execution）
 
     alt 再試行成功
         B-->>O: 構造化回答B（succeeded）
         Note over O: respond Phase succeeded として続行
     else 再試行も失敗
         B-->>O: TIMEOUT または EXECUTION_ERROR
-        Note over O: Responder 2件を確保できない（既定2 Agent構成に代替なし）
-        O->>S: respond Phase failed / Run failed を記録
+        O->>O: ExecutionPlanの3人目候補を確認
+        alt 適格substituteあり
+            O->>S: agent_substitute_selected
+            O->>C: execute(respond) substitute_for（新Execution）
+            C-->>O: 構造化回答C（succeeded）
+        else 代替なし
+            Note over O: 成功済みResponderを代替に再利用しない
+            O->>S: agent_substitution_unavailable / respond failed / Run failed
+        end
     end
 ```
 
-### 4c. キャンセル（Ctrl+C）
+### 4c. Agent substitutionと12回上限（X-8.16）
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant A as 失敗Agent
+    participant B as 代替候補
+    participant C as 別Auditor候補
+    participant TB as TokenBudget
+
+    O->>A: execute(synthesize)
+    A-->>O: QUOTA_EXCEEDED
+    Note over O: 同一Agent retryなし。AgentをRun全体unavailableへ変更
+    O->>O: ExecutionPlan候補をlook-ahead確認
+    alt 3 Agent構成・別Auditorが残る
+        O->>TB: reserve（substitution用の別Reservation）
+        TB-->>O: 成功（call count <= 12）
+        O->>B: execute(synthesize) substitute_for
+        B-->>O: synthesis succeeded
+        Note over O: Auditor候補CをSynthesizerから分離して維持
+    else 2 Agent構成・別Auditorが残らない
+        O->>O: agent_substitution_unavailable
+        Note over O: Synthesizer/Auditor分離を破らずRun failed
+    end
+```
+
+### 4d. 13回目の予約拒否（X-8.16）
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant TB as TokenBudget
+    participant A as AgentAdapter
+    O->>TB: reserve（committed + reserved = 12）
+    TB-->>O: BUDGET_EXCEEDED
+    Note over O: AgentAdapter.executeは呼ばない。13回目のAI callなし
+```
+
+### 4e. キャンセル（Ctrl+C）
 
 ```mermaid
 sequenceDiagram
@@ -268,7 +314,7 @@ sequenceDiagram
 
 - J-3: `quick`の実行グラフ（未回答のため図なし）
 - J-4: 追加質問2ラウンド目のClarifier再呼び出しの有無
-- M-5: 代替Agent実行と絶対上限12回の関係（図4bは代替なしの既定2 Agent構成のみ）
+- M-5/S-5: X-8.16で確定済み（図4b/4c/4dへ反映）
 - R-2: `--json`時の進捗表示の出力先
 - R-3: ユーザー応答待ち時間と全体タイムアウトの関係
 - R-4: `probe()`の実行方式（AI呼び出しに数えるか）

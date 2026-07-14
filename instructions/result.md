@@ -230,3 +230,13 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - No source, test, config, runner, or eval-set changes. `stdout.json` read only for sanitized structured fields (answer/claims/phases); `stderr.txt` not read. No evaluation artifacts, subset, or raw output added to Git. `dream.md` not modified during the evaluation.
 - Documentation updated: `hikitsugi.md` (4-26), this file.
 - Next work: M-5 spec confirmation, then L-5, then S-8. The q03 DNS failure is handled as a separate failure-boundary task.
+
+## X-8.16 M-5 / S-5 代替Agent・ExecutionPlan仕様確定 (2026-07-14)
+
+- X-8.15 q08のClaude `synthesize`における`QUOTA_EXCEEDED`を具体例として、M-5とS-5を相互依存のまま同時確定した。文書変更のみであり、live、実CLI、HTTP、評価、source/test/config/runner変更は実施していない。
+- retryは同じAgent・同じ論理slot・同じphaseの新Execution（`retry_of`）。slotあたり最大1回、Run全体最大2回。substitutionは異なるAgentが同じslot/phaseを引き継ぐ新Execution（`substitute_for`）で、Run全体最大1回、retry枠とは別。両者は別BudgetReservationで、`retry_of`と`substitute_for`は排他的。代替後のretryと2人目のsubstituteは行わない。
+- 全AI呼び出し上限は12回で、`TokenBudget.reserve()`を唯一の正本とする。13回目はAgent呼び出し前に`BUDGET_EXCEEDED`で拒否する。
+- retry対象は`TIMEOUT`/`RATE_LIMITED`のみ。`AUTH_REQUIRED`、`QUOTA_EXCEEDED`、`COMMAND_NOT_FOUND`、`UNSUPPORTED_VERSION`、`UNSAFE_CAPABILITY`はRun全体unavailableとして同一Agent retryなしで候補探索し、`EXECUTION_ERROR`はslot-local substitutionとする。`INVALID_OUTPUT`、`CONTEXT_OVERFLOW`、`BUDGET_EXCEEDED`、`CANCELLED`、Evidence障害、Run生成前CLI/DNS/設定例外はM-5 substitution対象外。
+- S-5の正式モデルはRun開始時に決定する`ExecutionPlan`、`PhaseAssignment`、`RunAgentAvailability`。候補順はprobe/capability適格、`role_priority`降順、設定順tie-break、失敗・hard unavailable除外、phase独立性制約の順。Responderは異なる2 Agent、Synthesizer/Auditorは常に別Agentとし、Synthesizer候補に別Auditor候補をlook-aheadで確保する。
+- 既定2 AgentでSynthesizerのquota障害後に代替すると別Auditorが残らない場合は、既存の分離要件を破って救済せずRunをfailedにする。q03のDNS失敗はM-5とは別のfailure-boundary課題として維持する。
+- 更新文書: `QandA.md`、`SPEC.md` v0.3.9、`CLASS.md`、`SEQUENCE.md`、`STATE.md`、`TESTCASE.md`、`FIX_PLAN.md`、`hikitsugi.md`、本書。次作業はM-5/S-5実装、その後L-5、S-8。
