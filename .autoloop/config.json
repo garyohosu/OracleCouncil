@@ -1,0 +1,43 @@
+{
+    "agent":  {
+                  "name":  "antigravity",
+                  "command":  [
+                                  "agy.exe",
+                                  "--prompt",
+                                  "--dangerously-skip-permissions",
+                                  "--mode",
+                                  "accept-edits",
+                                  "--print-timeout",
+                                  "30m"
+                              ],
+                  "prompt_delivery":  "argument",
+                  "timeout_seconds":  1800
+              },
+    "design_files":  [
+                         "instructions/instructions.md",
+                         "SPEC.md",
+                         "USECASE.md",
+                         "SEQUENCE.md",
+                         "CLASS.md",
+                         "UI.md",
+                         "TESTCASE.md",
+                         "QandA.md"
+                     ],
+    "verification_commands":  [
+                                  [
+                                      "py",
+                                      "-m",
+                                      "unittest",
+                                      "-q"
+                                  ]
+                              ],
+    "max_cycles":  10,
+    "stop_on_agent_failure":  true,
+    "stop_on_test_failure":  false,
+    "commit_enabled":  false,
+    "push_enabled":  false,
+    "allow_dirty_worktree":  false,
+    "allowed_dirty_paths":  [
+
+                            ]
+}

@@ -1,3 +1,35 @@
+---
+protocol_version: 1
+task_id: X-8.20
+task_revision: 1
+status: completed
+previous_task_id: X-8.19
+expected_base_commit: f13b043
+preferred_executor: antigravity
+session_policy: resume
+allow_source_edit: true
+allow_test_execution: true
+allow_commit: true
+allow_push: true
+allow_live: false
+allow_external_ai: false
+allow_web_search: false
+max_resume_count: 3
+max_wall_minutes: 90
+commit_message: "fix: contain DNS resolution failures in SafeHttpFetcher"
+required_tests:
+  - "py -m pytest"
+allowed_paths:
+  - "src/oracle_council/**"
+  - "tests/**"
+  - "QandA.md"
+  - "SPEC.md"
+  - "CLASS.md"
+  - "TESTCASE.md"
+  - "FIX_PLAN.md"
+  - "hikitsugi.md"
+  - "instructions/result.md"
+---
 # Oracle Council 次作業指示書
 
 > **ローカルPCで開始する前の注意**
