@@ -5,7 +5,7 @@
 > 作業開始前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
 > 未コミット差分や未追跡ファイルがある場合は、勝手にreset・stash・削除・移動せず、差分を保護して状況を報告してください。
 
-## X-8.17: M-5 / S-5 ExecutionPlan・Agent substitution実装
+## X-8.18: L-5 フェーズ別構造化出力Schemaの正式化・実装
 
 対象リポジトリ:
 
@@ -15,94 +15,84 @@ C:\PROJECT\OracleCouncil
 
 ## 目的
 
-X-8.16でM-5とS-5を同時に仕様確定した。
+X-8.17でM-5 / S-5のExecutionPlanとAgent substitutionを通常実装した。
 
 ```text
-仕様コミット:
-554602d2f8c2a2723e2519a96fe83a2963bb1c75
+X-8.17 implementation commit:
+217867f273cb376f78eb94bb9f83b8eae68368cb
 
-確定値:
-same-agent retry: Run全体で最大2回
-substitution: Run全体で最大1回
-AI call: TokenBudget.reserve()を正本として最大12回
-retry対象: TIMEOUT / RATE_LIMITED
+pytest:
+264 passed, 6 deselected
 ```
 
-X-8.17では、確定仕様を通常実装とFakeテストへ反映する。
+次のブロッカーはL-5である。
 
-主な実装対象:
+現状、フェーズ出力の契約が複数箇所へ分散している。
 
-- 決定的な`ExecutionPlan` / `PhaseAssignment`
-- Run内Agent可用性
-- 同一Agent retryと別Agent substitutionの分離
-- `substitute_for`
-- Responderの独立性
-- Synthesizer/Auditor分離とlook-ahead
-- substitutionイベント
-- 12回上限との統合
+- `CodexAdapter`にはCodexへ渡すphase別JSON Schema相当の定義がある
+- `ClaudeAdapter`にはphase別のJSON例・追加制約がある
+- `adapters/base.py`の`validate_phase_output()`にはrequired field、型、Enumの独自判定がある
+- `AgentRequest`はSPEC上`output_schema`必須だが、現行モデルにはまだ正式フィールドがない
 
-今回は実Claude、実Codex、WebSearch、実HTTP、live評価を実行しない。
+このため、プロンプト、Codexの`--output-schema`、Adapter後段validatorが将来ずれる可能性がある。
 
-## 前提として確定済みのbaseline
+X-8.18では、6フェーズの正式JSON Schemaを唯一の構造契約として作成し、AgentRequest、Claude、Codex、共通validatorを同じSchemaへ接続する。
 
-M-5導入前の評価結果は記録済みであり、再実行しない。
+対象フェーズ:
 
 ```text
-X-8.14 result: 0ec758a
-X-8.15 result: 599d3d0
-
-q01: verified / acceptance met
-q02: verified / acceptance met
-q03: Run生成前 internal_error / getaddrinfo failed
-q05: verified / acceptance met
-q06: partially_verified / acceptance met
-q07: withheld / acceptance met
-q08: synthesize QUOTA_EXCEEDED / failed
+respond
+claim_extract
+verify
+criticize
+synthesize
+audit
 ```
 
-q08はM-5を具体化した事例だが、既定2 Agentでは別Auditorが残らないため、M-5導入後も必ず救済できるとは限らない。
-
-q03のDNS失敗はRun生成前であり、本作業の対象外とする。
+今回は通常実装とFake/transport/contractテストだけを行う。実Claude、実Codex、WebSearch、実HTTP、live評価は実行しない。
 
 ## 並行作業禁止
 
-X-8.17と次を並行で進めない。
+X-8.18と次を並行で進めない。
 
 ```text
-L-5
-S-8
-q03 failure-boundary修正
-S-9
-S-10
+L-3 INVALID_OUTPUT回復・AI再依頼
+S-8 processExitCode / oracleExitCode分離
+q03 DNS failure-boundary修正
+S-9 configured/selected participant多重度
+S-10 probe/capability snapshot再設計
 Clarifier
 Responder並列化
+X-8 live評価
 ```
 
-結果を見てlive評価や追加の機能実装へ進まない。
+L-5は出力Schemaの定義・伝達・検証だけを扱う。
+
+- fenced JSONや前後説明の決定的抽出は現行挙動を維持する
+- schema不適合は従来どおり`INVALID_OUTPUT`
+- `INVALID_OUTPUT`をretry/substitution対象へ追加しない
+- AIへ修復を再依頼しない
+- call count、retry、substitutionの仕様を変更しない
 
 ## 作業前確認
 
 最初に次を読む。
 
 ```text
-QandA.md                M-5、S-5、M-2、S-7、T-1
-SPEC.md                 §6.2〜§6.4、§8.2〜§8.7、§15.7、§15.8
-CLASS.md                ExecutionPlan、PhaseAssignment、RunAgentAvailability
-SEQUENCE.md             retry / substitution異常系
-STATE.md                AgentExecution、availability、Budget
-TESTCASE.md             UT-ORCH-02、04〜07、13、TokenBudget関連
+QandA.md                L-3、L-5、M-5
+SPEC.md                 §8.3、§8.5、§8.6、§15.5〜§15.8
+CLASS.md                AgentRequest、AgentResult、AgentExecution
+TESTCASE.md             Adapter Contract、INVALID_OUTPUT、phase schema関連
 FIX_PLAN.md
-src/oracle_council/assignment.py
-src/oracle_council/orchestrator.py
 src/oracle_council/models.py
-src/oracle_council/budget.py
-src/oracle_council/cli.py
+src/oracle_council/orchestrator.py
+src/oracle_council/adapters/base.py
+src/oracle_council/adapters/claude.py
+src/oracle_council/adapters/codex.py
 src/oracle_council/fakes.py
-config/agents.yaml
-tests/unit/test_assignment.py
-tests/unit/test_orchestrator.py
-CLI JSON出力関連テスト
-tests/unit/test_budget.py
+src/oracle_council/cli.py
+pyproject.toml
+既存adapter/schema/transportテスト
 hikitsugi.md
 instructions/result.md
 ```
@@ -120,11 +110,11 @@ git rev-parse --abbrev-ref HEAD
 git rev-parse --short HEAD
 git rev-parse --short refs/remotes/origin/main
 
-git merge-base --is-ancestor 554602d HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.16 specification commit 554602d." }
+git merge-base --is-ancestor 217867f HEAD
+if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.17 implementation commit 217867f." }
 
-git merge-base --is-ancestor 599d3d0 HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.15 result commit 599d3d0." }
+git merge-base --is-ancestor 554602d HEAD
+if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain M-5/S-5 specification commit 554602d." }
 ```
 
 合格条件:
@@ -132,8 +122,8 @@ if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.15 result commit 599
 - branchが`main`
 - `git status --short`が完全に空
 - HEADと`refs/remotes/origin/main`が一致
-- pull後の作業名が`X-8.17`
-- HEADに`554602d`と`599d3d0`が含まれる
+- pull後の作業名が`X-8.18`
+- HEADに`217867f`と`554602d`が含まれる
 
 不一致がある場合は実装を開始せず報告する。
 
@@ -148,616 +138,593 @@ git status --short
 基準:
 
 ```text
-259 passed, 6 deselected
+264 passed, 6 deselected
 ```
 
-件数が変わっていても通常テストが全件passし、live/expensiveが除外されていればよい。
+件数が変わっていても、通常テストが全件passし、live/expensiveが除外されていればよい。
 
-## 現行アーキテクチャとの橋渡し
+## 1. 正式Schemaの保存場所
 
-S-9とS-10は未解決のため、本作業でprobe lifecycleやconfigured/selected participant多重度を再設計しない。
-
-現行CLIはRun開始前に各Adapterをprobeし、`OK`のAgentだけを`Orchestrator`へ渡している。
-
-X-8.17では次の扱いとする。
-
-- `Orchestrator`へ渡された`RegisteredAgent` tupleをRun開始時の適格Agentスナップショットとする
-- `build_execution_plan()`内で実CLIの`probe()`を再実行しない
-- Run途中で設定ファイルを再読込しない
-- `configured_agent_ids`は現行実装上、Orchestratorへ渡されたRun開始時適格Agent IDsを保持する
-- この橋渡しをS-9/S-10の解消とは記載しない
-- capabilitiesの本格的なphase適格判定を新設しない
-- 現在の`role_priority`と設定順を候補順の正本とする
-
-CLI preflight、Adapterの`probe()`、`capabilities()`、認証処理を不必要に変更しない。
-
-## 1. ExecutionPlanモデル
-
-### 1.1 assignment.pyへ正式モデルを追加
-
-最低限、次の意味を持つ型を追加する。
+次のpackage resourceを新設する。
 
 ```text
-ExecutionPlan
-- run_id: str
-- configured_agent_ids: tuple[str, ...]
-- phase_assignments: tuple[PhaseAssignment, ...]
-- agent_availability: RunAgentAvailability collection
-- max_run_retries: int = 2
-- max_run_substitutions: int = 1
-- max_agent_calls: int = 12
-
-PhaseAssignment
-- phase: str
-- slot_index: int
-- required_success_count: int
-- candidate_agent_ids: tuple[str, ...]
-- constraints: immutable typed value
-
-RunAgentAvailability
-- agent_id: str
-- status: available | run_unavailable
-- reason_code: str | None
+src/oracle_council/schemas/__init__.py
+src/oracle_council/schemas/respond.json
+src/oracle_council/schemas/claim_extract.json
+src/oracle_council/schemas/verify.json
+src/oracle_council/schemas/criticize.json
+src/oracle_council/schemas/synthesize.json
+src/oracle_council/schemas/audit.json
 ```
 
-Python上の具体的なcollectionやhelper methodは実装に合わせてよいが、外から書き換え可能な共有mutable dictを正本にしない。
+加えて、Schemaを読み込み、コピーして返し、検証する共通moduleを追加する。
 
-### 1.2 build_execution_plan
-
-`build_execution_plan(run_id, agents)`または同等の純粋な関数を追加する。
-
-必須assignment:
+推奨名:
 
 ```text
-respond slot 0
-respond slot 1
-claim_extract slot 0
-verify slot 0
-criticize slot 0
-synthesize slot 0
-audit slot 0
+src/oracle_council/phase_schema.py
 ```
 
-候補順:
+実装名はPython規約に合わせてよいが、責務を分散させない。
 
-1. phaseの`role_priority`降順
-2. 同点は元の設定順
-3. ランダム処理なし
+### 1.1 package resource
 
-Plan生成時点では全候補順を固定し、Run途中にpriorityを再計算しない。
+`importlib.resources`を使い、インストール後もSchemaを読めるようにする。
 
-### 1.3 互換性
+`pyproject.toml`のpackage-data設定が必要なら追加する。
 
-既存の`rank()`は維持してよい。
+要件:
 
-既存テストやimportを壊さないため、`AssignmentPlan` / `plan_assignments()`は互換wrapperとして残してよい。ただし、`Orchestrator`の実行正本は新しい`ExecutionPlan`にする。
+- filesystemのカレントディレクトリへ依存しない
+- import時に一度だけ読み込んでよい
+- 呼び出し側へはdeep copyを返し、共有Schemaを変更させない
+- 未知phaseは黙って空Schemaを返さず、固定型の例外または`KeyError`でfail closed
+- Schemaファイルの破損・欠落は起動時または最初の取得時に明確に失敗
+- user入力、prompt、環境変数、CLI出力をSchemaへ混ぜない
 
-古い`AssignmentPlan`を維持する場合も、同じ候補順規則から生成し、二重の選定ロジックを作らない。
+### 1.2 JSON Schema dialect
 
-## 2. AgentExecutionRecord
+実CLIとの互換性を優先した、Codex structured outputで扱えるJSON Schema subsetを使用する。
 
-`src/oracle_council/models.py`の`AgentExecutionRecord`へ次を追加する。
-
-```python
-substitute_for: str | None = None
-```
-
-条件:
-
-- `retry_of`と`substitute_for`は排他的
-- 両方がnon-nullのrecord生成を拒否する
-- 既存recordの互換性を維持する
-- metadata-onlyの正式フィールドとして扱う
-- raw診断や質問本文を含めない
-
-CLI `--json`の`executions[]`にも`substitute_for`を追加する。
-
-既存`retry_of`の出力を変更しない。
-
-S-8は未確定なので、この作業で`exit_code`名を`process_exit_code`へ変更しない。
-
-## 3. Run開始時のPlan構築
-
-現在は`plan_assignments()`をRun作成前に呼び出している。
-
-`ExecutionPlan`が`run_id`を持つため、次の順へ変更する。
-
-1. `run_id`を生成
-2. `ExecutionPlan`を構築
-3. Plan構築が不可能ならRunイベントを保存せずpreflight停止
-4. Plan成功後に`run_created`
-5. 以後は同じPlanをRun終了まで使用
-
-`run_created`のparticipantsはRun開始時適格Agent snapshotを用いる。
-
-## 4. Run内Agent可用性
-
-Run stateへ最低限、次を保持する。
+使用してよい主なkeyword:
 
 ```text
-run_retries_used
-run_substitutions_used
-agent availability / reason
-successful responder agent IDs
-current synthesizer agent ID
-current auditor agent ID
+type
+properties
+required
+additionalProperties
+enum
+items
+minLength
+maxLength
+minItems
+maxItems
 ```
 
-### Run全体でrun_unavailableにするエラー
+`$ref`、外部参照、remote schema、任意コード実行につながる仕組みは使用しない。
 
-```text
-AUTH_REQUIRED
-QUOTA_EXCEEDED
-COMMAND_NOT_FOUND
-UNSUPPORTED_VERSION
-UNSAFE_CAPABILITY
+全objectで次を必須にする。
+
+```json
+"additionalProperties": false
 ```
 
-これらを返したAgentは、そのRunの後続phase候補から除外する。
+Schema自体へ秘密情報や実行固有値を入れない。
 
-### 論理slotだけから除外するエラー
+## 2. 6フェーズの正式Schema
+
+以下を正式契約として実装する。別のfield名・Enumへ変更しない。
+
+### 2.1 respond
 
 ```text
-TIMEOUT
-RATE_LIMITED
-EXECUTION_ERROR
+object
+required: answer
+additionalProperties: false
+
+answer:
+  type: string
+  minLength: 1
+  maxLength: 6000
 ```
 
-これらは失敗した同じslotの候補から除外するが、後続phaseでの利用を自動禁止しない。
-
-### M-5対象外
+### 2.2 claim_extract
 
 ```text
-INVALID_OUTPUT
-CONTEXT_OVERFLOW
-BUDGET_EXCEEDED
-CANCELLED
-SearchError
-EvidenceProvider障害
-Run生成前のCLI・DNS・設定例外
+object
+required: claims
+additionalProperties: false
+
+claims:
+  type: array
+  minItems: 0
+  maxItems: 20
+  items: ClaimExtraction
+
+ClaimExtraction object:
+  required:
+    - claim_id
+    - importance
+    - status
+    - claim_role
+    - text
+  additionalProperties: false
+
+claim_id:
+  type: string
+  minLength: 1
+  maxLength: 128
+importance:
+  enum: critical | major | minor
+status:
+  enum: unverified
+claim_role:
+  enum: user_premise | proposed_answer | contextual
+text:
+  type: string
+  minLength: 1
+  maxLength: 1200
 ```
 
-これらではM-5 substitutionを開始しない。
+`claim_extract.status`は初期状態の`unverified`だけを許可する。Verifier前にモデルが`verified`等を確定してはならない。
 
-`INVALID_OUTPUT`の回復はL-3のまま未確定とし、勝手に代替実行しない。
-
-## 5. retry処理
-
-同一Agent retry対象:
+### 2.3 verify
 
 ```text
-TIMEOUT
-RATE_LIMITED
+object
+required: claims
+additionalProperties: false
+
+claims:
+  type: array
+  minItems: 0
+  maxItems: 20
+  items: ClaimVerification
+
+ClaimVerification object:
+  required:
+    - claim_id
+    - importance
+    - status
+  additionalProperties: false
+
+claim_id:
+  type: string
+  minLength: 1
+  maxLength: 128
+importance:
+  enum: critical | major | minor
+status:
+  enum:
+    - verified
+    - supported
+    - contradicted
+    - conflicting
+    - unverified
+    - not_applicable
 ```
 
-条件:
+Claim IDの既存Claimとの対応、順序fallback、重複ID等の意味検証は既存Orchestrator責務を維持する。本作業でK-4等を解決しない。
 
-- 同じphase・同じ論理slot
-- 同じAgent
-- slotごとに最大1回
-- Run全体で最大2回
-- 新しい`execution_id`
-- 新しいBudgetReservation
-- `retry_of`は直前の失敗Executionを参照
-- `substitute_for`はnull
-
-既存のretry成功経路と履歴を維持する。
-
-retryが失敗した場合、最終失敗codeがsubstitution対象であり条件を満たす場合だけsubstitution候補探索へ進む。
-
-## 6. substitution処理
-
-substitution候補探索へ進めるcode:
+### 2.4 criticize
 
 ```text
-TIMEOUT             # same-agent retry後も失敗、またはretry枠なし
-RATE_LIMITED        # same-agent retry後も失敗、またはretry枠なし
-AUTH_REQUIRED
-QUOTA_EXCEEDED
-COMMAND_NOT_FOUND
-UNSUPPORTED_VERSION
-UNSAFE_CAPABILITY
-EXECUTION_ERROR
+object
+required: critique
+additionalProperties: false
+
+critique:
+  type: string
+  minLength: 1
+  maxLength: 6000
 ```
 
-条件:
-
-- Run全体のsubstitution使用数が0
-- 失敗Agentとは異なる候補
-- failed slotで既に失敗したAgentではない
-- run_unavailable Agentではない
-- phase固有の独立性制約を満たす
-- TokenBudgetのreserveが成功する
-
-substitution Execution:
-
-- 新しい`execution_id`
-- 新しいBudgetReservation
-- `substitute_for`は置換対象となった最後の失敗Executionを参照
-  - retryが失敗してsubstitutionへ進んだ場合は、失敗したretry Executionを参照
-  - retryなしの場合は元Executionを参照
-- `retry_of`はnull
-- substitution後のAgentにsame-agent retryを行わない
-- substituteが失敗しても2人目のsubstituteを選ばない
-- substitute成功時は通常成功と同様にPhase `success_count`を増やし、出力をstateへ適用する
-
-Run全体のsubstitution使用数は、substituteを選びExecutionを開始する直前に1回だけ消費する。
-
-候補が見つからない場合は消費しない。
-
-## 7. substitutionイベント
-
-### 候補を選んだ場合
+### 2.5 synthesize
 
 ```text
-agent_substitute_selected
+object
+required: answer
+additionalProperties: false
+
+answer:
+  type: string
+  minLength: 1
+  maxLength: 6000
 ```
 
-最低限のmetadata:
+### 2.6 audit
 
 ```text
-phase
-slot_index
-failed_execution_id
-original_agent_id
-substitute_agent_id
+object
+required:
+  - status
+  - issues
+additionalProperties: false
+
+status:
+  enum: approved | changes_required | blocked
+issues:
+  type: array
+  minItems: 0
+  maxItems: 20
+  items: AuditIssueOutput
+
+AuditIssueOutput object:
+  required:
+    - issue_id
+    - issue_type
+    - severity
+    - claim_id
+  additionalProperties: false
+
+issue_id:
+  type: string
+  minLength: 1
+  maxLength: 128
+issue_type:
+  type: string
+  minLength: 1
+  maxLength: 128
+severity:
+  enum: critical | major | minor
+claim_id:
+  type: string
+  minLength: 1
+  maxLength: 128
 ```
 
-### 候補がない場合
+`approved`ならissuesが空であること等の意味規則は、Schemaへ複雑なconditionalを追加せず、既存audit適用ロジックまたは別のsemantic validatorで扱う。L-5では構造契約を正本化する。
+
+## 3. AgentRequestへoutput_schemaを追加
+
+`src/oracle_council/models.py`の`AgentRequest`へ正式フィールドを追加する。
 
 ```text
-agent_substitution_unavailable
-```
-
-最低限のmetadata:
-
-```text
-phase
-slot_index
-failed_execution_id
-original_agent_id
-reason: fixed enum/string
-```
-
-禁止:
-
-- raw stdout/stderr
-- 例外本文
-- prompt
-- 質問本文
-- 回答本文
-- Claim/Evidence本文
-- CLI command
-- path
-- env
-- token/API key
-
-eligible substituteがない場合、元のAgentFailure codeをPhase/Runへ保持する。
-
-substitute Executionが失敗した場合、そのsubstituteのfailure codeをPhase/Runへ記録する。
-
-新しい公開AgentErrorCodeは追加しない。
-
-## 8. Responder制約
-
-Responder 2 slotは異なるAgentで成功しなければならない。
-
-実行時の条件:
-
-- slot 0とslot 1の成功Agent IDが異なる
-- 一方のslotで成功済みのAgentを、もう一方のsubstituteに使わない
-- 失敗Agent自身をsubstituteに使わない
-- 3つ目以降の適格Agentがある場合だけResponder substitution可能
-- 既定2 Agentでretry後もResponderが失敗した場合はrespond Phase / Run failed
-- 1件の回答だけで後続phaseへ進まない
-
-既存コードのResponder逐次実行を、本作業で並列化しない。UT-ORCH-03の並列化は別課題である。
-
-## 9. Synthesizer / Auditor分離
-
-常に次を守る。
-
-```text
-current_synthesizer_agent_id != current_auditor_agent_id
-```
-
-### Synthesizer選定
-
-候補を選ぶ時点で、その候補とは異なる適格Auditor候補が最低1名残ることをlook-aheadする。
-
-initial selectionとsubstitutionの両方へ適用する。
-
-### Auditor選定
-
-現在のSynthesizerを候補から除外する。
-
-Auditor substitutionでもSynthesizerを除外する。
-
-### 2 Agent q08型
-
-```text
-Agent A: synthesizeでQUOTA_EXCEEDED -> run_unavailable
-Agent B: substitute Synthesizer候補
-別Auditor: 0名
-```
-
-この場合はeligible substituteなしとして、分離を破らずRun failedとする。
-
-### 3 Agent構成
-
-```text
-Agent A: synthesizeでQUOTA_EXCEEDED
-Agent B: substitute Synthesizer
-Agent C: Auditor
-```
-
-候補順とpriorityがこの配置を許す場合、substitutionで継続できることをFakeテストする。
-
-self-auditへ縮退しない。
-
-## 10. 監査修正フローとの統合
-
-既存の`changes_required`後の再synthesize・再auditを壊さない。
-
-- revision synthesizeは、通常は現在のSynthesizerをpreferred Agentとする
-- re-auditは、通常は現在のAuditorをpreferred Agentとする
-- それぞれ新しいbase Executionであり、`retry_of`/`substitute_for`は通常nullから開始する
-- 失敗した場合は同じM-5規則を適用する
-- Run全体retry/substitution/call上限は初回phaseと共有する
-- Auditor承認のない回答は公開しない
-
-未来のcall枠を予約しない。先行retry/substitutionでcall予算を使い、後のaudit reserveが失敗した場合は既存T-1規則へ従う。
-
-## 11. TokenBudget
-
-`TokenBudget.reserve()`を12回上限の唯一の正本として維持する。
-
-- ExecutionPlanに`max_agent_calls=12`を記録する
-- 別の独立call counterで13回目を判定しない
-- retry/substitutionも別Reservation
-- 子process開始後の失敗は既存どおりsafe-side commit
-- reserve失敗時はAgentを呼ばない
-- Run終了時にreserved 0
-
-`TokenBudget`の既定`call_limit=12`を変更しない。
-
-## 12. Orchestrator実装上の注意
-
-`_execute_phase()`は現在単一Agentを引数に取る。ExecutionPlanの候補とslot制約を扱えるように責務を整理する。
-
-実装形は任せるが、巨大な1関数へ全規則を追加しない。
-
-候補:
-
-```text
-_select_candidate(...)
-_mark_agent_unavailable(...)
-_can_retry(...)
-_can_substitute(...)
-_execute_attempt(...)
+output_schema: dict[str, Any]
 ```
 
 要件:
 
-- 選定は決定的
-- Planの候補順を変更しない
-- retry/substitutionのrecordとeventを分離
-- error summaryは既存の固定安全形式
-- `_failure_summary()`のX-8.5挙動を維持
-- Evidence収集、Claim merge、withheld判定、audit gateを変更しない
+- Orchestratorが各Agent呼び出しを作る時点で、phaseに対応するSchemaのdeep copyを設定
+- retryとsubstitutionも同じlogical phase Schemaを持つ
+- AdapterがSchemaを変更しても、次Executionやregistryへ影響しない
+- request payloadへSchemaを混ぜず、独立fieldにする
+- Schemaをstorage eventやCLI JSONへ全文出力しない
+- call count、budget、execution_id、retry_of、substitute_forへ影響させない
 
-## 13. CLI JSON
+既存の直接`AgentRequest(...)`を作るunit/contract testは全て更新する。
 
-`executions[]`へ次を追加する。
+互換性のための`None`既定や空Schema既定を設けない。phase Schemaなしで実行する経路を残さない。
 
-```json
-"substitute_for": null
-```
+## 4. 共通validatorをSchema駆動へ変更
 
-substitution Executionでは参照先execution IDを返す。
+`adapters/base.py`の`validate_phase_output()`は、hard-codeされたphase別required/Enum表を正本にしない。
 
-- `retry_of`と両方non-nullにならない
-- error summary sanitizationを維持
-- raw診断を出さない
-- schema_versionを変更しない
-- S-8のフィールド名変更は行わない
+正式Schemaを取得し、そのSchemaに対して決定的に検証する。
 
-## 14. 必須Fakeテスト
+### 4.1 外部dependencyを追加しない
 
-実CLI、実WebSearch、実HTTPは使用しない。
+今回のSchema keyword subsetは小さいため、新しいthird-party JSON Schema dependencyを追加しない。
 
-### A. ExecutionPlan
+`phase_schema.py`内へ必要最小限の再帰validatorを実装してよい。
 
-- 同じ3〜4 Agent入力で10回構築して完全一致
-- `role_priority`降順
-- 同点は設定順
-- respond slot 0/1、claim_extract、verify、criticize、synthesize、auditが存在
-- retry=2、substitution=1、call=12
-- candidate IDsがimmutable順序
-- initial SynthesizerとAuditorが異なる
-
-### B. 既存retry回帰
-
-- `TIMEOUT` -> 同一Agent retry成功
-- 新しいexecution ID
-- `retry_of`設定
-- `substitute_for is None`
-- Run retry使用数1
-- substitution 0
-- 既存AgentExecution履歴を保持
-
-### C. retry失敗後substitution
-
-3 Agent構成で:
+対応必須keyword:
 
 ```text
-primary: TIMEOUT
-retry: TIMEOUT
-substitute: success
+type
+properties
+required
+additionalProperties
+enum
+items
+minLength
+maxLength
+minItems
+maxItems
 ```
 
-確認:
+未対応keywordがSchemaへ入った場合に無視せずfail closedにする。
 
-- 同一Agent call 2回
-- substitute Agent call 1回
-- substituteの`substitute_for`は失敗retry execution ID
-- Run retry 1、substitution 1
-- Phase成功
-- 3件すべて履歴へ残る
+### 4.2 エラー順序
 
-### D. 即時substitution
+複数不一致がある場合も、同じ入力には常に同じ最初のエラーを返す。
 
-`QUOTA_EXCEEDED`で:
+推奨順:
 
-- 同一Agent retry 0
-- eligible substituteを1回実行
-- 元Agentをrun_unavailable
-- 後続phase候補から元Agentを除外
-- eventを保存
+1. root type
+2. required field
+3. unexpected field
+4. property type
+5. enum
+6. string length
+7. array length
+8. array itemをindex順
 
-`AUTH_REQUIRED`、`COMMAND_NOT_FOUND`、`UNSUPPORTED_VERSION`、`UNSAFE_CAPABILITY`も少なくともparameterized testでrun_unavailable処理を確認する。
+辞書順へ勝手に依存せず、Schemaの`required`・`properties`記載順を使う。
 
-### E. EXECUTION_ERRORはslot-local
+### 4.3 公開エラーsummary
 
-- primaryが`EXECUTION_ERROR`
-- 別Agentへsubstituteしてslot成功
-- 元Agentは後続の別phaseでpriorityに従い再利用可能
-- Run全体unavailableにならない
+Schema不適合は`AgentFailure("INVALID_OUTPUT", ...)`を維持する。
 
-### F. M-5対象外
+`public_summary`は固定・200文字以下・field allowlist付きにする。
 
-少なくとも次を確認する。
+既存summaryを壊さない。
 
 ```text
-INVALID_OUTPUT
-BUDGET_EXCEEDED
+malformed JSON
+missing field: <field>
+invalid enum for field: <field>
+invalid type for field: <field>; expected <type>; actual <type>
 ```
 
-- substitution 0
-- 元codeで失敗
-- `agent_substitute_selected`なし
-
-`CONTEXT_OVERFLOW`の既存処理が未実装またはL-3/L-5依存なら、新しい回復動作を追加せず既存挙動を維持する。
-
-### G. Responder独立性
-
-1. 3 Agent構成で一方のResponderが失敗し、成功済みResponder以外の3番目へsubstitute
-2. 2 Agent構成で一方が失敗し、成功済みの他方をsubstituteへ使わずRun failed
-3. 最終的な2 responsesのagent IDが異なる
-
-### H. 2 Agent synthesize quota failure
-
-- Synthesizerが`QUOTA_EXCEEDED`
-- 他方だけが残る
-- 別Auditorを確保できない
-- substitute Executionを開始しない
-- `agent_substitution_unavailable`
-- Phase error codeは`QUOTA_EXCEEDED`
-- final answer非公開
-- Run failed
-
-### I. 3 Agent synthesize substitution
-
-- primary Synthesizerが`QUOTA_EXCEEDED`
-- substitute Synthesizer成功
-- 別Auditor成功
-- SynthesizerとAuditorが異なる
-- final answer公開条件を満たす
-- substitution 1
-
-### J. Auditor substitution
-
-- primary Auditorがsubstitution対象codeで失敗
-- current Synthesizerを候補から除外
-- 3番目のAgentがAuditorとして成功
-- self-auditなし
-
-### K. Run全体substitution 1回
-
-- 早いphaseでsubstitution成功
-- 後のphaseで再びsubstitution対象failure
-- 2回目のsubstituteを開始しない
-- `agent_substitution_unavailable`
-- 元failure codeでRun failed
-
-### L. substitute失敗
-
-- substituteが失敗
-- substituteへのretryなし
-- 2人目substituteなし
-- substitute failure codeでRun failed
-
-### M. retry上限と別カウンタ
-
-- Run全体retryは既存どおり最大2回
-- retry 2回使用後でもsubstitution枠が未使用なら1回使える
-- substitution使用後もretry枠の数値を増やさない
-
-### N. 12回上限
-
-TokenBudgetで:
-
-- 12個のReservationをcommit可能
-- 13個目は`BudgetExceededError`
-- 13個目のAdapter executeは呼ばれない
-- reserved 0
-
-既存Orchestratorの低いcall_limitによるreserve前拒否テストも維持する。
-
-### O. record/event安全性
-
-- `retry_of`と`substitute_for`を同時指定すると拒否
-- substitution eventにraw secret fixtureが入らない
-- fixed metadataのみ
-- metadata-only storageにraw diagnosticなし
-
-### P. CLI JSON
-
-- 通常Executionは`substitute_for: null`
-- substitution Executionは参照ID
-- `retry_of`と排他
-- JSON parse可能
-- raw診断なし
-
-## 15. 回帰要件
-
-次を壊さない。
-
-- happy path 7 calls
-- withheld short-circuit 4 calls
-- audit changes_requiredの9 calls
-- Evidence snapshot
-- storage fail-closed
-- timeout retry
-- run retry 2回上限
-- false premise correction
-- AUTH_REQUIRED分類hardening
-- EXECUTION_ERROR固定summary
-- Claude/Codex stdin transport
-- CliSearchProvider stdin transport
-- no-store
-- TokenBudget settlement
-
-## 16. 変更禁止
-
-今回は次を変更しない。
+追加してよい固定形式:
 
 ```text
+unexpected field: <field>
+string too short for field: <field>
+string too long for field: <field>
+too few items for field: <field>
+too many items for field: <field>
+```
+
+`models.py`の`safe_public_summary()` / `safe_error_summary()`に必要なallowlist・固定patternを追加する。
+
+公開summaryへ次を入れない。
+
+```text
+実際のfield値
+回答本文
+質問本文
+prompt
+raw stdout/stderr
+path
+環境変数
+token
+API key
+```
+
+内部例外messageに値を含める場合でもmetadataへ保存しない既存境界を維持する。
+
+## 5. CodexAdapterを正式Schemaへ接続
+
+`CodexAdapter`内のphase別Schema重複定義を削除する。
+
+要件:
+
+- `request.output_schema`をCodexの`--output-schema`用一時JSONへ書く
+- 一時ファイルはUTF-8
+- user-derived phase入力は引き続きstdin
+- Schema file path以外のuser-derived値をargvへ戻さない
+- Schema fileは既存finallyで必ず削除
+- `additionalProperties: false`は正式Schema側に含め、Adapterだけで別の構造契約を作らない
+- `_strict_schema()`を残す場合は、入力Schemaを変更せずdeep copyし、正式Schemaと構造が変わらないことをテストする
+- 可能なら不要な変換を削除し、正式Schemaをそのまま書く
+- Adapter後段でも同じ正式Schemaでvalidationする
+
+transportテストで一時Schema JSONが`request.output_schema`とdeep-equalであることを確認する。
+
+## 6. ClaudeAdapterを正式Schemaへ接続
+
+`ClaudeAdapter`内の`_PHASE_SCHEMA_HINT`等、field/Enumを重複定義するmapを削除する。
+
+Claudeには正式Schemaをstdin prompt内で明示する。
+
+推奨:
+
+```text
+Respond with ONLY one JSON object that validates against this JSON Schema.
+<compact JSON serialization of request.output_schema>
+```
+
+要件:
+
+- Schema JSONは`json.dumps(..., ensure_ascii=False, separators=(",", ":"), sort_keys=True)`等で決定的に生成
+- phase入力とSchemaはstdin
+- argvは固定フラグだけ
+- Schemaと異なるEnum説明を別途hard-codeしない
+- false-premise guidance等、Schema以外の既存semantic guidanceは維持してよい
+- CLI envelope抽出とphase JSON抽出の現行挙動を維持
+- 抽出後は共通Schema validatorを通す
+
+Claude transportテストで、全6phaseの正式Schemaがpromptへ入り、旧重複定義がないことを確認する。
+
+## 7. FakeAdapter・Orchestratorとの整合
+
+Fake出力を全て正式Schemaへ適合させる。
+
+特に:
+
+- `claim_extract`は5 required fieldを全て返す
+- `claim_extract.status`は`unverified`
+- `audit`は`issues`を常に返す
+- issueを返す場合は4 required fieldを全て返す
+
+Orchestrator適用側の既存意味を変えない。
+
+- claim merge規則を変更しない
+- classification規則を変更しない
+- audit revision回数を変更しない
+- M-5 retry/substitutionを変更しない
+- Schema不適合`INVALID_OUTPUT`はsubstitutionしない
+
+## 8. 正式Contractテスト
+
+新規test moduleを作ってよい。
+
+推奨名:
+
+```text
+tests/unit/test_phase_schema.py
+```
+
+最低限、次をテストする。
+
+### 8.1 Schema resource
+
+- 6ファイルがpackage resourceとして取得できる
+- JSONとしてparseできる
+- rootはobject Schema
+- 全object nodeで`additionalProperties=false`
+- 未知phaseはfail closed
+- 取得結果を変更しても次の取得結果が変わらない
+- package cwd外から取得できる
+
+### 8.2 valid fixture
+
+6phaseの最小valid fixtureが通る。
+
+- empty claimsはclaim_extract/verifyでvalid
+- approved + empty issuesはauditでvalid
+- changes_required + 1 issueはvalid
+- 日本語、Unicodeを含むanswer/text/critiqueがvalid
+
+### 8.3 invalid fixture
+
+各phaseで最低限確認する。
+
+- root array/string/null
+- required欠落
+- extra property
+- wrong type
+- Enum外
+- empty string
+- maxLength超過
+- maxItems超過
+- nested itemのrequired欠落
+
+全て`INVALID_OUTPUT`となり、公開summaryは固定形式でraw値を含まない。
+
+### 8.4 phase固有
+
+- claim_extract status=`verified`を拒否
+- claim_extract importance=`high`を拒否
+- claim_extract claim_role Enum外を拒否
+- verifyの6 statusは全て許可
+- audit status Enum外を拒否
+- audit issue severity Enum外を拒否
+
+### 8.5 Adapter統合
+
+- Codexがrequest Schemaを一時ファイルへdeep-equalで渡す
+- Claudeがrequest Schemaをstdin promptへ含める
+- Claude/Codexの正常出力が同じvalidatorを通る
+- 一方のAdapterだけが許可するfield/Enumが存在しない
+- schema不適合はAdapter境界で`INVALID_OUTPUT`
+- Schemaや入力がargvへ漏れない
+- temp Schema file cleanupを維持
+
+### 8.6 AgentRequest
+
+- Orchestratorが全6phaseへ正しいSchemaを設定
+- respond slot 0/1は同じrespond Schemaだが別dict instance
+- retry requestは同じ構造Schema・別dict instance
+- substitution requestも同じ構造Schema・別dict instance
+- Adapterによるrequest Schema変更がregistryへ影響しない
+
+## 9. 文書更新
+
+### QandA.md
+
+L-5を確定回答へ変更する。
+
+最低限記録:
+
+- 6phaseの正式Schemaをpackage resourceとして保持
+- AgentRequest.output_schema必須
+- Claude prompt、Codex output-schema、共通validatorが同一Schemaを使用
+- all object closed
+- field、Enum、件数、文字数上限
+- schema不適合はINVALID_OUTPUT
+- L-3の回復方針は未回答のまま
+
+### SPEC.md
+
+- 文書versionを次版へ更新
+- §8.5へAgentRequest.output_schemaと正式Schema registryを反映
+- phase別Schemaを付録または表として記録
+- Schema source pathを明記
+- `INVALID_OUTPUT`回復はL-3へ残す
+
+### CLASS.md
+
+- AgentRequestへoutputSchemaを反映
+- PhaseSchemaRegistryまたは同等責務を追加
+- Claude/Codexが同じSchemaを参照する依存を表現
+
+### TESTCASE.md
+
+- L-5起因BLOCKEDを解除
+- 6phase Schema Contract Testを正式ケース化
+- schema drift、closed object、Unicode、境界長、extra fieldを含める
+- L-3依存ケースはBLOCKEDを維持
+
+### FIX_PLAN.md
+
+- L-5を仕様・通常実装・Fake/Contractテスト完了側へ移す
+- 次作業をS-8とする
+- q03、S-9/S-10、L-3は未解決のまま
+
+### hikitsugi.md / instructions/result.md
+
+X-8.18として次を記録する。
+
+- 実行前HEAD
+- 正式Schema保存場所
+- 6phaseのfield/Enum/上限
+- AgentRequest.output_schema
+- Claude/Codex/common validator統合
+- driftテスト
+- pytest / diff check
+- live未実行
+- 次はS-8
+
+## 10. 変更を許可する範囲
+
+最低限想定:
+
+```text
+src/oracle_council/schemas/__init__.py
+src/oracle_council/schemas/*.json
+src/oracle_council/phase_schema.py
+src/oracle_council/models.py
+src/oracle_council/orchestrator.py
+src/oracle_council/adapters/base.py
 src/oracle_council/adapters/claude.py
 src/oracle_council/adapters/codex.py
-src/oracle_council/adapters/base.py
-src/oracle_council/evidence.py
-config/agents.yaml
-evaluation/
-scripts/run_x8_evaluation.py
-pyproject.toml
+src/oracle_council/fakes.py
+src/oracle_council/cli.py                 # AgentRequest等の影響が必要な場合だけ
+pyproject.toml                            # package-dataが必要な場合だけ
+tests/unit/test_phase_schema.py
+既存adapter/orchestrator/transport test
+QandA.md
+SPEC.md
+CLASS.md
+TESTCASE.md
+FIX_PLAN.md
+hikitsugi.md
+instructions/result.md
 ```
 
-必要性が生じた場合も、勝手にscopeを広げず停止して報告する。
+`STATE.md`、`SEQUENCE.md`はL-5の説明に本当に必要な最小変更だけ許可する。状態遷移自体は変更しない。
 
-既存評価artifactを変更、削除、再構築しない。
+## 11. 変更禁止
 
-## 17. 実行禁止
+次を変更しない。
+
+```text
+config/agents.yaml
+evaluation/
+scripts/x8*
+既存評価artifact
+TokenBudgetの上限
+retry/substitution error code表
+Run/Phase終端規則
+classification規則
+Evidence判定規則
+SafeHttpFetcher / WebEvidenceProvider
+```
+
+実行禁止:
 
 ```text
 claude
@@ -765,48 +732,23 @@ codex
 WebSearch
 実HTTP
 ORACLE_COUNCIL_LIVE=1
-live pytest
-expensive pytest
-X-8評価
-q01〜q08再実行
+live / expensive pytest
+q01〜q08評価
 ```
 
-通常pytest内のFake subprocessは可。
+## 12. 検証
 
-## 18. 許可される主な変更
-
-```text
-src/oracle_council/assignment.py
-src/oracle_council/orchestrator.py
-src/oracle_council/models.py
-src/oracle_council/cli.py
-src/oracle_council/fakes.py             # test fixture支援が必要な場合のみ
-tests/unit/test_assignment.py
-tests/unit/test_orchestrator.py
-tests/unit/test_budget.py
-CLI JSON関連の既存unit test
-FIX_PLAN.md
-hikitsugi.md
-instructions/result.md
-```
-
-新規unit testファイルは、責務が明確で既存ファイルを肥大化させない場合のみ可。
-
-QandA.md、SPEC.md、CLASS.md、SEQUENCE.md、STATE.md、TESTCASE.mdはX-8.16で仕様確定済みである。実装中に明白な矛盾や誤植を見つけた場合だけ最小修正し、resultへ理由を記録する。
-
-## 19. 検証
-
-最初にtargeted testsを実行する。
+まずtargeted testを実行する。
 
 例:
 
 ```powershell
-py -m pytest tests/unit/test_assignment.py
+py -m pytest tests/unit/test_phase_schema.py
+py -m pytest tests/unit/test_claude_transport.py tests/unit/test_codex_transport.py
 py -m pytest tests/unit/test_orchestrator.py
-py -m pytest tests/unit/test_budget.py
 ```
 
-CLI JSON関連の変更を行った場合は該当テストを実行する。
+実在するtest file名へ合わせること。存在しない名前をそのまま実行しない。
 
 その後:
 
@@ -816,151 +758,103 @@ git diff --check
 git status --short
 ```
 
-合格条件:
-
-- 通常テスト全件pass
-- live/expensiveは既定で除外
-- `git diff --check`成功
-- 実CLI/WebSearch/HTTP未実行
-- 既存評価artifact未変更
-- 変更範囲がX-8.17内
-
-## 20. FIX_PLAN更新
-
-M-5 / S-5を次の状態へ更新する。
+基準:
 
 ```text
-X-8.16: 仕様確定
-X-8.17: 通常実装・Fakeテスト完了
-live確認: 未実施
+変更前: 264 passed, 6 deselected
+変更後: 通常テスト全件pass
+live/expensive: 未実行・deselected
 ```
 
-M-5/S-5を「実装済み」として扱ってよいが、次を明示する。
+次を明示確認する。
 
-- q08を再実行していない
-- 2 Agent synthesize quota failureは仕様上救済不能
-- 3 Agent以上の代替成功はFake確認
-- S-9/S-10未解決
-- q03 failure-boundary未解決
-- L-5、S-8未解決
+- 6 Schemaが唯一の構造契約
+- Claude/Codex/base validator間のfield/Enum driftなし
+- all objectでadditionalProperties=false
+- AgentRequest.output_schemaが全Executionに設定
+- retry/substitutionでも同じphase Schema
+- Schema instance共有によるmutationなし
+- INVALID_OUTPUTの公開summaryにraw値なし
+- user-derived入力はstdinのまま
+- Codex temp fileはSchemaだけ
+- live実行なし
 
-次作業はL-5とする。
-
-## 21. hikitsugi.md / instructions/result.md
-
-X-8.17としてsanitizedな実装結果を記録する。
-
-必須項目:
-
-- 実行前HEAD
-- X-8.16仕様コミット`554602d`
-- ExecutionPlanの実装型と候補順
-- current architecture bridge（Orchestratorへ渡されたAgentを適格snapshotとしたこと）
-- retry/substitutionの実装
-- run_unavailable / slot-localの区別
-- `substitute_for`
-- events
-- Responder制約
-- Synthesizer/Auditor look-ahead
-- 2 Agent q08型Fake結果
-- 3 Agent substitution Fake結果
-- retry 2 / substitution 1 / call 12
-- 追加・更新テスト
-- pytest結果
-- `git diff --check`
-- live・実CLI・HTTP未実行
-- q03未修正
-- S-9/S-10未解決
-- 次がL-5、その後S-8
-
-raw Agent出力、質問、prompt、Evidence本文、secret fixtureを文書へ記載しない。
-
-## 22. commit前確認
+## 13. commit前確認
 
 ```powershell
 git status --short
 git diff --check
 git diff --stat
-git diff -- src/oracle_council/assignment.py src/oracle_council/orchestrator.py src/oracle_council/models.py src/oracle_council/cli.py tests FIX_PLAN.md hikitsugi.md instructions/result.md
+git diff
 ```
 
-次が変更されていないことを確認する。
+次を確認する。
 
-```text
-adapters
-Evidence実装
-config
-evaluation
-run_x8_evaluation.py
-```
+- evaluation、config、live artifactに変更なし
+- L-3、S-8、q03へ無関係な変更なし
+- Schemaのfield/Enum/上限が文書とコードで一致
+- Claude/Codex独自のphase schema mapが残っていない
+- raw prompt/stdout/stderrをテストfixture以外へ保存していない
 
-意図しない変更があればcommitせず報告する。
+## 14. commitとpush
 
-## 23. commitとpush
+全条件を満たした場合だけcommit/pushする。
 
 推奨commit message:
 
 ```text
-feat: add deterministic agent substitution
+feat: centralize phase output schemas
 ```
 
 ```powershell
-git add src/oracle_council/assignment.py `
-        src/oracle_council/orchestrator.py `
-        src/oracle_council/models.py `
-        src/oracle_council/cli.py `
-        tests `
-        FIX_PLAN.md `
-        hikitsugi.md `
-        instructions/result.md
+git add src tests pyproject.toml QandA.md SPEC.md CLASS.md TESTCASE.md FIX_PLAN.md hikitsugi.md instructions/result.md
 
-# fakes.pyを変更した場合だけ追加
 git status --short
-git commit -m "feat: add deterministic agent substitution"
+git diff --cached --check
+git diff --cached --stat
+
+git commit -m "feat: centralize phase output schemas"
 git push origin main
 
 git status --short
-git rev-parse --short HEAD
-git rev-parse --short refs/remotes/origin/main
+git rev-parse HEAD
+git rev-parse refs/remotes/origin/main
 ```
 
-`git add tests`で無関係ファイルが入らないことを事前に確認する。
+存在しない新規pathや、変更していない`pyproject.toml`を無理にaddする必要はない。
 
 完了条件:
 
-- ExecutionPlanが実行正本
-- retry/substitutionが仕様どおり分離
-- Run全体retry 2、substitution 1
-- TokenBudget call 12上限維持
-- Responder独立性維持
-- Synthesizer/Auditor分離維持
-- 2 Agent救済不能Fakeテストpass
-- 3 Agent代替成功Fakeテストpass
-- q03変更なし
-- 全通常テストpass
-- diff check成功
-- live未実行
+- L-5の回答が確定
+- 6phase正式Schemaがpackage resourceとして存在
+- AgentRequest.output_schema必須化
+- Claude/Codex/common validatorが同一Schemaを使用
+- hard-codeされた重複phase schema定義を除去
+- Schema Contract Testが全件pass
+- 通常pytest全件pass
+- `git diff --check`成功
+- 実CLI/live/HTTP未実行
 - commit/push成功
 - worktree clean
 - HEADとorigin/main一致
+- 次作業がS-8と明記
 
-## 24. 最終報告
+## 最終報告
 
-次を簡潔に報告する。
+`instructions/result.md`へ記録し、ユーザーへ次を報告する。
 
-1. 実装commit SHA
-2. ExecutionPlan / PhaseAssignmentの概要
-3. retry/substitution counters
-4. error code別可用性処理
-5. `substitute_for`とevent
-6. Responder制約
-7. 2 Agent q08型Fake結果
-8. 3 Agent substitution Fake結果
-9. 12回上限テスト
-10. pytest件数
-11. diff check
-12. 変更ファイル
-13. live・実CLI・HTTP未実行
-14. q03、S-9/S-10未解決
-15. commit/push/clean状態
-16. 次がL-5、その後S-8
+1. 実行前HEAD
+2. commit SHA
+3. 追加したSchema file一覧
+4. 6phaseの正式field/Enum/上限要約
+5. AgentRequest.output_schemaの実装内容
+6. Claude/Codex/common validatorの統合内容
+7. 削除した重複Schema定義
+8. targeted test結果
+9. 全pytest結果
+10. `git diff --check`結果
+11. 変更file一覧
+12. live/実CLI/実HTTP未実行
+13. L-3、S-8、q03、S-9/S-10の未解決維持
+14. commit/push/clean/HEAD同期結果
+15. 次はS-8
