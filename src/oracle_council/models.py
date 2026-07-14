@@ -140,6 +140,10 @@ class AgentRequest:
 class AgentResult:
     output: dict[str, Any]
     usage: Usage | None = None
+    # S-8: OS exit code of the child CLI process that produced this result.
+    # None when no child process exists (Fake agents) or the code could not
+    # be observed. 0 does not imply semantic success on its own.
+    process_exit_code: int | None = None
 
 
 class AgentExecutionStatus(StrEnum):
@@ -160,10 +164,20 @@ class PhaseStatus(StrEnum):
 class AgentFailure(RuntimeError):
     """A structured agent-execution failure carrying the SPEC §8.2 error code."""
 
-    def __init__(self, error_code: str, message: str = "", public_summary: str | None = None) -> None:
+    def __init__(
+        self,
+        error_code: str,
+        message: str = "",
+        public_summary: str | None = None,
+        process_exit_code: int | None = None,
+    ) -> None:
         super().__init__(message or error_code)
         self.error_code = error_code
         self.public_summary = safe_public_summary(public_summary)
+        # S-8: OS exit code of the failed child process, when one ran and its
+        # code was observable (command-not-found, timeout, and launch
+        # failures stay None). Never used to derive the public error_code.
+        self.process_exit_code = process_exit_code
 
 
 _PHASE_NAMES = {
@@ -343,7 +357,9 @@ class AgentExecutionRecord:
     started_at: datetime
     finished_at: datetime
     elapsed_ms: int
-    exit_code: int | None = None
+    # S-8: the child CLI process's own OS exit code; never the Oracle exit
+    # code. None for Fake agents and whenever the code was unobservable.
+    process_exit_code: int | None = None
     error_code: str | None = None
     error_summary: str | None = None
     raw_diagnostic: str | None = None
@@ -403,6 +419,9 @@ class RunMetadataRecord:
     error_codes: tuple[str, ...]
     elapsed_ms: int
     content_saved: bool
+    # S-8: the Oracle Council CLI's own exit code (SPEC §13.4), snapshotted
+    # at run termination. Child process codes are never aggregated here.
+    oracle_exit_code: int
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -418,11 +437,19 @@ class RunResult:
     result_classification: ResultClassification
     final_answer: str | None
     call_count: int
-    exit_code: int
+    # S-8: the Oracle Council CLI's own exit code (SPEC §13.4). The child
+    # process codes live on each AgentExecutionRecord.process_exit_code.
+    oracle_exit_code: int
     claims: tuple[Claim, ...] = ()
     audit_issues: tuple[AuditIssue, ...] = ()
     phases: tuple[PhaseRecord, ...] = ()
     executions: tuple[AgentExecutionRecord, ...] = ()
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def exit_code(self) -> int:
+        """Read-only compatibility alias for pre-S-8 callers; the stored
+        field of record is oracle_exit_code. New code must not use this."""
+        return self.oracle_exit_code
 

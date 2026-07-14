@@ -192,7 +192,7 @@ class Orchestrator:
                 result_classification=ResultClassification.UNVERIFIED,
                 final_answer=None,
                 call_count=state.calls,
-                exit_code=EXIT_FAILED,
+                oracle_exit_code=EXIT_FAILED,
                 evidence=_evidence_snapshot(state),
             )
         finally:
@@ -242,6 +242,7 @@ class Orchestrator:
                         "execution_id": execution_id,
                         "agent_id": agent.agent_id,
                         "error_code": failure.error_code,
+                        "process_exit_code": getattr(failure, "process_exit_code", None),
                         **({"retry_of": retry_of} if retry_of else {}),
                         **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
@@ -323,6 +324,7 @@ class Orchestrator:
                         "phase": phase,
                         "execution_id": execution_id,
                         "agent_id": agent.agent_id,
+                        "process_exit_code": getattr(result, "process_exit_code", None),
                         **({"retry_of": retry_of} if retry_of else {}),
                         **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
@@ -338,6 +340,7 @@ class Orchestrator:
                     "phase": phase,
                     "execution_id": execution_id,
                     "agent_id": agent.agent_id,
+                    "process_exit_code": getattr(result, "process_exit_code", None),
                     **({"retry_of": retry_of} if retry_of else {}),
                     **({"substitute_for": substitute_for} if substitute_for else {}),
                 },
@@ -428,6 +431,7 @@ class Orchestrator:
                 self._execution_record(
                     run_id, phase, agent, execution_id, retry_of, substitute_for, started_at,
                     AgentExecutionStatus.SUCCEEDED,
+                    process_exit_code=getattr(result, "process_exit_code", None),
                 )
             )
             return result
@@ -440,6 +444,7 @@ class Orchestrator:
                 self._execution_record(
                     run_id, phase, agent, execution_id, retry_of, substitute_for, started_at,
                     _execution_status(failure.error_code),
+                    process_exit_code=getattr(failure, "process_exit_code", None),
                     error_code=failure.error_code,
                     error_summary=_failure_summary(phase, failure),
                     raw_diagnostic=str(failure) if self._store_content else None,
@@ -456,7 +461,7 @@ class Orchestrator:
 
     def _execution_record(
         self, run_id, phase, agent, execution_id, retry_of, substitute_for, started_at, status,
-        error_code=None, error_summary=None, raw_diagnostic=None,
+        process_exit_code=None, error_code=None, error_summary=None, raw_diagnostic=None,
     ) -> AgentExecutionRecord:
         finished_at = utc_now()
         return AgentExecutionRecord(
@@ -468,6 +473,7 @@ class Orchestrator:
             started_at=started_at,
             finished_at=finished_at,
             elapsed_ms=_elapsed_ms(started_at, finished_at),
+            process_exit_code=process_exit_code,
             error_code=error_code,
             error_summary=error_summary or (_summary(phase, error_code) if error_code else None),
             raw_diagnostic=raw_diagnostic,
@@ -535,7 +541,7 @@ class Orchestrator:
             EXIT_WITHHELD,
         )
 
-    def _finish(self, run_id, status, classification, answer, state: _RunState, exit_code) -> RunResult:
+    def _finish(self, run_id, status, classification, answer, state: _RunState, oracle_exit_code) -> RunResult:
         finished_at = utc_now()
         for record in state.phases.values():
             if record.status is None:
@@ -570,6 +576,7 @@ class Orchestrator:
             error_codes=tuple(error_codes),
             elapsed_ms=_elapsed_ms(state.created_at, finished_at),
             content_saved=self._store_content,
+            oracle_exit_code=oracle_exit_code,
         )
         result = RunResult(
             run_id=run_id,
@@ -577,7 +584,7 @@ class Orchestrator:
             result_classification=classification,
             final_answer=answer,
             call_count=state.calls,
-            exit_code=exit_code,
+            oracle_exit_code=oracle_exit_code,
             claims=state.claims,
             audit_issues=tuple(state.issues),
             phases=tuple(state.phases.values()),

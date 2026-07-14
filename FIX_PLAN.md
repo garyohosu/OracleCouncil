@@ -57,7 +57,15 @@
 |---|---|---|
 | M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |
 
-実Claude/Codex、live評価、q03 DNS、S-9/S-10、L-5、S-8は未着手。次はL-5、その後S-8。
+実Claude/Codex、live評価、q03 DNS、S-9/S-10は未着手（L-5は0-8、S-8は0-9で完了）。
+
+## 0-9. X-8.19でS-8仕様確定・通常実装・Fake/transport/CLIテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-8 | 子CLI processのOS終了コードを`process_exit_code`（`AgentResult`／`AgentFailure`／`AgentExecutionRecord`）、Oracle Council全体の外部終了コードを`oracle_exit_code`（`RunResult`／`RunMetadataRecord`／CLI JSONトップレベル）へ分離。取得不能・Fake Agentはnull、process 0後のparse/schema失敗は`INVALID_OUTPUT`かつprocess 0。旧トップレベル`exit_code`はschema 1.x互換エイリアスとして`oracle_exit_code`と常に同値。`executions[]`は`process_exit_code`のみ出力。R-1の0/1/2/3/4/130対応表は不変 | QandA S-8、SPEC v0.3.10 §8.5/§13.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/models.py`・`orchestrator.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`、`tests/unit/test_exit_code_separation.py` |
+
+実CLI、live評価、q03 DNS failure-boundary、S-9/S-10、L-3は引き続き未着手。
 
 ## 0. v0.3.1で解消済み
 
@@ -94,12 +102,12 @@
 | ID | 項目 | 概要 | 依存するテスト設計領域 |
 |---|---|---|---|
 | **J-3** | `quick`の実行グラフ | フェーズ一覧・呼び出し数・出力の確定 | `quick`結合テスト |
-| **L-5** | フェーズ別の構造化出力スキーマ | 6フェーズ分のJSON Schema。M-5/S-5のExecutionPlanへ接続 | 各Adapter / JSON Schema Contract Test |
 | **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
-| **S-8** | CLI終了コードの分離 | `processExitCode` と `oracleExitCode` のフィールド分離 | CLI / Adapter Contract Test |
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
+
+L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。
 
 O-6は解消済み（0-5参照）。
 

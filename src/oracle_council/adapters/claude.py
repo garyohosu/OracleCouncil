@@ -170,7 +170,7 @@ class ClaudeAdapter:
             err_text = res.stderr + "\n" + res.stdout
             error_code = classify_cli_error(res.stdout, res.stderr)
             if error_code:
-                raise AgentFailure(error_code, err_text)
+                raise AgentFailure(error_code, err_text, process_exit_code=res.returncode)
             if res.returncode != 0:
                 raise AgentFailure(
                     "EXECUTION_ERROR",
@@ -178,6 +178,7 @@ class ClaudeAdapter:
                     public_summary=execution_failure_summary(
                         request.phase, "subprocess_nonzero_exit"
                     ),
+                    process_exit_code=res.returncode,
                 )
 
             try:
@@ -187,18 +188,26 @@ class ClaudeAdapter:
                     "INVALID_OUTPUT",
                     f"Failed to parse CLI envelope: {res.stdout}",
                     public_summary="malformed JSON",
+                    process_exit_code=res.returncode,
                 ) from exc
             # --output-format json always wraps the model's text in a CLI
             # metadata envelope; the phase JSON is inside envelope["result"].
             result_text = envelope.get("result", "") if isinstance(envelope, dict) else res.stdout
             try:
                 output = validate_phase_output(request.phase, _extract_json_object(result_text))
-                return AgentResult(output, Usage(100, 20))
+                return AgentResult(output, Usage(100, 20), process_exit_code=res.returncode)
+            except AgentFailure as failure:
+                # Schema validation raised in base.py has no access to the
+                # subprocess result; the process itself exited 0 (S-8 §1.1).
+                if failure.process_exit_code is None:
+                    failure.process_exit_code = res.returncode
+                raise
             except json.JSONDecodeError as exc:
                 raise AgentFailure(
                     "INVALID_OUTPUT",
                     f"Failed to parse phase JSON from model text: {result_text}",
                     public_summary="malformed JSON",
+                    process_exit_code=res.returncode,
                 ) from exc
 
         except FileNotFoundError:

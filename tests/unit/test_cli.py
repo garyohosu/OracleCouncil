@@ -422,7 +422,7 @@ def test_json_evidence_summary_allows_only_safe_web_fields_and_caps_excerpt(caps
         result_classification=ResultClassification.VERIFIED,
         final_answer="answer",
         call_count=0,
-        exit_code=0,
+        oracle_exit_code=0,
         evidence=(
             {
                 "evidence_id": "web-claim-1-1",
@@ -491,7 +491,7 @@ def test_json_evidence_summary_non_string_excerpt_is_safe(capsys):
         result_classification=ResultClassification.VERIFIED,
         final_answer="answer",
         call_count=0,
-        exit_code=0,
+        oracle_exit_code=0,
         evidence=({"evidence_id": "ev-1", "excerpt": {"not": "string"}},),
     )
 
@@ -507,7 +507,7 @@ def test_json_evidence_summary_does_not_serialize_nested_allowed_values(capsys):
         result_classification=ResultClassification.VERIFIED,
         final_answer="answer",
         call_count=0,
-        exit_code=0,
+        oracle_exit_code=0,
         evidence=(
             {
                 "evidence_id": {"stdout": "raw stdout"},
@@ -563,7 +563,7 @@ def test_json_phase_metrics_summary_excludes_unsafe_values(capsys):
         result_classification=ResultClassification.VERIFIED,
         final_answer="answer",
         call_count=0,
-        exit_code=0,
+        oracle_exit_code=0,
         phases=(
             PhaseRecord(
                 phase_id="phase-1",
@@ -606,7 +606,7 @@ def test_json_includes_only_safe_error_summary(capsys):
         result_classification=ResultClassification.UNVERIFIED,
         final_answer=None,
         call_count=1,
-        exit_code=1,
+        oracle_exit_code=1,
         phases=(
             PhaseRecord(
                 phase_id="phase-1",
@@ -676,7 +676,7 @@ def test_json_evidence_empty_without_evidence(capsys):
         result_classification=ResultClassification.VERIFIED,
         final_answer="answer",
         call_count=0,
-        exit_code=0,
+        oracle_exit_code=0,
     )
 
     output_run_result(result, use_json=True)

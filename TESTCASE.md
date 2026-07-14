@@ -36,7 +36,7 @@
 
 ケース本文で「または」「非ゼロ」「適切」「相当」と複数の合格結果を許す記述は、対応するQandAが確定するまで合格判定に使用してはならない。必ず`BLOCKED`として収集のみ行う。
 
-**終了コード（R-1確定済み）**: oracleExitCodeはSPEC §13.4の対応表を正とする。0=公開可能な回答あり、1=実行失敗、2=入力・追加判断が必要、3=実行環境の修正が必要、4=withheld、130=ユーザーキャンセル。ケース本文の終了コードはこの表に基づくassert値である。子CLIの`processExitCode`はOracle終了コードへ流用せず`AgentResult.exit_code`に保持する（フィールド設計の詳細はS-8）。
+**終了コード（R-1・S-8確定済み）**: oracleExitCodeはSPEC §13.4の対応表を正とする。0=公開可能な回答あり、1=実行失敗、2=入力・追加判断が必要、3=実行環境の修正が必要、4=withheld、130=ユーザーキャンセル。ケース本文の終了コードはこの表に基づくassert値である。子CLIのOS終了コードは`AgentResult.process_exit_code`／`AgentExecution.process_exit_code`に保持し（取得不能・Fake Agentはnull）、Oracle終了コード（`RunResult.oracle_exit_code`、CLI JSONトップレベル`oracle_exit_code`＋互換エイリアス`exit_code`）へ流用しない（S-8確定、X-8.19）。
 
 ### 1.2 共通アサーション
 
@@ -1182,14 +1182,14 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 - **期待結果**: 両Adapterが同一`AgentResult`契約へ正規化し、stdout/stderr分離、redaction、process tree終了を満たす。
 - **期待する状態遷移**: `pending -> running -> succeeded|unavailable|failed|timed_out|cancelled`
 - **期待するAgent呼び出し回数**: parameterごとに1回。probeは`BLOCKED: R-4`。
-- **期待する終了コード**: N/A。`processExitCode`の保持は`BLOCKED: S-8`。
+- **期待する終了コード**: N/A。`process_exit_code`は子processのOS終了コードを保持する（成功0、非0は実値、command not found・timeout・起動失敗はnull。process 0後のparse/schema失敗は`INVALID_OUTPUT`かつ`process_exit_code=0`。S-8確定・実装済み、`tests/unit/test_exit_code_separation.py`）。
 - **期待するstdout**: N/A
 - **期待するstderr**: N/A
 - **期待する保存イベント**: 0件
 - **保存してはいけない情報**: fixture secret、親環境、raw stderr
 - **優先度**: P0
 - **自動化可否**: CIで可。外部AIアクセス禁止
-- **未確定仕様への依存**: `BLOCKED: QandA L-5, O-6, S-8, S-10, R-4`
+- **未確定仕様への依存**: `BLOCKED: QandA S-10, R-4`（L-5はX-8.18、O-6はX-8.13、S-8はX-8.19で確定済み）
 
 ### **CT-EP-LIVE-01: EvidenceProvider実API Contract**
 - **テストレベル**: CT
@@ -1292,7 +1292,7 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 - **保存してはいけない情報**: secret、raw子CLI stderr、Chain of Thought
 - **優先度**: P0
 - **自動化可否**: 終了コードはCIで可。stdout/stderr詳細はR-2確定後
-- **未確定仕様への依存**: `BLOCKED: QandA R-2, S-8`（進捗出力先とprocessExitCodeフィールドのみ未確定）
+- **未確定仕様への依存**: `BLOCKED: QandA R-2`（進捗出力先のみ未確定。processExitCodeフィールドはS-8で確定済み、X-8.19）
 
 ---
 

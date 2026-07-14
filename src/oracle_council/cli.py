@@ -146,19 +146,22 @@ def load_config() -> dict[str, Any]:
         raise ConfigurationError(f"Failed to load config: {e}")
 
 
-def exit_stop(status: str, exit_code: int, message: str, use_json: bool) -> int:
+def exit_stop(status: str, oracle_exit_code: int, message: str, use_json: bool) -> int:
     payload = {
         "schema_version": "1.0",
         "run_id": None,
         "status": status,
-        "exit_code": exit_code,
+        "oracle_exit_code": oracle_exit_code,
+        # Compatibility alias (S-8): schema 1.x keeps the old top-level name;
+        # it is always identical to oracle_exit_code.
+        "exit_code": oracle_exit_code,
         "message": message,
     }
     if use_json:
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     else:
         sys.stderr.write(f"Stop: {message} ({status})\n")
-    return exit_code
+    return oracle_exit_code
 
 
 _EVIDENCE_SUMMARY_KEYS = (
@@ -241,6 +244,10 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "agent_id": execution.agent_id,
                 "phase": execution.phase,
                 "status": execution.status.value,
+                # S-8: the child CLI's own OS exit code (null when no child
+                # process ran); never Oracle Council's exit code, which only
+                # appears at the top level as oracle_exit_code.
+                "process_exit_code": execution.process_exit_code,
                 "error_code": execution.error_code,
                 "error_summary": safe_error_summary(execution.error_summary),
                 "retry_of": execution.retry_of,
@@ -276,7 +283,10 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
             "schema_version": "1.0",
             "run_id": result.run_id,
             "status": status,
-            "exit_code": result.exit_code,
+            "oracle_exit_code": result.oracle_exit_code,
+            # Compatibility alias (S-8): schema 1.x keeps the old top-level
+            # name; it is always identical to oracle_exit_code.
+            "exit_code": result.oracle_exit_code,
             "mode": "verify",
             "question": {
                 "original": "元の質問",
@@ -328,18 +338,18 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
     else:
         if web_error_code:
             sys.stderr.write(f"Stop: web evidence unavailable: {web_error_code} (verification_unavailable)\n")
-            return result.exit_code
+            return result.oracle_exit_code
         if result.status in (RunStatus.COMPLETED, RunStatus.PARTIAL):
-            if result.exit_code == 0:
+            if result.oracle_exit_code == 0:
                 print(result.final_answer)
-            elif result.exit_code == 4:
+            elif result.oracle_exit_code == 4:
                 print("Final Answer: [withheld] (回答保留)")
                 print("Claims and Verification details:")
                 for claim in result.claims:
                     print(f"- {claim.claim_id} ({claim.importance.value}): {claim.status.value}")
         else:
-            sys.stderr.write(f"Failed with exit code {result.exit_code}\n")
-    return result.exit_code
+            sys.stderr.write(f"Failed with exit code {result.oracle_exit_code}\n")
+    return result.oracle_exit_code
 
 
 def cmd_ask(args) -> int:

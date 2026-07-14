@@ -217,7 +217,7 @@ classDiagram
         +startedAt datetime
         +finishedAt datetime
         +elapsedMs int
-        +exitCode int
+        +processExitCode int
         +response object
         +errorCode AgentErrorCode
         +errorSummary str
@@ -278,6 +278,7 @@ classDiagram
         +errorCodes str[]
         +elapsedMs int
         +contentSaved bool
+        +oracleExitCode int
     }
 
     class RunEvent {
@@ -330,7 +331,7 @@ classDiagram
         +structuredOutput object
         +rawOutputHash str
         +usage Usage
-        +exitCode int
+        +processExitCode int
         +startedAt datetime
         +finishedAt datetime
         +errorCode AgentErrorCode

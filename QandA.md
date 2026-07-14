@@ -1113,7 +1113,13 @@ Responderの2 slotは異なるAgentでなければ成功扱いにせず、成功
 **推奨案**: 子CLIは`processExitCode`、Oracle全体は`oracleExitCode`、意味的結果は`AgentExecutionStatus`と`AgentErrorCode`へ分離する。
 **実装への影響**: モデルフィールド、ログ、およびJSON出力のAPI契約が設計できない。
 **テストへの影響**: CLI結合テストとAdapter Contract Testの期待値アサーションが混同する。
-**回答**: 未回答。
+**回答**: 確定（X-8.19、SPEC v0.3.10）。推奨案どおり分離する。
+
+- 子CLI processのOS終了コードは`process_exit_code`（`AgentResult`／`AgentFailure`／`AgentExecutionRecord`）。正常終了0、非0は実値、起動不能・timeout・取得不能・Fake Agentは`null`。process 0後のparse/schema失敗は`INVALID_OUTPUT`かつ`process_exit_code=0`
+- Oracle Council全体の外部終了コードは`oracle_exit_code`（`RunResult`／`RunMetadataRecord`／CLI JSONトップレベル）。R-1の0/1/2/3/4/130対応表は変更しない
+- 意味的結果は従来どおり`AgentExecutionStatus`／`AgentErrorCode`／`RunStatus`／`ResultClassification`で表し、終了コードだけから推測しない
+- CLI JSONトップレベルの旧`exit_code`はschema version 1.xの互換エイリアスとして残し、全経路で`oracle_exit_code`と同値。`executions[]`には`process_exit_code`だけを出力し、曖昧な`exit_code`を出力しない
+- `RunResult.exit_code`はPython内部互換の読み取り専用propertyで、保存フィールドの正本は`oracle_exit_code`
 
 ---
 

@@ -405,3 +405,17 @@ No source, test, config, runner, or eval-set changes. Raw stdout was read only f
 ## X-8.18 L-5 phase schema実装（2026-07-14）
 
 6フェーズの正式JSON Schema resource、共通validator、AgentRequestへのdeep-copy注入、Claude/Codex共有、Fake/Contract/Unitテストを実装した。全objectをclosedとし、必須項目、Enum、文字数・件数上限、固定安全summaryを確定した。実Claude/Codex、WebSearch、実HTTP、live評価は未実行。S-8、q03 DNS、S-9/S-10は未解決として維持する。
+
+## X-8.19 S-8 process/Oracle exit code分離（2026-07-14）
+
+変更前は`AgentExecutionRecord.exit_code`（子CLI process想定・ほぼ未使用）と`RunResult.exit_code`／CLI JSONトップレベル`exit_code`（Oracle自身）が同名で、Adapter・Orchestrator・保存記録・CLI利用者が混同でき、AgentResult/AgentFailureから子process return codeを伝える正式経路もなかった。
+
+S-8を確定し通常実装した（QandA回答確定、SPEC v0.3.10）。子CLI processのOS終了コードは`process_exit_code`：`AgentResult`（既定None）と`AgentFailure`に追加し、`AgentExecutionRecord.exit_code`を`process_exit_code`へ正式rename。成功0、非0は実値、command not found・timeout・起動失敗・Fake AgentはNone、process 0後のparse/schema失敗は`INVALID_OUTPUT`かつprocess 0。Claude/Codex両Adapterが`res.returncode`を成功・分類済みエラー・非0終了・INVALID_OUTPUTの全経路で伝播する（base.pyのschema検証が投げるAgentFailureにはAdapter側でprocess 0を付与）。
+
+Oracle全体は`oracle_exit_code`：`RunResult`の保存フィールドを正式renameし（読み取り専用compatibility property `exit_code`を残す。新規コードは`.oracle_exit_code`）、`RunMetadataRecord`へ追加して`to_dict()`とterminal Run eventのmetadataに含めた。Orchestratorの`_finish()`引数もrename。`agent_execution_succeeded`／`agent_execution_failed` eventは`process_exit_code`フィールドを常に持つ（取得不能はnull）。raw stderr・prompt等は従来どおりevent・summaryへ入れない。
+
+CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、schema 1.x互換エイリアスとして旧`exit_code`を同値で残す（`exit_stop`のRun未生成経路も同様）。`executions[]`には`process_exit_code`だけを出力し、曖昧な`exit_code`は出力しない。R-1の0/1/2/3/4/130対応表・実際の終了値は不変（130はS-6/T-2待ちの文書上の契約のまま）。
+
+テスト: `tests/unit/test_exit_code_separation.py`（25件）を追加。モデル既定値・保持・compat property・metadata to_dict、Claude/Codex monkeypatched transportで成功0／非0=17保持／returncode 0+malformed・schema不正→INVALID_OUTPUTかつprocess 0／FileNotFound→COMMAND_NOT_FOUNDでNone／Timeout→TIMEOUTでNone、OrchestratorでFake成功=None記録・失敗コード保持と意味的status非上書き・retry/substitution個別コード・metadata event安全性、CLI JSONで成功/failed/withheld/exit_stopの`oracle_exit_code == exit_code`・戻り値一致・`executions[].process_exit_code`存在・`executions[]`に`exit_code`なし、を検証。`py -m pytest`は**292 passed, 6 deselected**（baseline 267から+25）、`git diff --check`成功。
+
+`assignment.py`の`InsufficientAgentsError.exit_code = 3`はOracle側の値でありcli.pyからも読まれていないが、今回の許可変更範囲外のため未変更。実Claude、実Codex、WebSearch、実HTTP、live評価、q01〜q08は実行していない。ドキュメントはQandA（S-8回答確定）、SPEC v0.3.10（§8.5/§13.4/§14/§15.8）、CLASS（processExitCode/oracleExitCode、曖昧なexitCode除去）、TESTCASE（S-8 BLOCKED解除3箇所）、FIX_PLAN（0-9追加、§2からL-5/S-8行を解消済みへ）を更新。未解決はq03 DNS failure-boundary、S-9/S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。

@@ -41,8 +41,8 @@ class CodexAdapter:
             res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self.timeout_s, env=dict(os.environ), input=build_phase_input(request), shell=False)
             err_text = res.stderr + "\n" + res.stdout
             error_code = classify_cli_error(res.stdout, res.stderr)
-            if error_code: raise AgentFailure(error_code, err_text)
-            if res.returncode != 0: raise AgentFailure("EXECUTION_ERROR", err_text, public_summary=execution_failure_summary(request.phase, "subprocess_nonzero_exit"))
+            if error_code: raise AgentFailure(error_code, err_text, process_exit_code=res.returncode)
+            if res.returncode != 0: raise AgentFailure("EXECUTION_ERROR", err_text, public_summary=execution_failure_summary(request.phase, "subprocess_nonzero_exit"), process_exit_code=res.returncode)
             output = None
             for line in reversed(res.stdout.strip().splitlines()):
                 if line.strip().startswith("{") and line.strip().endswith("}"):
@@ -50,8 +50,14 @@ class CodexAdapter:
                     except json.JSONDecodeError: pass
             if output is None:
                 try: output = json.loads(res.stdout.strip())
-                except json.JSONDecodeError as exc: raise AgentFailure("INVALID_OUTPUT", "Failed to extract JSON", public_summary="malformed JSON") from exc
-            return AgentResult(validate_phase_output(request.phase, output), Usage(100, 20))
+                except json.JSONDecodeError as exc: raise AgentFailure("INVALID_OUTPUT", "Failed to extract JSON", public_summary="malformed JSON", process_exit_code=res.returncode) from exc
+            try:
+                return AgentResult(validate_phase_output(request.phase, output), Usage(100, 20), process_exit_code=res.returncode)
+            except AgentFailure as failure:
+                # Schema validation in base.py cannot see the subprocess
+                # result; the process itself exited 0 (S-8 §1.1).
+                if failure.process_exit_code is None: failure.process_exit_code = res.returncode
+                raise
         except OSError as exc:
             raise AgentFailure("EXECUTION_ERROR", str(exc), public_summary=execution_failure_summary(request.phase, "process_launch_failure")) from exc
         finally:
