@@ -27,13 +27,18 @@
                                   [
                                       "py",
                                       "-m",
-                                      "unittest",
+                                      "pytest",
                                       "-q"
+                                  ],
+                                  [
+                                      "git",
+                                      "diff",
+                                      "--check"
                                   ]
                               ],
     "max_cycles":  10,
     "stop_on_agent_failure":  true,
-    "stop_on_test_failure":  false,
+    "stop_on_test_failure":  true,
     "commit_enabled":  false,
     "push_enabled":  false,
     "allow_dirty_worktree":  false,

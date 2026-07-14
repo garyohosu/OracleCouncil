@@ -1,6 +1,6 @@
 ---
 protocol_version: 1
-task_id: X-8.20
+task_id:
 task_revision: 1
 status: completed
 previous_task_id: X-8.19
@@ -31,6 +31,8 @@ allowed_paths:
   - "instructions/result.md"
 ---
 # Oracle Council 次作業指示書
+
+> **注意: X-8.20はすでに実装・ローカルコミット完了済みであり、再実装は禁止されています。**
 
 > **ローカルPCで開始する前の注意**
 > この指示書はGitHub側で更新されている。
