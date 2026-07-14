@@ -35,6 +35,12 @@
 | T-1 | reserve失敗後のpartial/failed分岐、公開条件、exit 0/1 | SPEC §15.2、STATE §1・§6、TESTCASE UT-TB-09/IT-E2E-22 |
 | T-4 | 保存有効時のappend失敗は全時点でfail closed、`--no-store`だけ呼出し0回 | SPEC §15.1・§15.2、TESTCASE UT-SB/IT-E2E-25 |
 
+## 0-5. X-8.13で解消済み
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| O-6 | stdin限定と一時ファイル許可の矛盾。`CodexAdapter`・`ClaudeAdapter`・`CliSearchProvider`のuser-derived入力（Phase入力、検索クエリ）はすべてargvではなくstdin経由で渡し、argvには固定フラグのみを含める。Codexのtemp fileは`--output-schema`用JSON Schemaのみに限定 | `src/oracle_council/adapters/claude.py`・`adapters/codex.py`、Fakeテスト（X-8.10〜X-8.12）、実機live確認（X-8.13、HEAD `8fcdeaf`、q04で`exit_code=0`/`classification=verified`/全7フェーズ成功） |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |
@@ -72,7 +78,6 @@
 | **J-3** | `quick`の実行グラフ | フェーズ一覧・呼び出し数・出力の確定 | `quick`結合テスト |
 | **L-5** | フェーズ別の構造化出力スキーマ | 6フェーズ分のJSON Schema | 各Adapter / JSON Schema Contract Test |
 | **M-5** | 代替Agent選定と再試行・12回上限 | 呼び出し上限と代替選定の競合解消 | Agent呼び出し上限テスト |
-| **O-6** | stdin限定と一時ファイル許可の矛盾 | セキュリティ隔離と一時ディレクトリ要件の整理 | Adapterセキュリティテスト |
 | **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
 | **S-5** | Agent選定・代替表現 | 複数担当・代替候補アロケーションのクラス表現 | Agent選定単体テスト |
 | **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
@@ -80,7 +85,7 @@
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 
-O-6進捗（X-8.12）: `CodexAdapter`、`ClaudeAdapter`、`CliSearchProvider`のuser-derived入力をstdinへ渡すtransportを通常実装へ反映し、argvには入力本文を含めない方針をFakeテストで確認済み。Codexのtemp fileは機密情報を含まない`--output-schema`用JSON Schemaだけに限定している。実Claude・WebSearch・q04・liveでの確認は未実施。
+O-6は解消済み（0-5参照）。
 
 ---
 

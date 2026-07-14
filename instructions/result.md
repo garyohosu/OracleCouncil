@@ -182,3 +182,18 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - `py -m pytest`: **259 passed, 6 deselected**; `git diff --check`: passed.
 - Real Claude, WebSearch, q04, live, HTTP, and expensive evaluation were not executed.
 - Changed files: `src/oracle_council/adapters/claude.py`, `tests/unit/test_cli_search_provider.py`, `FIX_PLAN.md`, `instructions/result.md`, and `hikitsugi.md`.
+## X-8.13 q04 live re-evaluation with all three stdin transports (2026-07-14)
+
+- HEAD and `origin/main`: `8fcdeaf`; `py -m pytest` passed (259 passed, 6 deselected, exit 0) before the live run.
+- The only worktree diff was the untracked `dream.md` (unrelated to source). It was set aside with `git stash -u` before the dry-run/live run so the eval script's dirty-worktree check ran clean, then restored with `git stash pop` immediately after. This should not become standard practice; future sessions should write `dream.md` after the live run or commit it beforehand instead of stashing.
+- Dry-run confirmed HEAD/origin match, clean worktree, and a non-colliding output directory.
+- One approved live run was executed in `C:\PROJECT\OracleCouncil-evals\x8\8fcdeaf-q04-clisearch-stdin`.
+- Result: `exit_code=0`, `status=completed`, `result_classification=verified`, run ID `18a25201-780e-419c-be72-fd412fb433aa`, `agent_call_count=7`, participants `claude-code` and `codex-cli`.
+- All seven phases (`respond` through `audit`) succeeded. None of the earlier failure modes recurred (X-8.4 `EXECUTION_ERROR`, X-8.7 `AUTH_REQUIRED`, X-8.9 `synthesize COMMAND_NOT_FOUND`).
+- Correction, not a first: X-8.11 (Claude Phase stdin only) had already completed all seven phases once (`synthesize`/`audit` each succeeded twice), ending `status=completed`/`classification=withheld`. What's new in X-8.13 is that with Codex, Claude Phase, and CliSearchProvider all on stdin transport, q04 reached `verified`/`exit_code=0` with acceptance criteria met — something no prior live attempt achieved.
+- Evidence: 12 items; searches 4; candidates 20; fetch attempts 16; fetch successes 12; fetch failures 4 (`FETCH_FAILED`×3, `UNSUPPORTED_CONTENT_TYPE`×1); outcome `partial_evidence`.
+- `json_parse_status=valid`; `leakage_check=passed_structural_check`.
+- Acceptance criteria were assessed manually from the CLI's own sanitized `--json` output (not raw stdout/stderr): the premise claim (user_premise, "法定成人年齢は現在も20歳") is `contradicted`; the correction claim (2022-04-01, 18歳への引き下げ) is `verified`; and the answer distinguishes the lowered contractual-adulthood age from the still-20 drinking/smoking/public-gambling limits. All three q04 acceptance points are met. `record.json`'s `acceptance_status` field remains the runner's static `not_assessed` — the script does not auto-grade; this is a manual read.
+- No source or test changes were made from this live result.
+- Documentation updated: `hikitsugi.md` (4-24, with the X-8.11 correction above), `FIX_PLAN.md` (O-6 moved to §0-5, resolved), this file.
+- Remaining open items: J-3, L-5, M-5, S-4–S-10, T-2, T-3 (design-gated blockers), J-4 (Clarifier second round), and evaluation of the remaining 7 X-8 questions (q01–q03, q05–q08 — q04 is no longer a clean holdout after repeated transport-debugging use).
