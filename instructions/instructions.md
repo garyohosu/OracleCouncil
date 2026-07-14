@@ -5,7 +5,7 @@
 > 作業開始前に対象リポジトリのルートで`git status --short`と`git pull --ff-only`を実行し、pull成功後にこのファイルを読んでください。
 > 未コミット差分や未追跡ファイルがある場合は、勝手にreset・stash・削除・移動せず、差分を保護して状況を報告してください。
 
-## X-8.15: q05〜q08 holdout継続評価（明示承認ゲート付き）
+## X-8.16: M-5 / S-5 代替Agent選定・再試行仕様の確定
 
 対象リポジトリ:
 
@@ -15,155 +15,64 @@ C:\PROJECT\OracleCouncil
 
 ## 目的
 
-X-8.14ではq04を除く7問holdoutを1回だけ開始したが、q03のRun生成前`internal_error`によりsystemic stopした。
-
-確定済み結果:
+X-8.14 / X-8.15で、M-5導入前のholdout baselineを取得した。
 
 ```text
-実行HEAD: e707d9e
-結果コミット: 0ec758a
-q01: verified / exit 0 / acceptance met
-q02: verified / exit 0 / acceptance met
-q03: internal_error / exit 1 / run_id null
-q03 structured message: [Errno 11001] getaddrinfo failed
-q04: 0回
-q05〜q08: 0回、attempted.jsonなし
-retry: 0
+q01: verified / acceptance met
+q02: verified / acceptance met
+q03: Run生成前 internal_error / getaddrinfo failed
+q05: verified / acceptance met
+q06: partially_verified / acceptance met
+q07: withheld / acceptance met
+q08: synthesizeでQUOTA_EXCEEDED / failed / acceptance not assessable
 ```
 
-q05〜q08は再試行ではなく、まだ一度も外部実行されていないclean holdoutである。
-
-X-8.15では、M-5の代替Agent・再試行設計を入れる前の現行実装を固定したまま、未実行のq05〜q08だけを各最大1回評価する。
-
-q03は既にattempt済みなので再実行しない。q03のDNS失敗は、この評価完了後にRun生成前の外部障害境界として別タスクで扱う。
-
-## 並行作業禁止
-
-X-8.15とM-5、L-5、S-8、q03障害修正を並行で進めない。
-
-- holdout実行前から結果記録完了まで実装変更を入れない
-- source、test、config、runner、評価セットを変更しない
-- Agent設定、role priority、timeout、モデル、検索Providerを変更しない
-- q01〜q04を再実行しない
-- 評価結果を見てその場で修正しない
-- 結果確定後にM-5へ進む
-
-## 重要: live実行の承認ゲート
-
-この指示書を読んで実行するという一般的な依頼だけでは、live承認とはみなさない。
-
-live実行前に、現在のローカル実行セッション内で、ユーザーから次と同等の明示承認を確認すること。
+X-8.15の結果コミット:
 
 ```text
-X-8.15のq05〜q08 holdout live実行を、各1回、合計最大4回だけ承認します
+599d3d0 docs: record q05-q08 X-8 holdout evaluation
 ```
 
-承認の意味:
+q08ではClaude担当の`synthesize`が`QUOTA_EXCEEDED`となり、Codexは利用可能だった。ただし、既定2 Agent構成ではCodexを代替Synthesizerにすると、Synthesizerとは別のAuditorが残らない。したがって「失敗したら単純に他方へ切り替える」だけではSPEC §6.3、§6.4の独立監査条件を破る。
 
-- q05、q06、q07、q08を各最大1回
-- 外部`oracle ask`実行は合計最大4回
-- q01、q02、q03、q04は0回
-- timeout、失敗、不正JSON、認証、利用枠、CLI障害が発生しても同じ質問を再試行しない
-- systemic stopで途中終了した場合、そのセッション内で再開しない
-- 未実行問題の再開には別タスクと新しい明示承認が必要
+M-5はS-5の実行計画表現に依存する。本作業ではM-5とS-5を同時に仕様確定し、代替Agent、同一Agent再試行、Run全体の2回再試行枠、Run全体の1回代替枠、12回絶対上限、Responderの独立性、Synthesizer/Auditor分離を矛盾なく文書化する。
 
-X-8.14以前の承認を流用しない。
+今回は**設計仕様の確定だけ**を行う。source、test実装、config、runner、実CLI、live評価は変更・実行しない。
 
-明示承認がない場合は、作業前確認、通常テスト、subset生成、整合性検証、dry-runまで実施して停止する。承認なしで`ORACLE_COUNCIL_LIVE=1`、実Claude、実Codex、WebSearch、実HTTPを実行しない。
+## X-8.15から確定した事実
 
-## 評価対象
-
-正本:
-
-```text
-evaluation/x8/eval-set-v1.json
-```
-
-対象ID:
-
-```text
-q05
-q06
-q07
-q08
-```
-
-対象外:
-
-```text
-q01
-q02
-q03
-q04
-```
-
-runnerは`--all`または単一`--question-id`のみを受け付けるため、q05〜q08だけを含む派生subset JSONをリポジトリ外へ機械的に生成し、そのsubsetに対して`--all`を1回実行する。
-
-派生subsetは次を満たすこと。
-
-- 質問順は`q05,q06,q07,q08`
-- 各question objectは正本の同一IDとdeep-equal
-- q01〜q04を含まない
-- 4問ちょうど
-- 正本のSHA-256を派生subset内に記録
-- 質問文、expected_behavior、acceptance_checks、allowed_classifications、max_external_runsを変更しない
-
-## 絶対条件
-
-- live実行は明示承認後に1セッションだけ
-- 対象はq05、q06、q07、q08のみ
-- 各問題は最大1回
-- 合計外部実行は最大4回
-- q01〜q04は実行しない
-- 正本8問セットを変更しない
-- runner、source、test、configを変更しない
-- retry用output directoryを作らない
-- `--resume`相当の独自処理を作らない
-- X-8.14のoutput directoryやsubsetを再利用・変更しない
-- `attempted.json`、manifest、record、stdout、stderrを削除・改変しない
-- `claude auth`、`codex login`、`codex logout`等の認証変更を行わない
-- raw stdout/stderr、prompt、環境変数、認証情報をGitへ追加しない
-- `git stash`、`git stash -u`を使用しない
-- `dream.md`を評価前または評価中に作成・変更しない
-
-## worktreeについて
-
-`git status --short`に未追跡`dream.md`が表示される状態はcleanではない。
-
-executorは未追跡ファイルを移動、削除、stashしてはならない。評価開始前にユーザー側で`dream.md`をリポジトリ外へ退避し、`git status --short`が完全に空である状態にする。
-
-評価終了後に戻す場合も、結果記録・commit・pushが完了した後に行う。X-8.15のcommit対象には含めない。
-
-## 保護対象
-
-既存の全評価結果を変更、削除、再構築しない。少なくとも次を保護する。
-
-```text
-C:\PROJECT\OracleCouncil-evals\x8\6a55ede
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live
-C:\PROJECT\OracleCouncil-evals\x8\9dd2407-q04-live2
-C:\PROJECT\OracleCouncil-evals\x8\bca0c90-q04-x83
-C:\PROJECT\OracleCouncil-evals\x8\177abc4-q04-stdin
-C:\PROJECT\OracleCouncil-evals\x8\0bdf5ca-q04-authfix
-C:\PROJECT\OracleCouncil-evals\x8\05714b7-q04-claude-stdin
-C:\PROJECT\OracleCouncil-evals\x8\8fcdeaf-q04-clisearch-stdin
-C:\PROJECT\OracleCouncil-evals\x8\e707d9e-holdout7
-C:\PROJECT\OracleCouncil-evals\x8\e707d9e-holdout7-eval-set.json
-```
-
-今回の新規出力先と派生subset:
-
-```text
-出力ディレクトリ:
-C:\PROJECT\OracleCouncil-evals\x8\<HEAD>-holdout4
-
-派生subset:
-C:\PROJECT\OracleCouncil-evals\x8\<HEAD>-holdout4-eval-set.json
-```
-
-どちらかが既に存在する場合はlive実行せず停止する。別名やretry用パスを作らない。
+- q05〜q08は各1回実行済みで、再実行しない
+- q08は`respond`から`criticize`まで成功し、`synthesize`で`QUOTA_EXCEEDED`
+- q08のRunは6 Agent callsを消費し、retryは0
+- q03の`getaddrinfo failed`はRun生成前の外部ネットワーク障害であり、Agent代替だけで解消するとみなさない
+- M-5はq08型の障害を扱うが、既定2 Agentで必ず救済できるとは限らない
+- 不正確な回答が公開されたbaseline問題は0件
 
 ## 作業前確認
+
+最初に次を読む。
+
+```text
+QandA.md                M-5、S-5、M-2、S-7、T-1
+SPEC.md                 §6.2〜§6.4、§8.2〜§8.7、§15.2、§15.7、§15.8
+CLASS.md                Orchestrator、AgentExecution、TokenBudget
+SEQUENCE.md             正常系、監査修正、Responder timeout
+STATE.md                Run / Phase / AgentExecution / Budget
+TESTCASE.md             UT-ORCH-02、04〜07、10、TokenBudget関連
+FIX_PLAN.md
+src/oracle_council/assignment.py
+src/oracle_council/orchestrator.py
+src/oracle_council/budget.py
+src/oracle_council/models.py
+config/agents.yaml
+tests/unit/test_assignment.py
+tests/unit/test_orchestrator.py
+tests/unit/test_budget.py
+hikitsugi.md
+instructions/result.md
+```
+
+PowerShell:
 
 ```powershell
 cd C:\PROJECT\OracleCouncil
@@ -176,28 +85,362 @@ git rev-parse --abbrev-ref HEAD
 git rev-parse --short HEAD
 git rev-parse --short refs/remotes/origin/main
 
+git merge-base --is-ancestor 599d3d0 HEAD
+if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.15 result commit 599d3d0." }
+
 git merge-base --is-ancestor 0ec758a HEAD
 if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.14 result commit 0ec758a." }
-
-git merge-base --is-ancestor 1212c67 HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain X-8.13 result commit 1212c67." }
-
-git merge-base --is-ancestor 8fcdeaf HEAD
-if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain full stdin implementation commit 8fcdeaf." }
 ```
 
 合格条件:
 
 - branchが`main`
 - `git status --short`が完全に空
-- 未追跡ファイルもない
-- `HEAD`と`refs/remotes/origin/main`が一致
-- pull後の作業名が`X-8.15`
-- HEADに`0ec758a`、`1212c67`、`8fcdeaf`が含まれる
+- HEADと`refs/remotes/origin/main`が一致
+- pull後の作業名が`X-8.16`
+- HEADに`599d3d0`と`0ec758a`が含まれる
 
-不一致がある場合はlive実行しない。
+不一致がある場合は文書変更を開始せず報告する。
 
-## 通常テスト
+## 現行実装の確認事項
+
+次をコードから確認し、結果へ記録する。
+
+1. `assignment.py`は`role_priority`降順、設定順tie-breakで決定的にrankする
+2. `plan_assignments()`はResponder 2名とSynthesizer/Auditor分離を固定する
+3. `rank(..., exclude=...)`は候補除外を扱えるが、Orchestratorから動的代替に使われていない
+4. `Orchestrator._execute_phase()`は`TIMEOUT`と`RATE_LIMITED`だけ同一Agentで再試行する
+5. 同一Execution相当の再試行は最大1回、Run全体の再試行は2回
+6. 現在は代替Agent実行が未実装
+7. `TokenBudget.reserve()`がcall limitを原子的に判定し、13回目を開始前に拒否できる
+8. retryは別Execution、別BudgetReservationとして記録される
+9. q08の`QUOTA_EXCEEDED`は現行では再試行されずRun終了する
+
+## 確定する仕様
+
+以下をM-5 / S-5の正式回答として採用する。別案へ変更しない。文書間の表現差だけ調整してよい。
+
+### 1. retryとsubstitutionを別概念にする
+
+- **retry**: 同じAgent、同じ論理実行slot、同じphaseを再実行する
+- **substitution**: 失敗したAgentとは異なるAgentが、同じ論理実行slotとphaseを引き継ぐ
+- retryとsubstitutionはどちらも新しい`AgentExecution`と新しい`BudgetReservation`を作る
+- retryは`retry_of`で直前の同一Agent実行を参照する
+- substitutionは`substitute_for`で置換対象Executionを参照する
+- `retry_of`と`substitute_for`は同一Executionで同時に設定しない
+- substitution後のAgentに対して、さらに同一Agent retryを行わない。1つの論理slotで許可される追加実行は「同一Agent retry 1回」または「substitute 1回」を順番に最大限使っても、代替Agentの再retryは行わない
+
+### 2. Run全体の上限
+
+独立した3つの上限を持つ。
+
+```text
+same-agent retry: Run全体で最大2回
+substitution: Run全体で最大1回
+AI call: retry・substitution・Clarifier・監査修正を含め最大12回
+```
+
+- substitutionはRun全体のretry 2回枠を消費しない
+- retryとsubstitutionは両方とも12回call上限を消費する
+- 12回上限は`TokenBudget.reserve()`を唯一の正本とする
+- 13回目が必要になった場合、Agentを呼ぶ前に`BUDGET_EXCEEDED`
+- 通常7回ならretry 2回＋substitution 1回をすべて使っても10回
+- Clarifierと監査修正を含む基本10回のRunでは、追加枠3回を予約しない。実行順にreserveし、12回へ達した後の追加実行を拒否する
+- 将来の監査用callを暗黙に予約しない。先行retryで予算を使い切りAuditorを呼べなければ、T-1に従い承認済み回答がないRunはfailedになる
+
+### 3. 同一Agent retry対象
+
+同一Agent retryを許可するのは次だけ。
+
+```text
+TIMEOUT
+RATE_LIMITED
+```
+
+条件:
+
+- 同じ論理slotにつき最大1回
+- Run全体のretry使用数が2未満
+- 12回call上限とtoken予算を満たす
+
+同一Agent retryが失敗した場合、条件を満たせばRun全体で1回だけsubstitutionへ進める。
+
+### 4. 即時substitution対象
+
+次は同一Agent retryをせず、直ちにsubstitution候補を探す。
+
+```text
+AUTH_REQUIRED
+QUOTA_EXCEEDED
+COMMAND_NOT_FOUND
+UNSUPPORTED_VERSION
+UNSAFE_CAPABILITY
+EXECUTION_ERROR
+```
+
+Run全体のsubstitution枠が未使用で、別の適格Agentがあり、12回上限内の場合だけ実行する。
+
+次はM-5のsubstitution対象外とする。
+
+```text
+INVALID_OUTPUT      # L-3で回復方針を別途確定
+CONTEXT_OVERFLOW    # 決定的縮約を1回、失敗時BUDGET_EXCEEDED
+BUDGET_EXCEEDED
+CANCELLED
+SearchError / EvidenceProvider障害
+Run生成前のCLI・DNS・設定例外
+```
+
+### 5. Agent可用性のscope
+
+Run内でAgentの可用性を次の2種類に分ける。
+
+**Run全体でunavailableにするエラー:**
+
+```text
+AUTH_REQUIRED
+QUOTA_EXCEEDED
+COMMAND_NOT_FOUND
+UNSUPPORTED_VERSION
+UNSAFE_CAPABILITY
+```
+
+これらを返したAgentは、そのRunの後続phase候補から除外する。
+
+**その論理slotだけから除外するエラー:**
+
+```text
+TIMEOUT
+RATE_LIMITED
+EXECUTION_ERROR
+```
+
+これらは将来phaseでの利用を自動禁止しない。ただし失敗した同じ論理slotのsubstitute候補にはしない。
+
+### 6. ExecutionPlanと候補順
+
+S-5の回答として、単一`selectAgent(phase)`を正式モデルにしない。
+
+Run開始時に決定的な`ExecutionPlan`を作る。
+
+最低限の正式モデル:
+
+```text
+ExecutionPlan
+- run_id
+- configured_agent_ids
+- phase_assignments
+- max_run_retries = 2
+- max_run_substitutions = 1
+- max_agent_calls = 12
+
+PhaseAssignment
+- phase
+- slot_index
+- required_success_count
+- candidate_agent_ids  # role_priority降順、設定順tie-break
+- constraints
+
+RunAgentAvailability
+- agent_id
+- status: available | run_unavailable
+- reason_code
+```
+
+実装時の型名はPython規約に合わせてよいが、責務とフィールド意味は変えない。
+
+候補順:
+
+1. Run開始時にprobe/capabilityを満たしたAgentだけ
+2. phaseの`role_priority`降順
+3. 同点は設定順
+4. 失敗Agent自身を除外
+5. `run_unavailable` Agentを除外
+6. phase固有の独立性制約を適用
+
+ExecutionPlanは候補順の正本であり、失敗後にランダム選定やモデル変更をしない。設定ファイルをRun途中で再読込しない。
+
+### 7. Responder制約
+
+- 2つのResponder slotは異なる`agent_id`で成功しなければならない
+- 一方のResponderが失敗した場合、もう一方で成功済みのAgentをsubstituteに使わない
+- 3つ目以降の適格Agentがある場合だけResponder substitutionが可能
+- 既定2 Agent構成では、Responderの同一Agent retryも失敗した場合にsubstituteは存在せず、respond PhaseとRunはfailed
+- 1 Agentの回答だけで継続しない
+
+### 8. Synthesizer / Auditor分離
+
+- SynthesizerとAuditorは常に異なる`agent_id`
+- self-auditへ暗黙縮退しない
+- Synthesizer候補を選ぶ時点で、その候補とは異なる適格Auditor候補が最低1名残ることをlook-ahead条件にする
+- Auditor substitutionでは現在のSynthesizerを候補から除外する
+- hard unavailableにより別Auditorを確保できない場合、回答を公開しない
+- Auditor未承認の最終案が存在しても公開しない
+
+q08への適用:
+
+- Claudeの`QUOTA_EXCEEDED`はClaudeをRun全体でunavailableにする
+- Codexをsubstitute Synthesizerにすると別Auditorが残らない
+- 既定2 Agent構成ではeligible substituteなしとなり、q08を必ず救済できるわけではない
+- 3 Agent以上で別Auditorが残る場合はsubstitutionで継続できる
+- M-5を「2 Agentならquota障害を必ず救済する仕様」と記載しない
+
+### 9. substitution不能・失敗時
+
+- eligible substituteがない場合、元のPhase error codeを保持してRunをfailedにする
+- 新しい公開AgentErrorCodeを追加しない
+- metadata eventとして`agent_substitution_unavailable`を記録し、phase、failed_execution_id、original_agent_id、固定reasonを保持する
+- raw診断、prompt、質問、回答、環境変数をeventへ入れない
+- substituteを選んだ場合は`agent_substitute_selected`を記録する
+- substitute Executionが失敗した場合、2人目のsubstituteは選ばず、その失敗codeでPhaseとRunをfailedにする
+- 元Executionとretry/substitute Executionをすべて履歴へ残す
+
+### 10. Run / Phase / call count
+
+- 失敗したExecutionも子process開始後ならcall countへ含む
+- retry/substitutionのreserve、commit/releaseはS-7に従う
+- substitute成功後、Phaseの`success_count`は通常成功と同様に加算する
+- 最低成功数を満たした場合だけPhase succeeded/degradedへ進める
+- required successを満たさなければfailed
+- substitutionが使われても最終classification規則は変更しない
+
+## q03の扱い
+
+q03の`[Errno 11001] getaddrinfo failed`はRun生成前であり、M-5 / S-5のAgentExecution substitution対象に含めない。
+
+- QandA、SPEC、FIX_PLANへ「別のfailure-boundary課題」と明記する
+- 本作業でq03修正案を実装しない
+- M-5解消済みの根拠にq03を含めない
+
+## 文書更新
+
+### QandA.md
+
+- M-5の`回答`を上記仕様で確定する
+- S-5の`回答`をExecutionPlan / PhaseAssignment / RunAgentAvailabilityで確定する
+- M-5とS-5が相互依存のため同時確定したことを記録する
+- q08の2 Agent制約とq03別課題を追記する
+
+### SPEC.md
+
+- 文書バージョンを次版へ更新する
+- §6.2〜§6.4へExecutionPlan、候補順、ResponderとSynth/Audit制約を追加
+- §8.3へretry/substitutionの定義、対象error表、Run全体2 retry / 1 substitution / 12 callsを追加
+- §8.7へretry/substitutionが別Reservationであることを維持
+- §15.7 / §15.8へ`substitute_for`、イベント、可用性scopeを追加
+- q08型の2 Agent制約を例として記載してよいが、実行結果固有のrun_id等はSPECへ入れない
+
+### CLASS.md
+
+- `Orchestrator.selectAgent()`を正本表現から外し、`buildExecutionPlan()`または同等責務へ変更
+- `ExecutionPlan`、`PhaseAssignment`、`RunAgentAvailability`を追加
+- `AgentExecution`へ`substituteFor`を追加
+- TokenBudgetが12回上限の正本である依存を維持
+- S-9、S-10を解消済みにしない
+
+### SEQUENCE.md
+
+最低限、次を図示する。
+
+1. `TIMEOUT` → 同一Agent retry → retry失敗 → substitute選定
+2. `QUOTA_EXCEEDED` → 同一Agent retryなし → substitute候補確認
+3. 3 Agent構成で代替成功し、別Auditorが残る例
+4. 2 Agentのsynthesize quota failureで別Auditorが残らずRun failedとなる例
+5. 13回目reserve拒否でAgentを呼ばない例
+
+### STATE.md
+
+- AgentExecutionのretry/substitute関係を追加
+- RunAgentAvailabilityの`available -> run_unavailable`を追加
+- terminal Executionを再利用せず、新Executionを作ること
+- substitution不能時のPhase/Run failed遷移
+- Budget 12回境界を追加
+
+### TESTCASE.md
+
+M-5 / S-5起因のBLOCKEDを解除し、期待値を一意にする。
+
+最低限、次を正式ケースとして定義する。
+
+- 決定的候補順と設定順tie-break
+- TIMEOUT同一Agent retry成功
+- TIMEOUT retry失敗後、3 Agent目へsubstitute成功
+- QUOTA_EXCEEDEDは同一Agent retryせずsubstitute
+- AUTH_REQUIREDでAgentがRun全体unavailable
+- EXECUTION_ERRORでslot-local substitute
+- INVALID_OUTPUTはM-5でsubstituteしない（L-3 BLOCKEDを維持）
+- Responderは成功済みのもう一方を代替に使わない
+- 2 Agent responder失敗は代替なしでfailed
+- Synthesizer substitute時に別Auditorをlook-ahead確保
+- 2 Agent synthesize quota failureはeligible substituteなし
+- 3 Agent synthesize quota failureは代替と別Auditorで継続
+- Auditor substituteはSynthesizerを除外
+- Run全体substitutionは1回のみ
+- Run全体same-agent retryは2回のみ
+- retry 2回とsubstitution 1回は別カウンタ
+- 12回目まで実行可、13回目はreserve前拒否
+- retry/substituteごとに別execution_id・別reservation
+- `retry_of`と`substitute_for`の排他
+- metadata eventにraw情報が入らない
+- substitute失敗後に2人目を選ばない
+
+既存`UT-ORCH-02`、`UT-ORCH-04`、`UT-ORCH-06`、`UT-ORCH-07`を更新し、必要なら新しいIDを追加する。既存IDを重複させない。
+
+### FIX_PLAN.md
+
+- M-5とS-5を「仕様確定済み・実装未着手」として解消済み側へ移す
+- 次実装作業がM-5/S-5実装であることを明記する
+- L-5、S-8、q03 failure-boundaryは未解決のまま
+- q03をM-5で解消したと書かない
+
+### hikitsugi.md / instructions/result.md
+
+X-8.16として次を記録する。
+
+- X-8.15 baseline要約
+- q08がM-5の具体例になったこと
+- 2 Agentでは別Auditor不足により必ず救済できないこと
+- retryとsubstitutionの定義
+- 2 retry / 1 substitution / 12 calls
+- error code別の処理
+- ExecutionPlanモデル
+- q03は別課題
+- 更新文書一覧
+- pytest / diff check結果
+- live未実行
+- 次がM-5/S-5実装で、その後L-5、S-8であること
+
+## 変更禁止
+
+今回は次を変更しない。
+
+```text
+src/
+tests/
+config/
+evaluation/
+scripts/
+pyproject.toml
+```
+
+既存評価artifactを変更、削除、再構築しない。
+
+実行しないもの:
+
+```text
+claude
+codex
+WebSearch
+実HTTP
+ORACLE_COUNCIL_LIVE=1
+live / expensive pytest
+X-8評価
+q01〜q08
+```
+
+## 検証
+
+文書変更後に実行する。
 
 ```powershell
 py -m pytest
@@ -205,375 +448,46 @@ git diff --check
 git status --short
 ```
 
-期待値:
+期待値の基準:
 
 ```text
 259 passed, 6 deselected
 ```
 
-件数が増減していても、通常テストが全件passし、live・expensiveが除外されていればよい。失敗またはworktree差分がある場合はlive実行しない。
-
-## subset生成
-
-正本を変更せず、リポジトリ外へq05〜q08 subsetを生成する。
-
-```powershell
-$head = (git rev-parse --short HEAD).Trim()
-$originHead = (git rev-parse --short refs/remotes/origin/main).Trim()
-
-if ($head -ne $originHead) {
-    throw "HEAD and origin/main do not match."
-}
-
-$sourceEval = (Resolve-Path ".\evaluation\x8\eval-set-v1.json").Path
-$evalRoot = "C:\PROJECT\OracleCouncil-evals\x8"
-$outputDir = Join-Path $evalRoot "$head-holdout4"
-$subsetEval = Join-Path $evalRoot "$head-holdout4-eval-set.json"
-
-if (Test-Path $outputDir) {
-    throw "Holdout4 output directory already exists. Do not reuse it."
-}
-if (Test-Path $subsetEval) {
-    throw "Holdout4 subset already exists. Do not overwrite or create a retry copy."
-}
-
-$env:ORACLE_SOURCE_EVAL = $sourceEval
-$env:ORACLE_SUBSET_EVAL = $subsetEval
-
-try {
-    @'
-import hashlib
-import json
-import os
-from pathlib import Path
-
-source_path = Path(os.environ["ORACLE_SOURCE_EVAL"])
-subset_path = Path(os.environ["ORACLE_SUBSET_EVAL"])
-source_bytes = source_path.read_bytes()
-source = json.loads(source_bytes.decode("utf-8"))
-ids = ["q05", "q06", "q07", "q08"]
-by_id = {item["id"]: item for item in source["questions"]}
-
-assert [item["id"] for item in source["questions"]] == [
-    "q01", "q02", "q03", "q04", "q05", "q06", "q07", "q08"
-]
-assert set(by_id) == {"q01", "q02", "q03", "q04", "q05", "q06", "q07", "q08"}
-
-source_sha = hashlib.sha256(source_bytes).hexdigest()
-assert source_sha == "35af8d4ba22fcfa7e828986ea5bc1b2f374d85258c56bdc9dcbaaf16eb6c41d5"
-
-subset = {
-    "evaluation_version": "x8-eval-set-v1-holdout4-q05-q08",
-    "derived_from_sha256": source_sha,
-    "excluded_question_ids": ["q01", "q02", "q03", "q04"],
-    "questions": [by_id[qid] for qid in ids],
-}
-
-subset_path.parent.mkdir(parents=True, exist_ok=True)
-with subset_path.open("x", encoding="utf-8", newline="\n") as stream:
-    json.dump(subset, stream, ensure_ascii=False, indent=2)
-    stream.write("\n")
-
-loaded = json.loads(subset_path.read_text(encoding="utf-8"))
-assert [item["id"] for item in loaded["questions"]] == ids
-assert len(loaded["questions"]) == 4
-assert all(item == by_id[item["id"]] for item in loaded["questions"])
-assert not ({"q01", "q02", "q03", "q04"} & {item["id"] for item in loaded["questions"]})
-print("holdout4 subset verified")
-print("source_sha256=" + source_sha)
-print("subset_sha256=" + hashlib.sha256(subset_path.read_bytes()).hexdigest())
-'@ | py -
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Holdout4 subset generation or verification failed."
-    }
-}
-finally {
-    Remove-Item Env:ORACLE_SOURCE_EVAL -ErrorAction SilentlyContinue
-    Remove-Item Env:ORACLE_SUBSET_EVAL -ErrorAction SilentlyContinue
-}
-```
-
-生成後確認:
-
-```powershell
-py -c "import json,sys; p=json.load(open(sys.argv[1],encoding='utf-8')); ids=[q['id'] for q in p['questions']]; print(ids); assert ids == ['q05','q06','q07','q08']" $subsetEval
-git status --short
-```
-
-Git worktreeは引き続き完全にcleanであること。
-
-## import確認
-
-```powershell
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-
-    py -c "import oracle_council; print('oracle_council import OK')"
-    if ($LASTEXITCODE -ne 0) {
-        throw "oracle_council import smoke test failed."
-    }
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-}
-```
-
-## dry-run
-
-```powershell
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-
-    py scripts/run_x8_evaluation.py `
-      --eval-set $subsetEval `
-      --output-dir $outputDir `
-      --expected-head $head `
-      --all `
-      --timeout-seconds 600 `
-      --dry-run
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "X-8.15 dry-run failed with exit code $LASTEXITCODE."
-    }
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-}
-```
-
-確認項目:
-
-- question orderが`q05,q06,q07,q08`
-- q01〜q04が含まれない
-- question_countが4
-- `adapter-mode real`
-- `evidence-provider cli-search`
-- JSON出力
-- `--no-store`
-- 各問timeout 600秒
-- 出力先がリポジトリ外
-- HEADとorigin/mainが一致
-- worktree clean
-
-## live実行
-
-明示承認が確認できた場合だけ、dry-run成功後に次を1回だけ実行する。
-
-実行担当Agentや外部ラッパーのtimeoutは、4問×600秒と処理余裕を考慮し、少なくとも**3,000,000ms**にする。
-
-```powershell
-$repoSrc = (Resolve-Path ".\src").Path
-$oldPythonPath = $env:PYTHONPATH
-$oldLive = $env:ORACLE_COUNCIL_LIVE
-$liveExit = $null
-
-try {
-    $env:PYTHONPATH = if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        $repoSrc
-    } else {
-        "$repoSrc$([IO.Path]::PathSeparator)$oldPythonPath"
-    }
-    $env:ORACLE_COUNCIL_LIVE = "1"
-
-    py scripts/run_x8_evaluation.py `
-      --eval-set $subsetEval `
-      --output-dir $outputDir `
-      --expected-head $head `
-      --all `
-      --timeout-seconds 600
-
-    $liveExit = $LASTEXITCODE
-}
-finally {
-    if ([string]::IsNullOrEmpty($oldPythonPath)) {
-        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONPATH = $oldPythonPath
-    }
-
-    if ([string]::IsNullOrEmpty($oldLive)) {
-        Remove-Item Env:ORACLE_COUNCIL_LIVE -ErrorAction SilentlyContinue
-    } else {
-        $env:ORACLE_COUNCIL_LIVE = $oldLive
-    }
-}
-
-Write-Host "X-8.15 holdout4 runner exit code: $liveExit"
-```
-
-終了コードが0以外でも、同じコマンドや個別問題を再実行しない。systemic stopで4問未満になっても、その場でresumeしない。
-
-## 結果確認
-
-確認対象は今回のsubsetと新規output directoryだけとする。
-
-優先して読むもの:
-
-```text
-<outputDir>\manifest.json
-<outputDir>\summary.jsonl
-<outputDir>\summary.csv
-<outputDir>\qXX\record.json
-```
-
-`stdout.json`はCLIの設計済みJSON境界にある構造化フィールドを用いてacceptanceを手動確認する場合だけ読む。全文をresult.mdやhikitsugi.mdへコピーしない。`stderr.txt`の原文は読まず、記録・公開しない。
-
-各問題について記録する。
-
-- attemptedか未実行か
-- exit_code
-- status
-- result_classification
-- run_id
-- timed_out
-- agent_call_count
-- participants
-- 各Phaseのstatus、success_count、error_code、固定summary
-- Evidence件数、search/candidate/fetch成功失敗数、outcome
-- retry_count
-- JSON parse
-- leakage check
-- allowed_classificationsに含まれるか
-- acceptance_checksの手動判定: met / not_met / not_assessable
-
-質問別acceptance:
-
-- q05: Nile/Amazon競合、測定・定義差、過度な断定なし
-- q06: 富士山は活火山、休火山は旧表現、Evidence矛盾なし
-- q07: 根拠なしなら売上高を捏造しない、Evidence不足明示、保留または未確認
-- q08: 2026-07-13基準、公式または信頼できるEvidence、pre-releaseとstableの区別
-
-全体集計:
-
-- attempted count / 4
-- completed count
-- verified / partially_verified / withheld / unverified件数
-- allowed classification適合数 / attempted数
-- acceptance met数 / assessable数
-- systemic stopの有無と停止位置
-- Phase別失敗数
-- エラーコード別件数
-- Evidence fetch success率
-- 総agent_call_count
-- retry総数
-- q01〜q04を実行していないこと
-
-非決定的な品質評価なので、結果が悪くても再実行して改善しない。
-
-## 解釈上の注意
-
-- X-8.14のq01、q02とX-8.15のq05〜q08を合わせてM-5導入前baselineとする
-- q03はsystemic failureとして別枠で扱う
-- 一度の成功は再現性の証明ではない
-- 一度の失敗は恒常的障害の証明ではない
-- `partial_evidence`でも最終classificationが許容される場合がある
-- q07の`unverified`、`partially_verified`、`withheld`は評価セット上すべて許容
-- q04の既存結果をholdout分母へ含めない
-- q03を再実行して結果を改善しない
-
-## 公開境界
-
-次をGitへ追加しない。
-
-```text
-外部評価artifact
-派生subset
-stdout.json
-stderr.txt
-raw stdout
-raw stderr
-prompt全文
-質問・回答・Claim・Evidenceの全文
-モデル出力全文
-コマンド全文
-環境変数
-認証情報
-APIキー
-token
-Cookie
-HTTP header
-任意のCLI診断原文
-```
-
-派生subsetとoutput directoryはリポジトリ外に残し、Gitへ追加しない。
-
-## 実行後の変更範囲
-
-結果を見た後もsource、test、config、runner、評価セットを変更しない。
-
-更新を許可するのは次だけ。
-
-```text
-instructions/result.md
-hikitsugi.md
-```
-
-`dream.md`は今回変更しない。
-
-## ドキュメント更新
-
-`instructions/result.md`と`hikitsugi.md`へX-8.15としてsanitized結果を追記する。
-
-必須記録:
-
-- 実行HEAD
-- 指示書コミット
-- 正本eval setのSHA-256
-- 派生subsetのSHA-256
-- subsetがq05〜q08のみで4 question objectが正本とdeep-equalだったこと
-- 明示承認文を確認したこと
-- runner実行回数1回
-- 外部question実行数
-- q01〜q04実行数0
-- 各問のsanitized結果
-- 全体集計
-- acceptance手動判定
-- systemic stopの有無
-- retryなし
-- JSON/leakage結果
-- raw情報をGitへ追加していないこと
-- source/test/config/runner/eval-set未変更
-- 次作業がM-5仕様確定であること
-- q03のRun生成前DNS失敗は別タスクで扱うこと
-
-結果が途中終了でも、実行済み結果だけを記録し、未実行問題を明示する。
-
-## コミット前確認
+件数が増減していても通常テストが全件passし、live/expensiveが除外されていればよい。
+
+文書間で次が一致することを確認する。
+
+- retry 2回はRun全体
+- substitution 1回もRun全体
+- retryとsubstitutionは別枠
+- call上限12はTokenBudget reserveが正本
+- retry対象はTIMEOUT/RATE_LIMITEDのみ
+- hard unavailable errorはRun後続候補から除外
+- Synthesizer/Auditorは常に別Agent
+- 2 Agent q08型障害を必ず救済するとは書かない
+- q03は別課題
+
+## commit前確認
 
 ```powershell
 git status --short
 git diff --check
-git diff -- instructions/result.md hikitsugi.md
+git diff -- QandA.md SPEC.md CLASS.md SEQUENCE.md STATE.md TESTCASE.md FIX_PLAN.md hikitsugi.md instructions/result.md
 ```
 
-許可される変更:
+許可される変更は次だけ。
 
 ```text
-instructions/result.md
+QandA.md
+SPEC.md
+CLASS.md
+SEQUENCE.md
+STATE.md
+TESTCASE.md
+FIX_PLAN.md
 hikitsugi.md
+instructions/result.md
 ```
 
 それ以外の変更があればcommitせず報告する。
@@ -581,8 +495,8 @@ hikitsugi.md
 ## commitとpush
 
 ```powershell
-git add instructions/result.md hikitsugi.md
-git commit -m "docs: record q05-q08 X-8 holdout evaluation"
+git add QandA.md SPEC.md CLASS.md SEQUENCE.md STATE.md TESTCASE.md FIX_PLAN.md hikitsugi.md instructions/result.md
+git commit -m "docs: define deterministic agent substitution policy"
 git push origin main
 
 git status --short
@@ -592,33 +506,29 @@ git rev-parse --short refs/remotes/origin/main
 
 完了条件:
 
-- commit成功
-- push成功
-- tracked worktree clean
+- M-5とS-5の回答が確定
+- SPEC、CLASS、SEQUENCE、STATE、TESTCASEに矛盾なく反映
+- source/test/config/runner未変更
+- 通常テスト全件pass
+- `git diff --check`成功
+- live未実行
+- commit/push成功
+- worktree clean
 - HEADとorigin/main一致
-- 評価artifact、subset、raw出力をGitへ追加していない
-- `dream.md`をcommitしていない
 
 ## 最終報告
 
 次を簡潔に報告する。
 
-1. 実行HEADと結果コミット
-2. 明示承認確認
-3. 正本/subset SHA-256
-4. attempted count
-5. 各問のclassificationとacceptance
-6. 全体集計
-7. systemic stop、timeout、retryの有無
-8. q01〜q04未実行
-9. JSON/leakage
-10. 変更ファイル
-11. commit/push状態
-12. 次作業がM-5仕様確定であること
-13. q03障害を別タスクで扱うこと
-
-## 次作業
-
-X-8.15の結果確定後、M-5（代替Agent選定・再試行・12回上限）の仕様確定へ進む。
-
-q03の`getaddrinfo failed`は、M-5のAgent代替だけで解決すると決めつけない。Run生成前のCLI・Evidence・ネットワーク障害境界として、M-5設計時に責務を切り分けるか、別の障害境界タスクとして扱う。
+1. 作業前HEADと結果commit
+2. M-5 / S-5の確定内容
+3. retry/substitution/call上限
+4. error code別の処理
+5. ResponderとSynthesizer/Auditor制約
+6. q08型障害を2 Agentでは必ず救済できないこと
+7. q03を別課題として維持したこと
+8. 更新文書
+9. pytestと`git diff --check`
+10. live未実行
+11. commit/push/clean状態
+12. 次作業がM-5/S-5実装、その後L-5、S-8であること
