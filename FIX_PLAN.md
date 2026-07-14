@@ -49,6 +49,10 @@
 
 ## 0-7. X-8.17で通常実装・Fakeテスト完了
 
+## 0-8. X-8.18でL-5通常実装・Fakeテスト完了
+
+6 phase JSON Schema resource、共通validator、AgentRequestへのSchema注入、Claude/Codex共有、Fake/Contract/Unitテストを実装した。実CLI、live評価、WebSearch、実HTTPは未実行。次はS-8。
+
 | # | 内容 | 反映箇所 |
 |---|---|---|
 | M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |

@@ -319,7 +319,7 @@ classDiagram
         +phase AgentPhase
         +systemInstructions str
         +input object
-        +outputSchema object
+        +outputSchema object (required formal phase schema)
         +timeoutMs int
         +maxOutputTokens int
         +workingDirectory str

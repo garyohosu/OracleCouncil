@@ -589,6 +589,8 @@ class AgentAdapter(Protocol):
 
 ### L-5. フェーズ別の構造化出力スキーマが未定義
 
+**X-8.18で確定**: 6フェーズの正式Schemaをpackage resourceとして共有する。`AgentRequest.output_schema`は必須で、各実行へdeep copyを渡す。全objectは`additionalProperties: false`とし、Adapter validator、Claude prompt、Codex `--output-schema`は同一Schemaを参照する。違反は`INVALID_OUTPUT`と固定summaryで扱い、L-3の自動修復/retryは行わない。
+
 **重要度**: Major
 **箇所**: §8.5 AgentRequest.output_schema / §15.5 phase / §14 JSON出力
 **疑問**: `AgentRequest`は`output_schema`を必須とするが、`respond`、`claim_extract`、`verify`、`criticize`、`synthesize`、`audit`各フェーズの出力スキーマ（フィールド一覧、Enum、文字数上限）が仕様のどこにもない。例えばVerifierは「Evidence分類を構造化出力する」、Auditorは「構造化されたissuesを返す」とあるが、具体形が未定義。

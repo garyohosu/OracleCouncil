@@ -253,3 +253,7 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - targeted tests: `55 passed`。通常pytest: `264 passed, 6 deselected`。`git diff --check`: 成功。
 - 変更: `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、`tests/unit/test_assignment.py`、`tests/unit/test_orchestrator.py`、`FIX_PLAN.md`、`hikitsugi.md`、本書。実Claude/Codex、WebSearch、実HTTP、live/expensive評価、評価データ再実行は未実施。
 - q03 DNS failure-boundary、S-9/S-10、L-5、S-8は未解決。次作業はL-5、その後S-8。
+
+## X-8.18 L-5 phase schema実装 (2026-07-14)
+
+6フェーズの正式Schema resource、共通validator、AgentRequestへのdeep-copy注入、Claude/Codex共有、Fake/Contract/Unitテストを実装した。全objectをclosedとし、必須項目、Enum、文字数・件数上限、固定安全summaryを確定した。L-3の自動修復/retryは実装していない。通常pytestは全件成功、live系は未実行。次はS-8。

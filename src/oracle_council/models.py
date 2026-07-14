@@ -133,6 +133,7 @@ class AgentRequest:
     execution_id: str
     phase: str
     payload: dict[str, Any]
+    output_schema: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,10 @@ def safe_public_summary(value: Any) -> str | None:
     if value.startswith("missing field: "):
         field = value.removeprefix("missing field: ")
         return value if field in _SCHEMA_FIELD_NAMES else None
+    for prefix in ("unexpected field: ", "string too short for field: ", "string too long for field: ", "too few items for field: ", "too many items for field: "):
+        if value.startswith(prefix):
+            field = value.removeprefix(prefix)
+            return value if field in _SCHEMA_FIELD_NAMES else None
     if value.startswith("missing fields: "):
         fields = value.removeprefix("missing fields: ").split(", ")
         return value if fields and all(field in _SCHEMA_FIELD_NAMES for field in fields) else None

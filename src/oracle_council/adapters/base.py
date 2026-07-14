@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest
+from ..phase_schema import SchemaValidationError, validate_phase_schema
 
 
 _EXECUTION_SUMMARY_TEXT = {
@@ -196,29 +197,7 @@ def _validate_claims(claims: Any) -> None:
 
 def validate_phase_output(phase: str, output: Any) -> dict[str, Any]:
     """Validate the phase envelope before it reaches Orchestrator state."""
-    if not isinstance(output, dict):
-        raise _invalid_output("structured output must be an object", "malformed JSON")
-    required: dict[str, tuple[str, ...]] = {
-        "respond": ("answer",),
-        "claim_extract": ("claims",),
-        "verify": ("claims",),
-        "criticize": ("critique",),
-        "synthesize": ("answer",),
-        "audit": ("status",),
-    }
-    for key in required.get(phase, ()):
-        if key not in output:
-            raise _invalid_output(f"missing field: {key}")
-    if phase in ("respond", "criticize", "synthesize") and not isinstance(
-        output[required[phase][0]], str
-    ):
-        key = required[phase][0]
-        raise _invalid_output(
-            "text field must be a string",
-            f"invalid type for field: {key}; expected string; actual {_json_type_name(output[key])}",
-        )
-    if phase in ("claim_extract", "verify"):
-        _validate_claims(output["claims"])
-    if phase == "audit" and output["status"] not in {"approved", "changes_required", "blocked"}:
-        raise _invalid_output("invalid audit status", "invalid enum for field: status")
-    return output
+    try:
+        return validate_phase_schema(phase, output)
+    except SchemaValidationError as exc:
+        raise _invalid_output(str(exc), exc.summary) from exc

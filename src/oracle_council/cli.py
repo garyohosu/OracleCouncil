@@ -80,6 +80,7 @@ class FakeAgentAdapter:
                             "claim_id": "claim-1",
                             "importance": "major",
                             "status": "unverified",
+                            "claim_role": "proposed_answer",
                             "text": "This is a mock claim.",
                         }
                     ]

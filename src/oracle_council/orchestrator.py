@@ -37,6 +37,7 @@ from .models import (
     utc_now,
 )
 from .storage import StorageBackend, StorageWriteError
+from .phase_schema import get_phase_schema
 
 # oracleExitCode (SPEC §13.4). Only the codes reachable from the phase-0
 # flow are mapped here; the remaining input/environment stops and cancel
@@ -420,7 +421,7 @@ class Orchestrator:
                 "critique": state.critique,
                 "final_answer": state.final_answer,
             }
-            result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload))
+            result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload, get_phase_schema(phase)))
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
             state.executions.append(

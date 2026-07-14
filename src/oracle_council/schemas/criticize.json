@@ -1,0 +1,1 @@
+{"type":"object","properties":{"critique":{"type":"string","minLength":1,"maxLength":6000}},"required":["critique"],"additionalProperties":false}

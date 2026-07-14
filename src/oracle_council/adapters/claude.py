@@ -7,6 +7,7 @@ import subprocess
 from typing import Any
 
 from ..models import AgentFailure, AgentRequest, AgentResult, SearchError, SearchResult, Usage, utc_now
+from ..phase_schema import get_phase_schema
 from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output
 
 # Claude Code has no --output-schema flag (unlike Codex). The model must be
@@ -52,15 +53,15 @@ _EXTRA_CONSTRAINTS = {
 }
 
 
-def _build_prompt(phase: str, question: str) -> str:
+def _build_prompt(phase: str, question: str, output_schema: dict[str, Any] | None = None) -> str:
     hint = _PHASE_SCHEMA_HINT.get(phase)
     if not hint:
         return question
+    schema_text = json.dumps(output_schema or get_phase_schema(phase), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     parts = [
         question,
         "",
-        "Respond with ONLY a single valid JSON object matching this shape, "
-        f"no markdown code fences and no other text: {hint}",
+        "Respond with ONLY one JSON object that validates against this JSON Schema.\n" + schema_text,
     ]
     constraint = _EXTRA_CONSTRAINTS.get(phase)
     if constraint:
@@ -137,7 +138,7 @@ class ClaudeAdapter:
         if status != "OK":
             raise AgentFailure(status, f"Claude Agent {self.agent_id} is unavailable: {status}")
 
-        prompt = _build_prompt(request.phase, build_phase_input(request))
+        prompt = _build_prompt(request.phase, build_phase_input(request), request.output_schema)
 
         cmd = [
             "claude",

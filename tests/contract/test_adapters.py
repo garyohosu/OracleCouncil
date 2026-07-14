@@ -46,12 +46,11 @@ class TestValidatePhaseOutputClaimEnums:
                 },
             )
 
-    def test_missing_status_is_allowed_and_defaults_downstream(self):
-        # claim_extract may omit status; Claim.from_dict defaults to unverified.
-        output = validate_phase_output(
-            "claim_extract", {"claims": [{"claim_id": "c1", "importance": "minor"}]}
-        )
-        assert output["claims"][0]["importance"] == "minor"
+    def test_claim_extract_requires_formal_fields(self):
+        with pytest.raises(AgentFailure):
+            validate_phase_output(
+                "claim_extract", {"claims": [{"claim_id": "c1", "importance": "minor"}]}
+            )
 
     def test_missing_claim_id_is_rejected(self):
         with pytest.raises(AgentFailure):

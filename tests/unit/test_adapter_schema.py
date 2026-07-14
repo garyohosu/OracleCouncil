@@ -6,7 +6,7 @@ from oracle_council.models import AgentFailure, safe_error_summary, safe_public_
 
 def test_phase_schema_accepts_required_fields():
     assert validate_phase_output("respond", {"answer": "ok"})["answer"] == "ok"
-    assert validate_phase_output("audit", {"status": "approved"})["status"] == "approved"
+    assert validate_phase_output("audit", {"status": "approved", "issues": []})["status"] == "approved"
 
 
 @pytest.mark.parametrize(
@@ -24,7 +24,7 @@ def test_phase_schema_reports_safe_structural_detail_without_raw_value():
     with pytest.raises(AgentFailure) as error:
         validate_phase_output(
             "claim_extract",
-            {"claims": [{"claim_id": "c1", "importance": "SECRET-IMPORTANCE"}]},
+            {"claims": [{"claim_id": "c1", "importance": "SECRET-IMPORTANCE", "status": "unverified", "claim_role": "proposed_answer", "text": "claim"}]},
         )
 
     assert error.value.error_code == "INVALID_OUTPUT"

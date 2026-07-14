@@ -678,6 +678,8 @@
 - **未確定仕様への依存**: `BLOCKED: QandA T-2`
 
 #### **UT-AA-05: JSON Schema違反エラー**
+
+X-8.18追加: `respond`、`claim_extract`、`verify`、`criticize`、`synthesize`、`audit`のpackage resource Schemaを読み込み、必須項目、closed object、Enum、文字数・件数上限、deep copy、unknown phase fail-closedをFake/Unitで検証する。Claude promptとCodex temp schemaが同一Schemaであることも確認する。
 - **テストレベル**: UT
 - **対象クラス/機能**: `AgentAdapter` / `adapters/base.py`
 - **関連仕様・UC・SEQ**: SPEC §8.5, §16.1

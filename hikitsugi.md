@@ -401,3 +401,7 @@ No source, test, config, runner, or eval-set changes. Raw stdout was read only f
 - Fakeテストで、TIMEOUT retry→3 Agent目 substitution成功、2 Agent synthesize quota failureの救済不能、3 Agent synthesize substitutionと別Auditor、metadata-only event、決定的Planを確認。12回のTokenBudget境界と既存retry回帰も維持。
 
 検証: targeted tests `55 passed`、通常pytest `264 passed, 6 deselected`、`git diff --check`成功。q03 DNS failure-boundary、S-9/S-10、L-5、S-8は未解決。次はL-5、その後S-8。
+
+## X-8.18 L-5 phase schema実装（2026-07-14）
+
+6フェーズの正式JSON Schema resource、共通validator、AgentRequestへのdeep-copy注入、Claude/Codex共有、Fake/Contract/Unitテストを実装した。全objectをclosedとし、必須項目、Enum、文字数・件数上限、固定安全summaryを確定した。実Claude/Codex、WebSearch、実HTTP、live評価は未実行。S-8、q03 DNS、S-9/S-10は未解決として維持する。
