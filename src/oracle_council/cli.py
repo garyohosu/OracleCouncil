@@ -243,6 +243,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "error_code": execution.error_code,
                 "error_summary": safe_error_summary(execution.error_summary),
                 "retry_of": execution.retry_of,
+                "substitute_for": execution.substitute_for,
                 "elapsed_ms": execution.elapsed_ms,
             }
             for execution in result.executions

@@ -388,3 +388,16 @@ Aggregate (X-8.15): attempted 4/4; completed 3; verified 1 / partially_verified 
 **Combined M-5-pre baseline (X-8.14 q01–q02 + X-8.15 q05–q08)**: 6 questions reached a Run; 5/6 within allowed classifications; 5/5 assessable acceptance checks met; failures are one pre-Run DNS failure (q03, separate systemic bucket) and one mid-Run quota exhaustion (q08). No incorrect published answer occurred in any baseline question.
 
 No source, test, config, runner, or eval-set changes. Raw stdout was read only for sanitized structured fields; stderr was not read. Nothing from the evaluation output was added to Git. Next work: **M-5 spec confirmation** (the q08 quota failure directly motivates it), then L-5, then S-8. q03's `getaddrinfo failed` remains a separate pre-Run failure-boundary task and must not be assumed solved by M-5 alone.
+
+## X-8.17. M-5 / S-5 ExecutionPlan・Agent substitution実装（2026-07-14）
+
+実行前HEADは`d59be6a`（X-8.17指示書）で、X-8.16仕様コミット`554602d`とX-8.15結果`599d3d0`を含む。実装は通常経路とFakeテストだけを対象とし、実Claude/Codex、WebSearch、実HTTP、live/expensive評価、q01〜q08再実行は行っていない。
+
+- `assignment.py`に不変の`ExecutionPlan`、`PhaseAssignment`、`RunAgentAvailability`、`build_execution_plan(run_id, agents)`を追加。Run開始時に渡された適格Agent snapshotを`configured_agent_ids`として固定し、`role_priority`降順・設定順tie-breakで7 logical slotの候補順を確定する。旧`AssignmentPlan`/`plan_assignments()`は互換wrapperとして維持。
+- `orchestrator.py`はRun開始後同じPlanを実行正本として使用し、Run全体のretry=2、substitution=1をstateで管理。`TIMEOUT`/`RATE_LIMITED`は同一Agent retry、hard unavailable（AUTH_REQUIRED/QUOTA_EXCEEDED/COMMAND_NOT_FOUND/UNSUPPORTED_VERSION/UNSAFE_CAPABILITY）はRun全体除外、`EXECUTION_ERROR`はslot-local除外とした。M-5対象外は代替せず既存終端を維持。
+- `AgentExecutionRecord.substitute_for`を追加し、`retry_of`との同時設定を拒否。retry/substitutionは別Execution・別BudgetReservationで、CLI JSON `executions[]`にも`substitute_for`を出力する。
+- substitution成功・候補なしを`agent_substitute_selected`/`agent_substitution_unavailable`で記録。eventはphase、slot、execution/agent ID、固定reasonだけで、raw診断、prompt、質問、回答、Claim/Evidence本文、path、env、secretを含めない。
+- Responderはplanned distinct slotを維持し、成功済みResponderを代替候補にしない。Synthesizer候補は別Auditor候補をlook-aheadで確保し、Auditorはcurrent Synthesizerを除外する。revisionはcurrent担当をpreferredにする。
+- Fakeテストで、TIMEOUT retry→3 Agent目 substitution成功、2 Agent synthesize quota failureの救済不能、3 Agent synthesize substitutionと別Auditor、metadata-only event、決定的Planを確認。12回のTokenBudget境界と既存retry回帰も維持。
+
+検証: targeted tests `55 passed`、通常pytest `264 passed, 6 deselected`、`git diff --check`成功。q03 DNS failure-boundary、S-9/S-10、L-5、S-8は未解決。次はL-5、その後S-8。

@@ -41,11 +41,19 @@
 |---|---|---|
 | O-6 | stdin限定と一時ファイル許可の矛盾。`CodexAdapter`・`ClaudeAdapter`・`CliSearchProvider`のuser-derived入力（Phase入力、検索クエリ）はすべてargvではなくstdin経由で渡し、argvには固定フラグのみを含める。Codexのtemp fileは`--output-schema`用JSON Schemaのみに限定 | `src/oracle_council/adapters/claude.py`・`adapters/codex.py`、Fakeテスト（X-8.10〜X-8.12）、実機live確認（X-8.13、HEAD `8fcdeaf`、q04で`exit_code=0`/`classification=verified`/全7フェーズ成功） |
 
-## 0-6. X-8.16で仕様確定済み・実装未着手
+## 0-6. X-8.16で仕様確定済み
 
 | # | 内容 | 反映箇所 |
 |---|---|---|
 | M-5 / S-5 | `ExecutionPlan`、決定的候補順、retry=Run全体2回、substitution=Run全体1回、AI call=12回、error code別処理、Responder独立性、Synthesizer/Auditor分離とlook-ahead、可用性scopeを同時確定 | QandA、SPEC §6.2〜§6.4/§8.3、CLASS、SEQUENCE、STATE、TESTCASE |
+
+## 0-7. X-8.17で通常実装・Fakeテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |
+
+実Claude/Codex、live評価、q03 DNS、S-9/S-10、L-5、S-8は未着手。次はL-5、その後S-8。
 
 ## 0. v0.3.1で解消済み
 

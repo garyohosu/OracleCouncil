@@ -2,9 +2,9 @@
 
 Selection is never random: agents are ranked per phase by role_priority
 (higher wins) and ties fall back to configuration order. The same set of
-available agents therefore always yields the same plan, including the
-substitute chosen after an agent drops out (callers re-plan with the
-reduced agent list).
+available agents therefore always yields the same plan. The plan's candidate
+order is retained for the lifetime of a Run; substitution filters that
+immutable order by Run-local availability and slot constraints.
 """
 
 from __future__ import annotations
@@ -25,6 +25,39 @@ class RegisteredAgent:
     agent_id: str
     adapter: Any
     role_priority: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PhaseAssignment:
+    phase: str
+    slot_index: int
+    required_success_count: int
+    candidate_agent_ids: tuple[str, ...]
+    constraints: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RunAgentAvailability:
+    agent_id: str
+    status: str = "available"
+    reason_code: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    run_id: str
+    configured_agent_ids: tuple[str, ...]
+    phase_assignments: tuple[PhaseAssignment, ...]
+    agent_availability: tuple[RunAgentAvailability, ...]
+    max_run_retries: int = 2
+    max_run_substitutions: int = 1
+    max_agent_calls: int = 12
+
+    def assignment_for(self, phase: str, slot_index: int = 0) -> PhaseAssignment:
+        for assignment in self.phase_assignments:
+            if assignment.phase == phase and assignment.slot_index == slot_index:
+                return assignment
+        raise KeyError((phase, slot_index))
 
 
 @dataclass(frozen=True)
@@ -52,7 +85,18 @@ def rank(agents: Sequence[RegisteredAgent], phase: str, exclude: frozenset[str] 
     return [agent for _, agent in candidates]
 
 
-def plan_assignments(agents: Sequence[RegisteredAgent]) -> AssignmentPlan:
+_PLAN_ASSIGNMENTS = (
+    ("respond", 0, 2, ("distinct_responder",)),
+    ("respond", 1, 2, ("distinct_responder",)),
+    ("claim_extract", 0, 1, ()),
+    ("verify", 0, 1, ()),
+    ("criticize", 0, 1, ()),
+    ("synthesize", 0, 1, ("auditor_must_remain_distinct",)),
+    ("audit", 0, 1, ("synthesizer_must_be_distinct",)),
+)
+
+
+def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> ExecutionPlan:
     if len({agent.agent_id for agent in agents}) != len(agents):
         raise ValueError("agent_id must be unique")
     if len(agents) < 2:
@@ -60,19 +104,39 @@ def plan_assignments(agents: Sequence[RegisteredAgent]) -> AssignmentPlan:
             "verify requires two distinct responders and a separate auditor"
         )
 
-    responder_ranking = rank(agents, "respond")
-    responders = (responder_ranking[0], responder_ranking[1])
-
-    synthesize = rank(agents, "synthesize")[0]
-    audit_ranking = rank(agents, "audit", exclude=frozenset({synthesize.agent_id}))
-    if not audit_ranking:
+    rankings = {phase: tuple(agent.agent_id for agent in rank(agents, phase))
+                for phase in {item[0] for item in _PLAN_ASSIGNMENTS}}
+    synth_id = rankings["synthesize"][0]
+    if not any(agent_id != synth_id for agent_id in rankings["audit"]):
         raise InsufficientAgentsError("auditor distinct from synthesizer is unavailable")
+
+    assignments = tuple(
+        PhaseAssignment(phase, slot, required, rankings[phase], constraints)
+        for phase, slot, required, constraints in _PLAN_ASSIGNMENTS
+    )
+    return ExecutionPlan(
+        run_id=run_id,
+        configured_agent_ids=tuple(agent.agent_id for agent in agents),
+        phase_assignments=assignments,
+        agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in agents),
+    )
+
+
+def plan_assignments(agents: Sequence[RegisteredAgent]) -> AssignmentPlan:
+    plan = build_execution_plan("compat-plan", agents)
+    by_id = {agent.agent_id: agent for agent in agents}
+    responders = tuple(by_id[agent_id] for agent_id in plan.assignment_for("respond", 0).candidate_agent_ids[:2])
+    synthesize = by_id[plan.assignment_for("synthesize").candidate_agent_ids[0]]
+    audit_id = next(
+        agent_id for agent_id in plan.assignment_for("audit").candidate_agent_ids
+        if agent_id != synthesize.agent_id
+    )
 
     return AssignmentPlan(
         responders=responders,
-        claim_extract=rank(agents, "claim_extract")[0],
-        verify=rank(agents, "verify")[0],
-        criticize=rank(agents, "criticize")[0],
+        claim_extract=by_id[plan.assignment_for("claim_extract").candidate_agent_ids[0]],
+        verify=by_id[plan.assignment_for("verify").candidate_agent_ids[0]],
+        criticize=by_id[plan.assignment_for("criticize").candidate_agent_ids[0]],
         synthesize=synthesize,
-        audit=audit_ranking[0],
+        audit=by_id[audit_id],
     )

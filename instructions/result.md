@@ -240,3 +240,16 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - S-5の正式モデルはRun開始時に決定する`ExecutionPlan`、`PhaseAssignment`、`RunAgentAvailability`。候補順はprobe/capability適格、`role_priority`降順、設定順tie-break、失敗・hard unavailable除外、phase独立性制約の順。Responderは異なる2 Agent、Synthesizer/Auditorは常に別Agentとし、Synthesizer候補に別Auditor候補をlook-aheadで確保する。
 - 既定2 AgentでSynthesizerのquota障害後に代替すると別Auditorが残らない場合は、既存の分離要件を破って救済せずRunをfailedにする。q03のDNS失敗はM-5とは別のfailure-boundary課題として維持する。
 - 更新文書: `QandA.md`、`SPEC.md` v0.3.9、`CLASS.md`、`SEQUENCE.md`、`STATE.md`、`TESTCASE.md`、`FIX_PLAN.md`、`hikitsugi.md`、本書。次作業はM-5/S-5実装、その後L-5、S-8。
+
+## X-8.17 M-5 / S-5 ExecutionPlan・Agent substitution実装 (2026-07-14)
+
+- 実行前HEAD: `d59be6a`。X-8.16仕様`554602d`、X-8.15結果`599d3d0`を祖先として確認した。
+- `assignment.py`に不変`ExecutionPlan`、`PhaseAssignment`、`RunAgentAvailability`、`build_execution_plan()`を追加。Run開始時の適格Agent snapshotを候補順の入力とし、`role_priority`降順・設定順tie-breakでrespond 2 slot、claim_extract、verify、criticize、synthesize、auditを固定した。旧AssignmentPlan APIは互換維持。
+- `orchestrator.py`は同一PlanをRun終了まで使用し、Run全体retry=2、substitution=1を分離管理。`TokenBudget.reserve()`の12回上限は変更せず、別counterで13回目を許可しない。retry/substitutionは別Execution・別Reservation。
+- `TIMEOUT`/`RATE_LIMITED`は同一Agent retry。`AUTH_REQUIRED`、`QUOTA_EXCEEDED`、`COMMAND_NOT_FOUND`、`UNSUPPORTED_VERSION`、`UNSAFE_CAPABILITY`はRun全体unavailable、`EXECUTION_ERROR`はslot-local除外。`INVALID_OUTPUT`、`BUDGET_EXCEEDED`等のM-5対象外は代替しない。
+- `AgentExecutionRecord`とCLI JSON `executions[]`に`substitute_for`を追加し、`retry_of`との排他をモデルで強制。`agent_substitute_selected`/`agent_substitution_unavailable`を安全なmetadataのみで保存した。
+- Responderの異なる2 Agent制約、成功済みResponderの代替禁止、Synthesizer/Auditor look-ahead分離、revision時のcurrent担当preferredを実装。
+- Fake結果: TIMEOUT retry失敗後の3 Agent substitution成功、2 Agent synthesize quota failureは別Auditor不足で救済不能、3 Agentでは代替Synthesizer＋別Auditorで継続、substitution eventにraw情報なし。Plan決定性とcall/retry/substitution境界も確認。
+- targeted tests: `55 passed`。通常pytest: `264 passed, 6 deselected`。`git diff --check`: 成功。
+- 変更: `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、`tests/unit/test_assignment.py`、`tests/unit/test_orchestrator.py`、`FIX_PLAN.md`、`hikitsugi.md`、本書。実Claude/Codex、WebSearch、実HTTP、live/expensive評価、評価データ再実行は未実施。
+- q03 DNS failure-boundary、S-9/S-10、L-5、S-8は未解決。次作業はL-5、その後S-8。

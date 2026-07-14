@@ -5,7 +5,13 @@ from itertools import count
 from typing import Any, Sequence
 from uuid import uuid4
 
-from .assignment import AssignmentPlan, RegisteredAgent, plan_assignments
+from .assignment import (
+    AssignmentPlan,
+    ExecutionPlan,
+    InsufficientAgentsError,
+    RegisteredAgent,
+    build_execution_plan,
+)
 from .budget import BudgetExceededError, TokenBudget
 from .classification import classify, is_withheld
 from .models import (
@@ -45,15 +51,16 @@ _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
 _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
 
 # SPEC §8.3: only transient timeouts and rate limits are retried, at most
-# once per execution and twice per run. INVALID_OUTPUT recovery is pending
-# QandA L-3 and substitute-agent selection is pending M-5, so every other
-# failure terminates the run deterministically.
+# once per logical slot and twice per run. INVALID_OUTPUT recovery remains
+# pending QandA L-3; substitution follows the immutable ExecutionPlan.
 _RETRYABLE_ERROR_CODES = frozenset({"TIMEOUT", "RATE_LIMITED"})
 _MAX_RUN_RETRIES = 2
+_MAX_RUN_SUBSTITUTIONS = 1
 
 _UNAVAILABLE_ERROR_CODES = frozenset(
     {"AUTH_REQUIRED", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "UNSUPPORTED_VERSION", "UNSAFE_CAPABILITY"}
 )
+_SUBSTITUTION_ERROR_CODES = _RETRYABLE_ERROR_CODES | _UNAVAILABLE_ERROR_CODES | frozenset({"EXECUTION_ERROR"})
 
 _MINIMUM_SUCCESS = {
     "respond": 2,
@@ -95,11 +102,10 @@ class Orchestrator:
         # Pre-flight (V-1): assignment failures such as insufficient_agents
         # stop before a Run exists, so nothing is persisted and the error
         # propagates to the CLI layer with its own status and exit code.
-        plan = plan_assignments(self._agents)
-
         run_id = str(uuid4())
+        plan = build_execution_plan(run_id, self._agents)
         sequence = count(1)
-        state = _RunState(question)
+        state = _RunState(question, plan)
         try:
             self._append(
                 run_id,
@@ -108,10 +114,10 @@ class Orchestrator:
             )
             respond_index = 0
             for phase in _VERIFY_PHASES:
-                agent = plan.adapter_for(phase, respond_index)
+                slot_index = respond_index if phase == "respond" else 0
                 if phase == "respond":
                     respond_index += 1
-                failure = self._execute_phase(run_id, phase, agent, sequence, state)
+                failure = self._execute_phase(run_id, phase, slot_index, sequence, state)
                 if failure is not None:
                     return failure
 
@@ -134,9 +140,7 @@ class Orchestrator:
                 )
 
             for phase in ("criticize", "synthesize", "audit"):
-                failure = self._execute_phase(
-                    run_id, phase, plan.adapter_for(phase), sequence, state
-                )
+                failure = self._execute_phase(run_id, phase, 0, sequence, state)
                 if failure is not None:
                     return failure
             state.issues = [
@@ -162,16 +166,12 @@ class Orchestrator:
                 "revision_started",
                 {"reason": "changes_required", "open_issues": [i.issue_id for i in state.issues]},
             )
-            failure = self._execute_phase(
-                run_id, "synthesize", plan.adapter_for("synthesize"), sequence, state
-            )
+            failure = self._execute_phase(run_id, "synthesize", 0, sequence, state)
             if failure is not None:
                 return failure
             self._append(run_id, "synthesis_revised", {})
             self._append(run_id, "reaudit_started", {})
-            failure = self._execute_phase(
-                run_id, "audit", plan.adapter_for("audit"), sequence, state
-            )
+            failure = self._execute_phase(run_id, "audit", 0, sequence, state)
             if failure is not None:
                 return failure
             self._append(run_id, "reaudit_completed", {"status": state.audit_status})
@@ -198,16 +198,33 @@ class Orchestrator:
             self._budget.assert_settled()
 
     def _execute_phase(
-        self, run_id: str, phase: str, agent: RegisteredAgent, sequence, state: _RunState
+        self, run_id: str, phase: str, slot_index: int, sequence, state: _RunState
     ) -> RunResult | None:
-        """Run one phase with at most one retry (SPEC §8.3). Returns a terminal
-        RunResult on failure, or None when the phase succeeded."""
+        """Execute one logical slot using the immutable plan candidate order."""
         record = state.phase(run_id, phase)
+        assignment = state.plan.assignment_for(phase, slot_index)
+        agents_by_id = {agent.agent_id: agent for agent in self._agents}
+        failed_slot_agents: set[str] = set()
+        try:
+            agent = self._select_initial_agent(phase, slot_index, assignment, state, agents_by_id)
+        except InsufficientAgentsError:
+            record.status = PhaseStatus.FAILED
+            record.error_code = "MINIMUM_SUCCESS_NOT_MET"
+            record.error_summary = _summary(phase, "MINIMUM_SUCCESS_NOT_MET")
+            record.finished_at = utc_now()
+            return self._finish(
+                run_id, RunStatus.FAILED, ResultClassification.UNVERIFIED, None, state, EXIT_FAILED
+            )
         retry_of: str | None = None
+        substitute_for: str | None = None
+        slot_retry_used = False
+        substitution_started = False
         while True:
             execution_id = f"exec-{next(sequence)}"
             try:
-                result = self._attempt(run_id, phase, agent, execution_id, retry_of, state)
+                result = self._attempt(
+                    run_id, phase, agent, execution_id, retry_of, substitute_for, state
+                )
             except BudgetExceededError:
                 record.status = PhaseStatus.FAILED
                 record.error_code = "BUDGET_EXCEEDED"
@@ -225,17 +242,59 @@ class Orchestrator:
                         "agent_id": agent.agent_id,
                         "error_code": failure.error_code,
                         **({"retry_of": retry_of} if retry_of else {}),
+                        **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
                 )
+                failed_slot_agents.add(agent.agent_id)
+                if failure.error_code in _UNAVAILABLE_ERROR_CODES:
+                    state.mark_run_unavailable(agent.agent_id, failure.error_code)
                 can_retry = (
                     failure.error_code in _RETRYABLE_ERROR_CODES
-                    and retry_of is None  # at most one retry per execution
+                    and not slot_retry_used
+                    and not substitution_started
                     and state.run_retries_used < _MAX_RUN_RETRIES
                 )
                 if can_retry:
                     state.run_retries_used += 1
+                    slot_retry_used = True
                     retry_of = execution_id
+                    substitute_for = None
                     continue
+                substitute = None
+                if failure.error_code in _SUBSTITUTION_ERROR_CODES:
+                    substitute = self._select_substitute(
+                        phase, slot_index, assignment, state, agents_by_id, failed_slot_agents
+                    )
+                if substitute is not None and not substitution_started:
+                    state.run_substitutions_used += 1
+                    substitution_started = True
+                    self._append(
+                        run_id,
+                        "agent_substitute_selected",
+                        {
+                            "phase": phase,
+                            "slot_index": slot_index,
+                            "failed_execution_id": execution_id,
+                            "original_agent_id": agent.agent_id,
+                            "substitute_agent_id": substitute.agent_id,
+                        },
+                    )
+                    agent = substitute
+                    substitute_for = execution_id
+                    retry_of = None
+                    continue
+                if failure.error_code in _SUBSTITUTION_ERROR_CODES:
+                    self._append(
+                        run_id,
+                        "agent_substitution_unavailable",
+                        {
+                            "phase": phase,
+                            "slot_index": slot_index,
+                            "failed_execution_id": execution_id,
+                            "original_agent_id": agent.agent_id,
+                            "reason": "no_eligible_candidate_or_limit_used",
+                        },
+                    )
                 record.status = PhaseStatus.FAILED
                 record.error_code = failure.error_code
                 record.error_summary = error_summary
@@ -264,6 +323,7 @@ class Orchestrator:
                         "execution_id": execution_id,
                         "agent_id": agent.agent_id,
                         **({"retry_of": retry_of} if retry_of else {}),
+                        **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
                 )
                 return self._finish(
@@ -278,12 +338,75 @@ class Orchestrator:
                     "execution_id": execution_id,
                     "agent_id": agent.agent_id,
                     **({"retry_of": retry_of} if retry_of else {}),
+                    **({"substitute_for": substitute_for} if substitute_for else {}),
                 },
             )
+            if phase == "respond":
+                state.successful_responder_ids.add(agent.agent_id)
+            elif phase == "synthesize":
+                state.current_synthesizer_agent_id = agent.agent_id
+            elif phase == "audit":
+                state.current_auditor_agent_id = agent.agent_id
             return None
 
-    def _attempt(self, run_id, phase, agent, execution_id, retry_of, state: _RunState):
-        # A retry is a new execution with its own reservation (S-7).
+    def _select_initial_agent(self, phase, slot_index, assignment, state, agents_by_id):
+        candidates = [
+            agents_by_id[agent_id]
+            for agent_id in assignment.candidate_agent_ids
+            if state.agent_status(agent_id) == "available"
+        ]
+        if phase == "respond" and slot_index == 1:
+            candidates = [a for a in candidates if a.agent_id not in state.successful_responder_ids]
+        if phase == "audit" and state.current_synthesizer_agent_id:
+            candidates = [a for a in candidates if a.agent_id != state.current_synthesizer_agent_id]
+        if phase == "synthesize" and state.current_synthesizer_agent_id:
+            candidates.sort(key=lambda item: item.agent_id != state.current_synthesizer_agent_id)
+        if phase == "audit" and state.current_auditor_agent_id:
+            candidates.sort(key=lambda item: item.agent_id != state.current_auditor_agent_id)
+        if phase == "synthesize":
+            candidates = [
+                a for a in candidates
+                if any(
+                    auditor.agent_id != a.agent_id and state.agent_status(auditor.agent_id) == "available"
+                    for auditor in (agents_by_id[aid] for aid in state.plan.assignment_for("audit").candidate_agent_ids)
+                )
+            ]
+        if not candidates:
+            raise InsufficientAgentsError(f"no eligible agent for {phase} slot {slot_index}")
+        return candidates[0]
+
+    def _select_substitute(self, phase, slot_index, assignment, state, agents_by_id, failed_slot_agents):
+        if state.run_substitutions_used >= _MAX_RUN_SUBSTITUTIONS:
+            return None
+        candidates = [
+            agents_by_id[agent_id]
+            for agent_id in assignment.candidate_agent_ids
+            if agent_id not in failed_slot_agents
+            and state.agent_status(agent_id) == "available"
+        ]
+        if phase == "respond":
+            reserved = set(state.plan.assignment_for("respond", 0).candidate_agent_ids[:2])
+            candidates = [
+                a for a in candidates
+                if a.agent_id not in state.successful_responder_ids
+                and a.agent_id not in reserved
+            ]
+        if phase == "audit" and state.current_synthesizer_agent_id:
+            candidates = [a for a in candidates if a.agent_id != state.current_synthesizer_agent_id]
+        if phase == "synthesize":
+            audit_ids = state.plan.assignment_for("audit").candidate_agent_ids
+            candidates = [
+                a for a in candidates
+                if any(
+                    aid != a.agent_id and state.agent_status(aid) == "available"
+                    and aid not in failed_slot_agents
+                    for aid in audit_ids
+                )
+            ]
+        return candidates[0] if candidates else None
+
+    def _attempt(self, run_id, phase, agent, execution_id, retry_of, substitute_for, state: _RunState):
+        # Retry and substitution are separate executions and reservations (S-7).
         reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
         started_at = utc_now()
         started = False
@@ -302,7 +425,7 @@ class Orchestrator:
             self._budget.commit(reservation.reservation_id, result.usage)
             state.executions.append(
                 self._execution_record(
-                    run_id, phase, agent, execution_id, retry_of, started_at,
+                    run_id, phase, agent, execution_id, retry_of, substitute_for, started_at,
                     AgentExecutionStatus.SUCCEEDED,
                 )
             )
@@ -314,7 +437,7 @@ class Orchestrator:
             self._budget.commit(reservation.reservation_id, None)
             state.executions.append(
                 self._execution_record(
-                    run_id, phase, agent, execution_id, retry_of, started_at,
+                    run_id, phase, agent, execution_id, retry_of, substitute_for, started_at,
                     _execution_status(failure.error_code),
                     error_code=failure.error_code,
                     error_summary=_failure_summary(phase, failure),
@@ -331,7 +454,7 @@ class Orchestrator:
             raise
 
     def _execution_record(
-        self, run_id, phase, agent, execution_id, retry_of, started_at, status,
+        self, run_id, phase, agent, execution_id, retry_of, substitute_for, started_at, status,
         error_code=None, error_summary=None, raw_diagnostic=None,
     ) -> AgentExecutionRecord:
         finished_at = utc_now()
@@ -348,6 +471,7 @@ class Orchestrator:
             error_summary=error_summary or (_summary(phase, error_code) if error_code else None),
             raw_diagnostic=raw_diagnostic,
             retry_of=retry_of,
+            substitute_for=substitute_for,
         )
 
     def _apply_output(self, run_id: str, phase: str, output: dict, state: _RunState) -> None:
@@ -647,8 +771,9 @@ def _evidence_outcome(metrics: dict[str, Any], detailed: bool) -> str:
 
 
 class _RunState:
-    def __init__(self, question: str) -> None:
+    def __init__(self, question: str, plan: ExecutionPlan) -> None:
         self.question = question
+        self.plan = plan
         self.created_at = utc_now()
         self.responses: list[dict] = []
         self.claims: tuple[Claim, ...] = ()
@@ -661,6 +786,11 @@ class _RunState:
         self.issues: list[AuditIssue] = []
         self.calls = 0
         self.run_retries_used = 0
+        self.run_substitutions_used = 0
+        self.agent_availability = {item.agent_id: item for item in plan.agent_availability}
+        self.successful_responder_ids: set[str] = set()
+        self.current_synthesizer_agent_id: str | None = None
+        self.current_auditor_agent_id: str | None = None
         self.phases: dict[str, PhaseRecord] = {}
         self.executions: list[AgentExecutionRecord] = []
 
@@ -674,6 +804,16 @@ class _RunState:
                 started_at=utc_now(),
             )
         return self.phases[name]
+
+    def agent_status(self, agent_id: str) -> str:
+        return self.agent_availability[agent_id].status
+
+    def mark_run_unavailable(self, agent_id: str, reason_code: str) -> None:
+        from .assignment import RunAgentAvailability
+
+        self.agent_availability[agent_id] = RunAgentAvailability(
+            agent_id=agent_id, status="run_unavailable", reason_code=reason_code
+        )
 
 
 __all__ = [

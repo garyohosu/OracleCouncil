@@ -343,6 +343,11 @@ class AgentExecutionRecord:
     error_summary: str | None = None
     raw_diagnostic: str | None = None
     retry_of: str | None = None
+    substitute_for: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.retry_of is not None and self.substitute_for is not None:
+            raise ValueError("retry_of and substitute_for are mutually exclusive")
 
 
 @dataclass

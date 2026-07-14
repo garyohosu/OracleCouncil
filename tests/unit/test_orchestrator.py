@@ -316,7 +316,7 @@ def test_run_result_keeps_evidence_when_later_phase_fails():
             claims_output("unverified"),
             AgentFailure("AUTH_REQUIRED"),
         ],
-        [{"answer": "B"}],
+        [{"answer": "B"}, AgentFailure("AUTH_REQUIRED")],
         evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
     )
     result = orchestrator.run_verify("q")
@@ -672,7 +672,7 @@ def test_timeout_is_retried_once_with_new_execution_and_history_kept():
 def test_second_timeout_of_same_execution_terminates_run():
     orchestrator, adapter_a, _ = build_raw(
         [AgentFailure("TIMEOUT"), AgentFailure("TIMEOUT")],
-        [{"answer": "B"}],
+        [{"answer": "B"}, AgentFailure("TIMEOUT")],
     )
     budget = orchestrator._budget
 
@@ -709,7 +709,7 @@ def test_run_level_retry_budget_is_two():
             claims_output("unverified"),
             AgentFailure("TIMEOUT"),  # verify -> run retry budget exhausted
         ],
-        [{"answer": "B"}],
+        [{"answer": "B"}, AgentFailure("TIMEOUT")],
     )
 
     result = orchestrator.run_verify("q")
@@ -718,7 +718,7 @@ def test_run_level_retry_budget_is_two():
     assert result.exit_code == EXIT_FAILED
     phases = [r.phase for r in adapter_a.requests]
     assert phases == ["respond", "respond", "claim_extract", "claim_extract", "verify"]
-    assert result.call_count == 6  # attempts: 2 + 1 + 2 + 1
+    assert result.call_count == 7  # attempts: 2 + 1 + 2 + 1 + one substitution
 
 
 def test_no_store_run_touches_no_storage():
@@ -755,7 +755,7 @@ def test_execution_error_keeps_fixed_summary_without_invalid_output_wrapper():
             claims_output("unverified"),
             AgentFailure("EXECUTION_ERROR", "raw stderr SECRET-TOKEN", public_summary=fixed),
         ],
-        [{"answer": "B"}],
+        [{"answer": "B"}, AgentFailure("EXECUTION_ERROR", public_summary=fixed)],
     )
 
     result = orchestrator.run_verify("private question")
@@ -781,7 +781,7 @@ def test_execution_error_phase_mismatch_falls_back_to_fixed_code_summary():
                 public_summary="criticize process exited with a non-zero status.",
             ),
         ],
-        [{"answer": "B"}],
+        [{"answer": "B"}, AgentFailure("EXECUTION_ERROR")],
     )
 
     result = orchestrator.run_verify("q")
@@ -789,3 +789,89 @@ def test_execution_error_phase_mismatch_falls_back_to_fixed_code_summary():
     assert phase_by_name(result)["verify"].error_summary == (
         "verify execution ended with EXECUTION_ERROR."
     )
+
+
+def _build_three_agent(a_script, b_script, c_script, storage=None):
+    adapters = [
+        ScriptedAgentAdapter(a_script),
+        ScriptedAgentAdapter(b_script),
+        ScriptedAgentAdapter(c_script),
+    ]
+    agents = [
+        RegisteredAgent("agent-a", adapters[0], {"verify": 100, "synthesize": 100}),
+        RegisteredAgent("agent-b", adapters[1], {"audit": 100}),
+        RegisteredAgent("agent-c", adapters[2], {"verify": 90, "synthesize": 90}),
+    ]
+    return Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    ), adapters
+
+
+def test_timeout_retry_failure_then_three_agent_substitution_succeeds():
+    storage = InMemoryStorageBackend()
+    orchestrator, adapters = _build_three_agent(
+        [{"answer": "A"}, claims_output("verified"), AgentFailure("TIMEOUT"), AgentFailure("TIMEOUT"), {"critique": "ok"}, {"answer": "final"}],
+        [{"answer": "B"}, {"status": "approved"}],
+        [{"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}],
+        storage=storage,
+    )
+    result = orchestrator.run_verify("q")
+    verify_execs = [item for item in result.executions if item.phase == "verify"]
+    assert result.status is RunStatus.COMPLETED
+    assert [item.agent_id for item in verify_execs] == ["agent-a", "agent-a", "agent-c"]
+    assert verify_execs[1].retry_of == verify_execs[0].execution_id
+    assert verify_execs[2].substitute_for == verify_execs[1].execution_id
+    assert result.call_count == 9
+
+
+def test_two_agent_synth_quota_does_not_break_auditor_separation():
+    storage = InMemoryStorageBackend()
+    orchestrator, _, _ = build_raw(
+        [{"answer": "A"}, claims_output("verified"), {"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}, {"critique": "ok"}, AgentFailure("QUOTA_EXCEEDED")],
+        [{"answer": "B"}, {"status": "approved"}],
+        storage=storage,
+    )
+    result = orchestrator.run_verify("q")
+    assert result.status is RunStatus.FAILED
+    assert result.final_answer is None
+    assert not any(item.substitute_for for item in result.executions)
+    events = storage.load(result.run_id).events
+    unavailable = [event for event in events if event.event_type == "agent_substitution_unavailable"]
+    assert unavailable and unavailable[0].payload["original_agent_id"] == "agent-a"
+
+
+def test_three_agent_synth_quota_substitutes_and_keeps_distinct_auditor():
+    orchestrator, _ = _build_three_agent(
+        [{"answer": "A"}, claims_output("verified"), {"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}, {"critique": "ok"}, AgentFailure("QUOTA_EXCEEDED")],
+        [{"answer": "B"}, {"status": "approved"}],
+        [{"answer": "substituted"}],
+    )
+    result = orchestrator.run_verify("q")
+    assert result.status is RunStatus.COMPLETED
+    synth = [item for item in result.executions if item.phase == "synthesize"]
+    audit = [item for item in result.executions if item.phase == "audit"]
+    assert synth[-1].agent_id == "agent-c"
+    assert synth[-1].substitute_for == synth[0].execution_id
+    assert audit[-1].agent_id == "agent-b"
+    assert synth[-1].agent_id != audit[-1].agent_id
+
+
+def test_substitution_event_contains_metadata_only():
+    storage = InMemoryStorageBackend()
+    orchestrator, _ = _build_three_agent(
+        [{"answer": "A"}, claims_output("verified"), AgentFailure("QUOTA_EXCEEDED"), {"critique": "ok"}, {"critique": "ok-2"}, {"answer": "final"}],
+        [{"answer": "B"}, {"critique": "ok"}, {"status": "approved"}],
+        [{"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}, {"answer": "final"}],
+        storage=storage,
+    )
+    result = orchestrator.run_verify("secret question")
+    events = storage.load(result.run_id).events
+    selected = [event for event in events if event.event_type == "agent_substitute_selected"]
+    assert selected
+    assert "secret question" not in str(selected[0].payload)
+    assert set(selected[0].payload) == {
+        "phase", "slot_index", "failed_execution_id", "original_agent_id", "substitute_agent_id"
+    }

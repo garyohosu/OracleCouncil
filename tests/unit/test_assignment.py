@@ -1,6 +1,7 @@
 import pytest
 
 from oracle_council.assignment import (
+    build_execution_plan,
     InsufficientAgentsError,
     RegisteredAgent,
     plan_assignments,
@@ -62,3 +63,20 @@ def test_fewer_than_two_agents_is_insufficient():
 def test_duplicate_agent_ids_rejected():
     with pytest.raises(ValueError):
         plan_assignments([agent("a"), agent("a")])
+
+
+def test_execution_plan_is_deterministic_and_contains_all_slots_and_limits():
+    agents = [
+        agent("a", respond=100, synthesize=100),
+        agent("b", respond=90, audit=100),
+        agent("c", verify=100),
+    ]
+    plans = [build_execution_plan("run-1", agents) for _ in range(10)]
+    assert all(plan == plans[0] for plan in plans)
+    assert plans[0].configured_agent_ids == ("a", "b", "c")
+    assert [(item.phase, item.slot_index) for item in plans[0].phase_assignments] == [
+        ("respond", 0), ("respond", 1), ("claim_extract", 0), ("verify", 0),
+        ("criticize", 0), ("synthesize", 0), ("audit", 0),
+    ]
+    assert (plans[0].max_run_retries, plans[0].max_run_substitutions, plans[0].max_agent_calls) == (2, 1, 12)
+    assert plans[0].assignment_for("synthesize").candidate_agent_ids[0] != plans[0].assignment_for("audit").candidate_agent_ids[0]

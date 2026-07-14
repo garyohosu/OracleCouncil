@@ -97,6 +97,7 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert data["schema_version"] == "1.0"
         assert data["status"] == "completed"
         assert data["answer"]["text"] == "Mock final synthesized answer."
+        assert all(execution["substitute_for"] is None for execution in data["executions"])
         assert data["answer"]["result_classification"] == "verified"
         assert data["claims"][0]["claim_role"] == "proposed_answer"
         assert data["evidence"] == [{"evidence_id": "ev-1"}]
