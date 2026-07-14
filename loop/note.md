@@ -416,6 +416,100 @@ receiptを保存
 
 停止するのは、プロジェクトが完成したとき、同じ失敗を繰り返したとき、Agentや環境に重大な障害があるとき、最大サイクル数へ到達したとき、または本当に人間の判断が必要なときだけでよい。
 
+## Claude CodeもCodexも止まり、Antigravityが必要になった
+
+連続実行の準備を進めている最中、Claude Codeが利用上限へ達した。
+
+続いてCodex CLIにも、rate limitが近いという警告が出た。
+
+```text
+Approaching rate limits
+
+1. Switch to gpt-5.4-mini
+2. Keep current model
+3. Keep current model (never show again)
+```
+
+軽量モデルへ切り替える方法もある。
+
+しかし、複雑な設計資料を読み、未確定事項を判断し、実装とテストまで行う作業を、単に安いモデルへ切り替えて続ければよいとは限らない。
+
+このとき使える候補として残っていたのがAntigravityだった。
+
+ここで、AutoLoopをCodex専用にしてはいけない理由が現実の問題になった。
+
+```text
+Claude Codeの利用上限
+↓
+Codex CLIの利用上限
+↓
+人間が別のAgentを起動して最初から説明する
+```
+
+これでは、Agentを使い分けられても開発ループは途切れる。
+
+本当に欲しいのは、特定のAIサービスではなく、同じ設計資料、Git差分、テスト結果、receiptを使って別のAgentへ作業を渡せる仕組みである。
+
+AutoLoop側では、AgentをPythonコードへ固定せず、設定ファイルのコマンドとして扱っている。
+
+そのため、理想的には設定ファイルを切り替えるだけでよい。
+
+```powershell
+# Codexを使う
+py loop\controller.py --config loop\config.json
+
+# Antigravityを使う
+py loop\controller.py --config loop\config.antigravity.json
+```
+
+Antigravityが非対話CLIを提供し、プロンプト、作業ディレクトリ、終了コードを外部から扱えるなら、Controller本体を作り直す必要はない。
+
+設定するAgentコマンドを差し替えればよい。
+
+一方、AntigravityがGUIからしか使えない場合、AutoLoopから子プロセスとして自動起動することはできない。
+
+GUIの中でAgentへ指示することと、外部のControllerから非対話で呼び出せることは別である。
+
+このため、まず確認すべきなのは機能の多さではない。
+
+```text
+非対話で起動できるか
+プロンプトを引数または標準入力で渡せるか
+作業ディレクトリを指定できるか
+処理終了時に終了コードを返すか
+```
+
+これらが揃っていれば、Codex、Claude Code、Antigravityの違いをAutoLoopの外側へ追い出せる。
+
+今後は、Codex用とAntigravity用の設定を分け、使用可能なAgentを選択して起動できる形にする。
+
+ただし、最初から自動fallbackまでは作らない。
+
+まずは人間が設定ファイルを選ぶだけで切り替えられればよい。
+
+```text
+特定Agentの利用上限
+↓
+別の設定ファイルを選ぶ
+↓
+同じ設計資料と現在状態から再開する
+```
+
+これだけでも、別のAIへ状況を説明し直す作業は大きく減る。
+
+AutoLoopが保存している正本は、会話履歴ではない。
+
+- Gitリポジトリ
+- 設計資料
+- QandA
+- テスト結果
+- receipt
+- stdoutとstderr
+
+Agentが変わっても、これらを読めば現在位置を再現できる。
+
+Claude CodeとCodex CLIが同時に止まったことで、Agentの性能だけでなく、**Agentを交換しても続けられるループを作ること**が重要だと分かった。
+
 ## これは「ループエンジニアリング」かもしれない
 
 AIコーディングでは、プロンプトを書いてコードを生成する部分に注目が集まりやすい。
