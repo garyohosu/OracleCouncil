@@ -14,16 +14,22 @@ from .base import build_phase_input, classify_cli_error, execution_failure_summa
 class CodexAdapter:
     def __init__(self, agent_id: str, model: str | None = None, timeout_s: int = 180) -> None:
         self.agent_id, self.model, self.timeout_s = agent_id, model, timeout_s
+        self._probe_cache: str | None = None
 
     def probe(self) -> str:
+        if self._probe_cache is not None:
+            return self._probe_cache
         try:
             res = subprocess.run(["codex.cmd" if os.name == "nt" else "codex", "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, shell=False, stdin=subprocess.DEVNULL)
             text = res.stderr + "\n" + res.stdout
-            if "session limit" in text.lower() or "limit" in text.lower(): return "QUOTA_EXCEEDED"
-            return "OK" if res.returncode == 0 else "EXECUTION_ERROR"
-        except FileNotFoundError: return "COMMAND_NOT_FOUND"
-        except subprocess.TimeoutExpired: return "TIMEOUT"
-        except Exception: return "EXECUTION_ERROR"
+            if "session limit" in text.lower() or "limit" in text.lower(): result = "QUOTA_EXCEEDED"
+            else: result = "OK" if res.returncode == 0 else "EXECUTION_ERROR"
+        except FileNotFoundError: result = "COMMAND_NOT_FOUND"
+        except subprocess.TimeoutExpired: result = "TIMEOUT"
+        except Exception: result = "EXECUTION_ERROR"
+
+        self._probe_cache = result
+        return result
 
     def capabilities(self) -> dict[str, Any]:
         return {"supported_models": [self.model or "gpt-4"], "supports_read_only": True, "supports_no_tools": True}

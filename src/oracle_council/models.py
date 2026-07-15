@@ -57,6 +57,34 @@ class ClaimRole(StrEnum):
 
 
 @dataclass(frozen=True)
+class AgentProbeSnapshot:
+    agent_id: str
+    status: str
+    capabilities: dict[str, Any]
+    probed_at: datetime
+    error_code: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "status": self.status,
+            "capabilities": self.capabilities,
+            "probed_at": self.probed_at.isoformat(),
+            "error_code": self.error_code,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentProbeSnapshot:
+        return cls(
+            agent_id=data["agent_id"],
+            status=data["status"],
+            capabilities=data["capabilities"],
+            probed_at=datetime.fromisoformat(data["probed_at"]),
+            error_code=data.get("error_code"),
+        )
+
+
+@dataclass(frozen=True)
 class Usage:
     input_tokens: int
     output_tokens: int
@@ -423,11 +451,13 @@ class RunMetadataRecord:
     # at run termination. Child process codes are never aggregated here.
     oracle_exit_code: int
     participants: tuple[str, ...] = ()
+    agent_snapshots: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["created_at"] = self.created_at.isoformat()
         value["error_codes"] = list(self.error_codes)
+        value["agent_snapshots"] = list(self.agent_snapshots)
         return value
 
 
@@ -448,6 +478,7 @@ class RunResult:
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
     participants: tuple[str, ...] = ()
+    agent_snapshots: tuple[AgentProbeSnapshot, ...] = ()
 
     @property
     def exit_code(self) -> int:

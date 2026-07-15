@@ -1145,7 +1145,32 @@ Responderの2 slotは異なるAgentでなければ成功扱いにせず、成功
 **推奨案**: probe結果を実行開始時のcapability snapshotとして正本化し、そのsnapshotをAgent選定と履歴保存に使う。
 **実装への影響**: アダプターのライフサイクルとキャッシュ、状態管理の実装方針が決定できない。
 **テストへの影響**: 能力判定のモックテストでのモック対象メソッドが二重化する。
-**回答**: 未回答。
+**回答**: 確定。AUTO_DECIDED (2026-07-15) にてスナップショット方式を決定。
+
+**AUTO_DECIDED (2026-07-15)**:
+- **問題だった二重化**:
+  - CLI Run開始前の事前確認で各Adapterの `probe()` が呼び出され、かつ `execute()` 開始時にもAdapter内部で再probeが走ることで同一コマンド/Run中に同一Agentへ複数回probeされていた。
+  - configの `capabilities` とAdapterが提供する `capabilities()` が分離しており、どちらが正本であるか定義が曖昧だった。
+- **比較した選択肢**:
+  - 選択肢1 (キャッシュ方式): 各Adapterクラス内に `_probe_cache` キャッシュを保持させ、2回目以降の `probe()` はキャッシュを返す。
+  - 選択肢2 (Orchestrator経由引き回し方式): `Orchestrator` から `execute()` を呼ぶ際に `probe` を完全にスキップし、Orchestrator が管理する snapshot だけに依存する。
+- **採用した正本と理由**:
+  - 選択肢1 (キャッシュ方式) を採用。実Adapterの `execute()` 時の fail-closed 保証をAdapter自身がカプセル化したまま維持しつつ、余計な外部CLIプロセス呼び出しを1回に抑制できるため最も安全かつ変更量が最小。
+- **config capabilitiesの位置づけ**:
+  - 実Adapterが提供する `capabilities()` の値を正本（ベース）としつつ、config側で `capabilities` が明示指定されている場合は config の値で上書き（マージ）したものを snapshot として保存し、Runtime中はこのマージされた値を一意の capabilities として参照する。
+- **snapshotのライフサイクル**:
+  - 1 Run의 開始直前（CLIエントリポイント）で enabled な全AgentについてAdapterの `probe()` と `capabilities()` を1回だけ呼び出して `AgentProbeSnapshot` を生成する。
+  - このsnapshotを `ExecutionPlan` や `Orchestrator` へ渡し、Run開始イベント `run_created` および監査記録 `RunMetadataRecord` へ不変スナップショットとして永続化する。
+- **実行途中の失敗との区別**:
+  - 実行開始後に発生したcommand not found、timeout、quota、認証、非0終了などは、Run開始時に確定した不変スナップショットの `status` や `capabilities` を過去にさかのぼって書き換えるのではなく、個別 execution の結果（`AgentExecutionRecord`）として既存の `AgentFailure` 経路で扱う。
+- **実装箇所**:
+  - `src/oracle_council/models.py`: `AgentProbeSnapshot` モデルの追加、`RunResult`/`RunMetadataRecord` への snapshot フィールドの追加。
+  - `src/oracle_council/assignment.py`: `ExecutionPlan` への `agent_snapshots` 追加、および `build_execution_plan` のマージロジック修正。
+  - `src/oracle_council/adapters/claude.py`, `src/oracle_council/adapters/codex.py`, `src/oracle_council/cli.py` (FakeAgentAdapter): `probe()` への `_probe_cache` キャッシュ機構の実装。
+  - `src/oracle_council/cli.py`: `create_adapter()` / `probe_agents()` 共通ヘルパーの導入と、`cmd_ask`, `cmd_agents_status`, `cmd_agents_validate` での呼び出し統一。
+  - `src/oracle_council/orchestrator.py`: `snapshots` の受け取り、および `run_created` イベント payload と `_finish` 時のオブジェクトへの snapshot 設定。
+- **テスト箇所**:
+  - `tests/unit/test_cli.py` (または追加テスト): 1コマンド/Runあたりの各Agentのprobe回数が1回、capabilities取得が1回に抑制されること、マージ規則の正当性などを検証するテストの追加。
 
 ---
 

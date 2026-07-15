@@ -57,6 +57,7 @@ class ExecutionPlan:
     participants: tuple[str, ...]
     phase_assignments: tuple[PhaseAssignment, ...]
     agent_availability: tuple[RunAgentAvailability, ...]
+    agent_snapshots: tuple[Any, ...] = ()
     max_run_retries: int = 2
     max_run_substitutions: int = 1
     max_agent_calls: int = 12
@@ -104,7 +105,11 @@ _PLAN_ASSIGNMENTS = (
 )
 
 
-def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> ExecutionPlan:
+def build_execution_plan(
+    run_id: str,
+    agents: Sequence[RegisteredAgent],
+    snapshots: Sequence[Any] = ()
+) -> ExecutionPlan:
     if len({agent.agent_id for agent in agents}) != len(agents):
         raise ValueError("agent_id must be unique")
     selected_agents = select_run_participants(agents)
@@ -112,6 +117,31 @@ def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> Exec
         raise InsufficientAgentsError(
             "verify requires two distinct responders and a separate auditor"
         )
+
+    # For compatibility, if no snapshots provided, dynamically create from agents
+    if not snapshots:
+        from .models import AgentProbeSnapshot
+        from datetime import datetime, timezone
+        dummy_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        temp_snapshots = []
+        for agent in selected_agents:
+            try:
+                status = agent.adapter.probe()
+            except AttributeError:
+                status = "OK"
+            try:
+                caps = agent.adapter.capabilities()
+            except AttributeError:
+                caps = {"supported_models": ["mock-model"]}
+            temp_snapshots.append(
+                AgentProbeSnapshot(
+                    agent_id=agent.agent_id,
+                    status=status,
+                    capabilities=caps,
+                    probed_at=dummy_time
+                )
+            )
+        snapshots = temp_snapshots
 
     rankings = {phase: tuple(agent.agent_id for agent in rank(selected_agents, phase))
                 for phase in {item[0] for item in _PLAN_ASSIGNMENTS}}
@@ -123,11 +153,27 @@ def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> Exec
         PhaseAssignment(phase, slot, required, rankings[phase], constraints)
         for phase, slot, required, constraints in _PLAN_ASSIGNMENTS
     )
+
+    availability_list = []
+    for agent in selected_agents:
+        snap = next((s for s in snapshots if s.agent_id == agent.agent_id), None)
+        if snap:
+            availability_list.append(
+                RunAgentAvailability(
+                    agent_id=agent.agent_id,
+                    status="available" if snap.status == "OK" else "unavailable",
+                    reason_code=snap.error_code
+                )
+            )
+        else:
+            availability_list.append(RunAgentAvailability(agent.agent_id))
+
     return ExecutionPlan(
         run_id=run_id,
         participants=tuple(agent.agent_id for agent in selected_agents),
         phase_assignments=assignments,
-        agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in selected_agents),
+        agent_availability=tuple(availability_list),
+        agent_snapshots=tuple(snapshots),
     )
 
 

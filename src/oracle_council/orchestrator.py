@@ -88,30 +88,58 @@ class Orchestrator:
     def __init__(
         self,
         agents: Sequence[RegisteredAgent],
-        evidence_provider,
+        evidence_provider: Any,
         budget: TokenBudget,
-        storage: StorageBackend | None,
+        storage: Any = None,
         store_content: bool = False,
+        snapshots: Sequence[Any] = (),
     ) -> None:
-        self._agents = tuple(agents)
+        self._agents = agents
         self._evidence_provider = evidence_provider
         self._budget = budget
         self._storage = storage
         self._store_content = store_content
+        if not snapshots and agents:
+            from .models import AgentProbeSnapshot, utc_now
+            temp_snapshots = []
+            for agent in agents:
+                try:
+                    status = agent.adapter.probe()
+                except AttributeError:
+                    status = "OK"
+                try:
+                    caps = agent.adapter.capabilities()
+                except AttributeError:
+                    caps = {"supported_models": ["mock-model"]}
+                temp_snapshots.append(
+                    AgentProbeSnapshot(
+                        agent_id=agent.agent_id,
+                        status=status,
+                        capabilities=caps,
+                        probed_at=utc_now()
+                    )
+                )
+            self._snapshots = tuple(temp_snapshots)
+        else:
+            self._snapshots = tuple(snapshots)
 
     def run_verify(self, question: str) -> RunResult:
         # Pre-flight (V-1): assignment failures such as insufficient_agents
         # stop before a Run exists, so nothing is persisted and the error
         # propagates to the CLI layer with its own status and exit code.
         run_id = str(uuid4())
-        plan = build_execution_plan(run_id, self._agents)
+        plan = build_execution_plan(run_id, self._agents, self._snapshots)
         sequence = count(1)
         state = _RunState(question, plan)
         try:
             self._append(
                 run_id,
                 "run_created",
-                {"mode": "verify", "participants": list(plan.participants)},
+                {
+                    "mode": "verify",
+                    "participants": list(plan.participants),
+                    "agent_snapshots": [s.to_dict() for s in self._snapshots],
+                },
             )
             respond_index = 0
             for phase in _VERIFY_PHASES:
@@ -579,6 +607,7 @@ class Orchestrator:
             content_saved=self._store_content,
             oracle_exit_code=oracle_exit_code,
             participants=state.plan.participants,
+            agent_snapshots=tuple(s.to_dict() for s in self._snapshots),
         )
         result = RunResult(
             run_id=run_id,
@@ -594,6 +623,7 @@ class Orchestrator:
             metadata=metadata,
             evidence=_evidence_snapshot(state),
             participants=state.plan.participants,
+            agent_snapshots=self._snapshots,
         )
         self._append(
             run_id,

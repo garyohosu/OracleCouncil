@@ -98,8 +98,11 @@ class ClaudeAdapter:
         self.agent_id = agent_id
         self.model = model
         self.timeout_s = timeout_s
+        self._probe_cache: str | None = None
 
     def probe(self) -> str:
+        if self._probe_cache is not None:
+            return self._probe_cache
         cmd = ["claude", "--version"]
         try:
             res = subprocess.run(
@@ -114,16 +117,20 @@ class ClaudeAdapter:
             )
             err_text = res.stderr + "\n" + res.stdout
             if "session limit" in err_text.lower() or "limit" in err_text.lower():
-                return "QUOTA_EXCEEDED"
-            if res.returncode != 0:
-                return "EXECUTION_ERROR"
-            return "OK"
+                result = "QUOTA_EXCEEDED"
+            elif res.returncode != 0:
+                result = "EXECUTION_ERROR"
+            else:
+                result = "OK"
         except FileNotFoundError:
-            return "COMMAND_NOT_FOUND"
+            result = "COMMAND_NOT_FOUND"
         except subprocess.TimeoutExpired:
-            return "TIMEOUT"
+            result = "TIMEOUT"
         except Exception:
-            return "EXECUTION_ERROR"
+            result = "EXECUTION_ERROR"
+
+        self._probe_cache = result
+        return result
 
     def capabilities(self) -> dict[str, Any]:
         return {
