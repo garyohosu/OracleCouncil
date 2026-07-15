@@ -5,6 +5,7 @@ from oracle_council.assignment import (
     InsufficientAgentsError,
     RegisteredAgent,
     plan_assignments,
+    select_run_participants,
 )
 
 
@@ -64,6 +65,22 @@ def test_duplicate_agent_ids_rejected():
     with pytest.raises(ValueError):
         plan_assignments([agent("a"), agent("a")])
 
+
+def test_run_participants_are_limited_to_four_in_configuration_order():
+    agents = [agent("a"), agent("b"), agent("c"), agent("d"), agent("e")]
+    selected = select_run_participants(agents)
+    assert tuple(item.agent_id for item in selected) == ("a", "b", "c", "d")
+
+def test_run_participant_selection_preserves_existing_small_configurations():
+    agents = [agent("a"), agent("b")]
+    assert select_run_participants(agents) == tuple(agents)
+
+def test_execution_plan_uses_only_selected_run_participants():
+    agents = [agent("a"), agent("b"), agent("c"), agent("d"), agent("e")]
+    plan = build_execution_plan("run-1", agents)
+    assert plan.configured_agent_ids == ("a", "b", "c", "d")
+    assert all("e" not in assignment.candidate_agent_ids for assignment in plan.phase_assignments)
+    assert tuple(item.agent_id for item in plan.agent_availability) == ("a", "b", "c", "d")
 
 def test_execution_plan_is_deterministic_and_contains_all_slots_and_limits():
     agents = [

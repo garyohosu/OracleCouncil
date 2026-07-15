@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments
+from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments, select_run_participants
 from .budget import TokenBudget
 from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
@@ -460,6 +460,10 @@ def cmd_ask(args) -> int:
             f"参加可能なAgentが2未満です（利用不能: {detail}）",
             args.json,
         )
+
+    # S-9: configured adapters and Run participants are separate concepts.
+    # Keep the first four available entries deterministically.
+    available_agents = list(select_run_participants(available_agents))
 
     if args.no_store:
         storage = None

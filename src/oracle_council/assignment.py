@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Deterministic agent-to-phase assignment (SPEC §6.2-§6.4).
 
 Selection is never random: agents are ranked per phase by role_priority
@@ -6,8 +8,6 @@ available agents therefore always yields the same plan. The plan's candidate
 order is retained for the lifetime of a Run; substitution filters that
 immutable order by Run-local availability and slot constraints.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -18,6 +18,14 @@ class InsufficientAgentsError(RuntimeError):
 
     status = "insufficient_agents"
     exit_code = 3
+
+
+MAX_RUN_PARTICIPANTS = 4
+
+
+def select_run_participants(agents: Sequence["RegisteredAgent"]) -> tuple["RegisteredAgent", ...]:
+    """Select the deterministic 2..4 participant set for one Run."""
+    return tuple(agents[:MAX_RUN_PARTICIPANTS])
 
 
 @dataclass(frozen=True)
@@ -99,12 +107,13 @@ _PLAN_ASSIGNMENTS = (
 def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> ExecutionPlan:
     if len({agent.agent_id for agent in agents}) != len(agents):
         raise ValueError("agent_id must be unique")
-    if len(agents) < 2:
+    selected_agents = select_run_participants(agents)
+    if len(selected_agents) < 2:
         raise InsufficientAgentsError(
             "verify requires two distinct responders and a separate auditor"
         )
 
-    rankings = {phase: tuple(agent.agent_id for agent in rank(agents, phase))
+    rankings = {phase: tuple(agent.agent_id for agent in rank(selected_agents, phase))
                 for phase in {item[0] for item in _PLAN_ASSIGNMENTS}}
     synth_id = rankings["synthesize"][0]
     if not any(agent_id != synth_id for agent_id in rankings["audit"]):
@@ -116,9 +125,9 @@ def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> Exec
     )
     return ExecutionPlan(
         run_id=run_id,
-        configured_agent_ids=tuple(agent.agent_id for agent in agents),
+        configured_agent_ids=tuple(agent.agent_id for agent in selected_agents),
         phase_assignments=assignments,
-        agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in agents),
+        agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in selected_agents),
     )
 
 
