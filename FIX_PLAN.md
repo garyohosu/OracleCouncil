@@ -57,7 +57,7 @@
 |---|---|---|
 | M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |
 
-実Claude/Codex、live評価、q03 DNS、S-9/S-10は未着手（L-5は0-8、S-8は0-9で完了）。
+実Claude/Codex、live評価、q03 DNS、S-10は未着手（L-5は0-8、S-8は0-9、S-9は0-10で完了）。
 
 ## 0-9. X-8.19でS-8仕様確定・通常実装・Fake/transport/CLIテスト完了
 
@@ -65,7 +65,13 @@
 |---|---|---|
 | S-8 | 子CLI processのOS終了コードを`process_exit_code`（`AgentResult`／`AgentFailure`／`AgentExecutionRecord`）、Oracle Council全体の外部終了コードを`oracle_exit_code`（`RunResult`／`RunMetadataRecord`／CLI JSONトップレベル）へ分離。取得不能・Fake Agentはnull、process 0後のparse/schema失敗は`INVALID_OUTPUT`かつprocess 0。旧トップレベル`exit_code`はschema 1.x互換エイリアスとして`oracle_exit_code`と常に同値。`executions[]`は`process_exit_code`のみ出力。R-1の0/1/2/3/4/130対応表は不変 | QandA S-8、SPEC v0.3.10 §8.5/§13.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/models.py`・`orchestrator.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`、`tests/unit/test_exit_code_separation.py` |
 
-実CLI、live評価、q03 DNS failure-boundary、S-9/S-10、L-3は引き続き未着手。
+実CLI、live評価、q03 DNS failure-boundary、S-10、L-3は引き続き未着手。
+
+## 0-10. X-8.21でS-9仕様確定・通常実装・Fake/CLIテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-9 | Configured Adapter数（0..*）、Eligible Agent数、Selected Participants数（2..4）、Executions数を分離。選定正本をbuild_execution_planに集約し、5件以上の場合は設定順の先頭4件を選択。ExecutionPlan.participants、RunResult.participants、run_createdイベント、CLI JSON、RunMetadataRecordのparticipants定義をselected participantsに統一。executionsからparticipantsの逆算を廃止。 | QandA S-9、SPEC v0.3.11 §6.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/assignment.py`・`orchestrator.py`・`cli.py`・`models.py`、`tests/unit/test_assignment.py`・`test_cli.py` |
 
 ## 0. v0.3.1で解消済み
 
@@ -129,7 +135,6 @@ O-6は解消済み（0-5参照）。
 | **K-5** | `critical` 6件以上のwithheld | Phase 3 (Evidence) | 保留判定基準テスト |
 | **K-6** | `freshness`判定手順と既定値 | Phase 3 (Evidence) | 鮮度バリデーションテスト |
 | **K-7** | Evidence処理90秒と並列度 | Phase 3 (Evidence) | 並行取得タイムアウトテスト |
-| **S-9** | Adapter設定数とRun参加数多重度 | Phase 0 (モデル設計) | 構成検証・フォールバックテスト |
 | **S-10**| `probe()`と`capabilities()`正本化 | Phase 2 (Adapter/Orchestrator) | アダプター能力検知テスト |
 | **N-2** | 非決定的AI判定のgolden dataset | Phase 5 (品質検証) | 精度ベンチマークテスト |
 | **R-2** | `--json`時の進捗表示の出力先 | Phase 5 (UX) | CLI標準出力検証テスト |

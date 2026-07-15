@@ -54,7 +54,7 @@ class RunAgentAvailability:
 @dataclass(frozen=True)
 class ExecutionPlan:
     run_id: str
-    configured_agent_ids: tuple[str, ...]
+    participants: tuple[str, ...]
     phase_assignments: tuple[PhaseAssignment, ...]
     agent_availability: tuple[RunAgentAvailability, ...]
     max_run_retries: int = 2
@@ -125,7 +125,7 @@ def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> Exec
     )
     return ExecutionPlan(
         run_id=run_id,
-        configured_agent_ids=tuple(agent.agent_id for agent in selected_agents),
+        participants=tuple(agent.agent_id for agent in selected_agents),
         phase_assignments=assignments,
         agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in selected_agents),
     )

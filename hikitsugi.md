@@ -419,3 +419,18 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 テスト: `tests/unit/test_exit_code_separation.py`（25件）を追加。モデル既定値・保持・compat property・metadata to_dict、Claude/Codex monkeypatched transportで成功0／非0=17保持／returncode 0+malformed・schema不正→INVALID_OUTPUTかつprocess 0／FileNotFound→COMMAND_NOT_FOUNDでNone／Timeout→TIMEOUTでNone、OrchestratorでFake成功=None記録・失敗コード保持と意味的status非上書き・retry/substitution個別コード・metadata event安全性、CLI JSONで成功/failed/withheld/exit_stopの`oracle_exit_code == exit_code`・戻り値一致・`executions[].process_exit_code`存在・`executions[]`に`exit_code`なし、を検証。`py -m pytest`は**292 passed, 6 deselected**（baseline 267から+25）、`git diff --check`成功。
 
 `assignment.py`の`InsufficientAgentsError.exit_code = 3`はOracle側の値でありcli.pyからも読まれていないが、今回の許可変更範囲外のため未変更。実Claude、実Codex、WebSearch、実HTTP、live評価、q01〜q08は実行していない。ドキュメントはQandA（S-8回答確定）、SPEC v0.3.10（§8.5/§13.4/§14/§15.8）、CLASS（processExitCode/oracleExitCode、曖昧なexitCode除去）、TESTCASE（S-8 BLOCKED解除3箇所）、FIX_PLAN（0-9追加、§2からL-5/S-8行を解消済みへ）を更新。未解決はq03 DNS failure-boundary、S-9/S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+
+## X-8.21 S-9 participants定義統一（2026-07-15）
+
+S-9仕様を確定し通常実装した（QandA回答確定、SPEC v0.3.11）。
+Configured Adapter数（0..*）、Eligible Agent数（利用可能エージェント）、Selected Participants数（RunのCouncil構成員：2..4）、Executions数（実際のアクション実行）を明確に分離した。
+選定ロジックの正本を `build_execution_plan` (内部で `select_run_participants` を呼び出し) の1箇所に集約。これにより、設定ファイルから読み込まれた全Adapterの中からprobeに成功した利用可能（Eligible）エージェントが渡された際、決定的に先頭最大4件を選択する。CLIレイヤー（`cli.py`）で事前に `select_run_participants` を適用して切り捨ててしまう二重管理を廃止した。
+
+ExecutionPlanの `configured_agent_ids` を `participants` に正式rename。
+RunResult、run_createdイベント、CLI JSONトップレベル、RunMetadataRecordの `participants` 定義をselected participants（選定された最大4名のエージェントIDリスト）に統一し、実行されなかった（skip/failure）エージェントがあっても初期に選定されたparticipantsを維持するようにした。また、executions（実際に実行されたもの）から逆算してparticipantsを決める既存のCLI JSONロジックを廃止。
+
+テスト: `tests/unit/test_cli.py` に `test_cli_ask_five_agents_participants_capped_at_four` を追加。5件のエージェントが設定・利用可能な場合でも、`participants` と `metadata.participant_count` が最大4に制限され、先頭4件が決定的に選ばれること、およびCLI JSONとイベントログで整合していることを検証した。
+通常pytest `293 passed, 6 deselected` （baseline 292から+1）、`git diff --check` 成功。
+
+ドキュメント更新: QandA（S-9回答確定）、SPEC v0.3.11（§6.4/§14/§15.8）、CLASS（ExecutionPlan.configuredAgentIds -> participants、Run/RunMetadataRecordにparticipants追加）、TESTCASE（S-9 BLOCKED解消）、FIX_PLAN（0-10追加、S-9を未確定テーブルから解消済みへ）を更新。
+未解決: q03 DNS failure-boundary、S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。

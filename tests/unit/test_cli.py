@@ -96,6 +96,7 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         data = json.loads(captured.out)
         assert data["schema_version"] == "1.0"
         assert data["status"] == "completed"
+        assert data["participants"] == ["claude", "codex"]
         assert data["answer"]["text"] == "Mock final synthesized answer."
         assert all(execution["substitute_for"] is None for execution in data["executions"])
         assert data["answer"]["result_classification"] == "verified"
@@ -768,3 +769,46 @@ def test_cli_history_purge_and_list(temp_config, capsys, tmp_path):
             assert exit_code == 0
             captured = capsys.readouterr()
             assert "Purged 1 runs." in captured.out
+
+def test_cli_ask_five_agents_participants_capped_at_four(tmp_path, capsys):
+    config_data = {
+        "agents": [
+            {"id": "agent-1", "adapter": "claude", "enabled": True},
+            {"id": "agent-2", "adapter": "claude", "enabled": True},
+            {"id": "agent-3", "adapter": "claude", "enabled": True},
+            {"id": "agent-4", "adapter": "claude", "enabled": True},
+            {"id": "agent-5", "adapter": "claude", "enabled": True},
+        ]
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w", encoding="utf-8") as f:
+        yaml.dump(config_data, f)
+        temp_path = f.name
+
+    old_val = os.environ.get("ORACLE_COUNCIL_CONFIG")
+    os.environ["ORACLE_COUNCIL_CONFIG"] = temp_path
+
+    try:
+        # Mock probe OK for all agents to keep them eligible
+        with patch.dict(os.environ, {
+            "ORACLE_MOCK_PROBE_AGENT-1": "OK",
+            "ORACLE_MOCK_PROBE_AGENT-2": "OK",
+            "ORACLE_MOCK_PROBE_AGENT-3": "OK",
+            "ORACLE_MOCK_PROBE_AGENT-4": "OK",
+            "ORACLE_MOCK_PROBE_AGENT-5": "OK",
+        }):
+            with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+                exit_code = main(["ask", "What is the height of Fuji?", "--json"])
+                assert exit_code == 0
+                captured = capsys.readouterr()
+                data = json.loads(captured.out)
+
+                # Verify participants is capped at 4, selected from the first 4 deterministically
+                assert data["participants"] == ["agent-1", "agent-2", "agent-3", "agent-4"]
+                assert data["metadata"]["participant_count"] == 4
+                assert data["metadata"]["participants"] == ["agent-1", "agent-2", "agent-3", "agent-4"]
+    finally:
+        os.unlink(temp_path)
+        if old_val:
+            os.environ["ORACLE_COUNCIL_CONFIG"] = old_val
+        else:
+            os.environ.pop("ORACLE_COUNCIL_CONFIG", None)

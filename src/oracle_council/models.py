@@ -422,6 +422,7 @@ class RunMetadataRecord:
     # S-8: the Oracle Council CLI's own exit code (SPEC §13.4), snapshotted
     # at run termination. Child process codes are never aggregated here.
     oracle_exit_code: int
+    participants: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -446,6 +447,7 @@ class RunResult:
     executions: tuple[AgentExecutionRecord, ...] = ()
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
+    participants: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:

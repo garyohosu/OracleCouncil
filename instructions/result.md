@@ -272,3 +272,26 @@ The live re-evaluation was completed once after user approval. The remaining unr
 - **文書**: QandA.md（S-8回答確定）、SPEC.md v0.3.10（§8.5/§13.4/§14/§15.8）、CLASS.md（processExitCode/oracleExitCode）、TESTCASE.md（S-8 BLOCKED解除3箇所）、FIX_PLAN.md（0-9追加、§2からL-5/S-8行を解消済み表記へ）、hikitsugi.md、本書。
 - **実行禁止事項の遵守**: 実Claude、実Codex、`claude -p`、`codex exec`、WebSearch、実HTTP、`ORACLE_COUNCIL_LIVE=1`、live/expensive pytest、q01〜q08は実行していない。config/、evaluation/、scripts/、評価セットは未変更。
 - **未解決**: q03 DNS failure-boundary、S-9/S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+
+## X-8.21 S-9 participants定義の統一（2026-07-15）
+
+1. **実装内容**: S-9仕様を確定し通常実装した（QandA回答確定、SPEC v0.3.11）。Configured Adapter数（0..*）、Eligible Agent数、Selected Participants数（Run of Council構成員：2..4）、Executions数を分離。選定ロジックの正本を `build_execution_plan` (内部で `select_run_participants` を呼び出し) の1箇所に集約。これにより、設定ファイルから読み込まれた全Adapterの中からprobeに成功した利用可能（Eligible）エージェントが渡された際、決定的に先頭最大4件を選択する。CLIレイヤー（`cli.py`）で事前に `select_run_participants` を適用して切り捨ててしまう二重管理を廃止した。
+2. **モデル・構造**: ExecutionPlanの `configured_agent_ids` を `participants` に正式rename。RunResult、run_createdイベント、CLI JSONトップレベル、RunMetadataRecordの `participants` 定義をselected participants（選定された最大4名のエージェントIDリスト）に統一し、実行されなかった（skip/failure）エージェントがあっても初期に選定されたparticipantsを維持するようにした。また、executions（実際に実行されたもの）から逆算してparticipantsを決める既存のCLI JSONロジックを廃止。
+3. **テスト**: `tests/unit/test_cli.py` に `test_cli_ask_five_agents_participants_capped_at_four` を追加。5件のエージェントが設定・利用可能な場合でも、`participants` と `metadata.participant_count` が最大4に制限され、先頭4件が決定的に選ばれること、およびCLI JSONとイベントログで整合していることを検証した。
+4. **検証結果**: `py -m pytest` = **293 passed, 6 deselected** （baseline 292から+1）。`git diff --check` 成功。
+5. **変更ファイル**:
+   - `src/oracle_council/assignment.py`
+   - `src/oracle_council/models.py`
+   - `src/oracle_council/orchestrator.py`
+   - `src/oracle_council/cli.py`
+   - `tests/unit/test_assignment.py`
+   - `tests/unit/test_cli.py`
+   - `QandA.md`
+   - `SPEC.md`
+   - `CLASS.md`
+   - `TESTCASE.md`
+   - `FIX_PLAN.md`
+   - `hikitsugi.md`
+   - `instructions/result.md`（本書）
+6. **実行禁止事項の遵守**: 実Claude、実Codex、WebSearch、実HTTP、`ORACLE_COUNCIL_LIVE=1`、live/expensive pytest、q01〜q08は実行していない。config/、evaluation/、scripts/、評価セットは未変更。
+7. **未解決**: q03 DNS failure-boundary、S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。

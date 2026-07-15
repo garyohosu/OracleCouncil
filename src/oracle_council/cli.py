@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments, select_run_participants
+from .assignment import InsufficientAgentsError, RegisteredAgent, plan_assignments
 from .budget import TokenBudget
 from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
@@ -294,7 +294,7 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
                 "clarification_status": "ready",
                 "assumptions": [],
             },
-            "participants": list({e.agent_id for e in result.executions}),
+            "participants": list(result.participants),
             "answer": {
                 "text": result.final_answer,
                 "result_classification": result.result_classification.value,
@@ -463,7 +463,7 @@ def cmd_ask(args) -> int:
 
     # S-9: configured adapters and Run participants are separate concepts.
     # Keep the first four available entries deterministically.
-    available_agents = list(select_run_participants(available_agents))
+    # The actual selection happens inside build_execution_plan, keeping available_agents as eligible agents here.
 
     if args.no_store:
         storage = None

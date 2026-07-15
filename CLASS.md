@@ -93,7 +93,7 @@ classDiagram
     }
     class ExecutionPlan {
         +runId str
-        +configuredAgentIds str[]
+        +participants str[]
         +phaseAssignments PhaseAssignment[]
         +maxRunRetries int
         +maxRunSubstitutions int
@@ -191,6 +191,7 @@ classDiagram
         +resultClassification ResultClassification
         +consensusStatus ConsensusStatus
         +elapsedMs int
+        +participants str[]
     }
 
     class Phase {
@@ -279,6 +280,7 @@ classDiagram
         +elapsedMs int
         +contentSaved bool
         +oracleExitCode int
+        +participants str[]
     }
 
     class RunEvent {

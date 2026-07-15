@@ -78,7 +78,7 @@ def test_run_participant_selection_preserves_existing_small_configurations():
 def test_execution_plan_uses_only_selected_run_participants():
     agents = [agent("a"), agent("b"), agent("c"), agent("d"), agent("e")]
     plan = build_execution_plan("run-1", agents)
-    assert plan.configured_agent_ids == ("a", "b", "c", "d")
+    assert plan.participants == ("a", "b", "c", "d")
     assert all("e" not in assignment.candidate_agent_ids for assignment in plan.phase_assignments)
     assert tuple(item.agent_id for item in plan.agent_availability) == ("a", "b", "c", "d")
 
@@ -90,7 +90,7 @@ def test_execution_plan_is_deterministic_and_contains_all_slots_and_limits():
     ]
     plans = [build_execution_plan("run-1", agents) for _ in range(10)]
     assert all(plan == plans[0] for plan in plans)
-    assert plans[0].configured_agent_ids == ("a", "b", "c")
+    assert plans[0].participants == ("a", "b", "c")
     assert [(item.phase, item.slot_index) for item in plans[0].phase_assignments] == [
         ("respond", 0), ("respond", 1), ("claim_extract", 0), ("verify", 0),
         ("criticize", 0), ("synthesize", 0), ("audit", 0),

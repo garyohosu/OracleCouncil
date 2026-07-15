@@ -1131,7 +1131,7 @@ Responderの2 slotは異なるAgentでなければ成功扱いにせず、成功
 **推奨案**: Orchestratorは`0..* configured adapters`を保持し、ExecutionPlanまたはCouncilに`2..4 selected participants`を持たせる。
 **実装への影響**: クラス間の多重度、初期化処理、例外ハンドリングのデータモデルが決定できない。
 **テストへの影響**: 1 Agent脱落時のフォールバックおよびエラーテストケースの構成が制限される。
-**回答**: 未回答。
+**回答**: 確定。AUTO_DECIDED (2026-07-14) で選定した通り、設定済みAgentが5件以上の場合に設定順の先頭4件をそのRunの参加者にする。これにより、既存設定を壊さず2..4構成を維持する。ExecutionPlanやRunResult、run_createdイベント、CLI JSON、Run metadataにおけるparticipants定義をselected participantsに統一し、設定済みAdapter数から分離した。
 
 **AUTO_DECIDED (2026-07-14)**: S-9は選択肢2（設定済みAgentが5件以上の場合、設定順の先頭4件をそのRunの参加者にする）を採用する。上限超過を拒否する案は既存設定を壊し、全件参加案はSPECの参加上限と合わない。既存の2〜4件構成は不変で、選定は可逆かつ決定的であり、変更量と後方互換性が最小である。Orchestrator/ExecutionPlanは選択後の参加集合を扱い、設定済みAgent数とは分離する。SPEC §6.4へ反映した。
 

@@ -111,7 +111,7 @@ class Orchestrator:
             self._append(
                 run_id,
                 "run_created",
-                {"mode": "verify", "participants": [a.agent_id for a in self._agents]},
+                {"mode": "verify", "participants": list(plan.participants)},
             )
             respond_index = 0
             for phase in _VERIFY_PHASES:
@@ -194,6 +194,7 @@ class Orchestrator:
                 call_count=state.calls,
                 oracle_exit_code=EXIT_FAILED,
                 evidence=_evidence_snapshot(state),
+                participants=plan.participants,
             )
         finally:
             self._budget.assert_settled()
@@ -570,13 +571,14 @@ class Orchestrator:
             status=status,
             result_classification=classification,
             consensus_status="not_applicable",
-            participant_count=len(self._agents),
+            participant_count=len(state.plan.participants),
             claim_count=len(state.claims),
             evidence_count=len(state.evidence),
             error_codes=tuple(error_codes),
             elapsed_ms=_elapsed_ms(state.created_at, finished_at),
             content_saved=self._store_content,
             oracle_exit_code=oracle_exit_code,
+            participants=state.plan.participants,
         )
         result = RunResult(
             run_id=run_id,
@@ -591,6 +593,7 @@ class Orchestrator:
             executions=tuple(state.executions),
             metadata=metadata,
             evidence=_evidence_snapshot(state),
+            participants=state.plan.participants,
         )
         self._append(
             run_id,

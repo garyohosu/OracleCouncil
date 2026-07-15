@@ -157,7 +157,7 @@ Criticは匿名化された全回答、Claim、Evidenceを受け取り、1回の
 
 `verify`のAI呼び出しは通常7回、Clarifierを含め8回、修正を含め10回を基準とする。同一Agent retryはRun全体で2回、substitutionは別枠でRun全体1回、全AI呼び出しは`TokenBudget.reserve()`による12回を絶対上限とする。差分スキャン、コンテキスト縮約、Evidence収集はAI呼び出しに数えない決定的なローカル処理とする。
 
-`ExecutionPlan`は`run_id`、`configured_agent_ids`、`phase_assignments`、`max_run_retries=2`、`max_run_substitutions=1`、`max_agent_calls=12`を持つ。`PhaseAssignment`は`phase`、`slot_index`、`required_success_count`、`candidate_agent_ids`、`constraints`を持ち、候補順はprobe/capability適格、`role_priority`降順、設定順tie-break、失敗Agent・Run全体unavailable Agent除外、独立性制約の順で固定する。`RunAgentAvailability`は`available`/`run_unavailable`と固定理由を記録する。
+`ExecutionPlan`は`run_id`、`participants`、`phase_assignments`、`max_run_retries=2`、`max_run_substitutions=1`、`max_agent_calls=12`を持つ。`PhaseAssignment`は`phase`、`slot_index`、`required_success_count`、`candidate_agent_ids`、`constraints`を持ち、候補順はprobe/capability適格、`role_priority`降順、設定順tie-break、失敗Agent・Run全体unavailable Agent除外、独立性制約の順で固定する。`RunAgentAvailability`は`available`/`run_unavailable`と固定理由を記録する。
 
 ### 6.4 参加Agentが少ない場合
 
