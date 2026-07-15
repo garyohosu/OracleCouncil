@@ -1,55 +1,52 @@
 param(
-    [switch]$Once
+    [switch]$Once,
+    [switch]$Status,
+    [switch]$InitTasks
 )
 
 $ErrorActionPreference = "Stop"
 
-# Check if .autoloop/local.json and .autoloop/config.json exist
-$LocalJsonPath = Join-Path (Get-Location) ".autoloop\local.json"
-$ConfigJsonPath = Join-Path (Get-Location) ".autoloop\config.json"
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$localConfigPath = Join-Path $PSScriptRoot "local.json"
+$projectConfigPath = Join-Path $PSScriptRoot "config.json"
 
-if (-not (Test-Path $LocalJsonPath)) {
-    Write-Error "Error: .autoloop/local.json not found. Please create it first."
-    exit 1
+if (-not (Test-Path $localConfigPath)) {
+    throw ".autoloop\local.json was not found. Copy local.example.json and set autoloop_home."
 }
 
-if (-not (Test-Path $ConfigJsonPath)) {
-    Write-Error "Error: .autoloop/config.json not found. Please create it first."
-    exit 1
+if (-not (Test-Path $projectConfigPath)) {
+    throw ".autoloop\config.json was not found."
 }
 
-# Load autoloop_home from local.json
-try {
-    $LocalConfig = Get-Content -Raw -Path $LocalJsonPath | ConvertFrom-Json
-} catch {
-    Write-Error "Error: Failed to parse .autoloop/local.json."
-    exit 1
+$localConfig = Get-Content $localConfigPath -Raw | ConvertFrom-Json
+$autoLoopHome = $localConfig.autoloop_home
+$controller = Join-Path $autoLoopHome "controller.py"
+
+if (-not $autoLoopHome) {
+    throw "autoloop_home is not configured in .autoloop\local.json."
 }
 
-$AutoloopHome = $LocalConfig.autoloop_home
-if (-not $AutoloopHome) {
-    Write-Error "Error: 'autoloop_home' is not specified in .autoloop/local.json."
-    exit 1
+if (-not (Test-Path $controller)) {
+    throw "AutoLoop controller was not found: $controller"
 }
 
-if (-not (Test-Path $AutoloopHome)) {
-    Write-Error "Error: autoloop_home path '$AutoloopHome' does not exist."
-    exit 1
-}
+$arguments = @(
+    $controller,
+    "--project", $projectRoot,
+    "--config", $projectConfigPath
+)
 
-$ControllerPath = Join-Path $AutoloopHome "controller.py"
-if (-not (Test-Path $ControllerPath)) {
-    Write-Error "Error: controller.py not found under autoloop_home: $ControllerPath"
-    exit 1
-}
-
-# Build arguments
-$ControllerArgs = @()
-$ControllerArgs += "--config"
-$ControllerArgs += ".autoloop\config.json"
 if ($Once) {
-    $ControllerArgs += "--once"
+    $arguments += "--once"
 }
 
-# Run Python controller
-py "$ControllerPath" $ControllerArgs
+if ($Status) {
+    $arguments += "--status"
+}
+
+if ($InitTasks) {
+    $arguments += "--init-tasks"
+}
+
+& py @arguments
+exit $LASTEXITCODE
