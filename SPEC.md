@@ -310,12 +310,19 @@ agents:
 
 ### 8.5 AgentAdapter Contract
 
+- **プローブキャッシュと事前プローブ (S-10)**:
+  - 1回のRunについて各Adapterへのプローブ呼び出しは実質最大1回に制限される。各Adapterは内部に `_probe_cache` を保持し、2回目以降の `probe()` はキャッシュされた結果を返すことで、不要な再プローブ（外部CLIプロセス起動）を廃止する。
+  - CLI起動時（Run開始前のエントリポイント）で enabled な全エージェントに対して `probe()` と `capabilities()` を呼び出して、そのプローブ結果と設定ファイル上の `capabilities` 定義（存在する場合はマージ・上書き）を組み合わせた不変の `AgentProbeSnapshot` を生成する。
+  - `AgentProbeSnapshot` は `ExecutionPlan` / `Orchestrator` を経て、`run_created` イベントおよび `RunMetadataRecord` へ記録・永続化される。
+  - 実行開始後に発生したエラー（起動失敗、非ゼロ終了、タイムアウトなど）は、開始時スナップショットを過去に遡って書き換えるのではなく、実行レコード（`AgentExecutionRecord`）としての `AgentFailure` 経路で扱う。
+
+
 ```python
 class AgentAdapter(Protocol):
-    async def probe(self) -> ProbeResult: ...
-    def capabilities(self) -> AgentCapabilities: ...
-    async def execute(self, request: AgentRequest) -> AgentResult: ...
-    async def cancel(self, execution_id: str) -> None: ...
+    def probe(self) -> str: ...
+    def capabilities(self) -> dict[str, Any]: ...
+    def execute(self, request: AgentRequest) -> AgentResult: ...
+    def cancel(self, execution_id: str) -> None: ...
 ```
 
 `AgentRequest`は`execution_id`、`phase`、`system_instructions`、`input`、`output_schema`、`timeout_ms`、`max_output_tokens`、`working_directory`を必須とする。
@@ -1086,6 +1093,8 @@ Ctrl+Cでは子process treeをterminateし、5秒後も残る場合はkillする
 - `error_codes`
 - `elapsed_ms`
 - `oracle_exit_code`（Run終端時に確定するOracle Council自身の終了コード。§13.4。子processコードはここへ集約しない。S-8）
+- `participants`（選定されたparticipantsのagent_idリスト。S-9）
+- `agent_snapshots`（各エージェントのプローブ結果とcapabilitiesのsnapshotリスト。S-10）
 
 #### Run
 
@@ -1100,6 +1109,8 @@ Ctrl+Cでは子process treeをterminateし、5秒後も残る場合はkillする
 - `result_classification`
 - `consensus_status`
 - `elapsed_ms`
+- `participants`（選定されたparticipantsのagent_idリスト。S-9）
+- `agent_snapshots`（各エージェントのプローブ結果とcapabilitiesのsnapshotリスト。S-10）
 
 #### Phase
 

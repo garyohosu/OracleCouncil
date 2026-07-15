@@ -26,12 +26,17 @@ sequenceDiagram
     participant S as JSONL Storage
 
     U->>CLI: oracle ask "質問"（既定: verify）
-    CLI->>O: Run作成
-    O->>S: run_created / running イベント
-    O->>A: probe()
-    A-->>O: OK＋capabilities
-    O->>B: probe()
-    B-->>O: OK＋capabilities
+    CLI->>A: probe()
+    A-->>CLI: OK
+    CLI->>A: capabilities()
+    A-->>CLI: capabilities
+    CLI->>B: probe()
+    B-->>CLI: OK
+    CLI->>B: capabilities()
+    B-->>CLI: capabilities
+    Note over CLI: config capabilitiesをマージしてAgentProbeSnapshotを生成
+    CLI->>O: Run作成（snapshotsを渡す）
+    O->>S: run_created / running イベント（snapshotsを含む）
 
     O->>CE: 決定的ルールで質問を検査
     CE-->>O: ready（追加質問・Clarifier不要）
@@ -317,6 +322,6 @@ sequenceDiagram
 - M-5/S-5: X-8.16で確定済み（図4b/4c/4dへ反映）
 - R-2: `--json`時の進捗表示の出力先
 - R-3: ユーザー応答待ち時間と全体タイムアウトの関係
-- R-4: `probe()`の実行方式（AI呼び出しに数えるか）
+- R-4: `probe()`の実行方式とカウント。S-10で事前プローブキャッシュおよび `AgentProbeSnapshot` が導入され、各エージェントにつきプローブは1回のRunあたり1回（外部CLIプロセス呼び出しは1回）に制限され、AI呼び出しの課金予算や実行回数にはカウントしない（execute実行前に行われる）ことで確定した。
 
-M-4（`evidence_collect` Phaseと2軸モデル）、R-1（終了コード表）、S-1（Provider内部委譲）はSPEC v0.3.3で確定し、本書へ反映済み。
+M-4（`evidence_collect` Phaseと2軸モデル）、R-1（終了コード表）、S-1（Provider内部委譲）はSPEC v0.3.3、S-10（プローブキャッシュとスナップショット）はv0.3.11で確定し、本書へ反映済み。

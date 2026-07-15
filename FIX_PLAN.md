@@ -57,7 +57,7 @@
 |---|---|---|
 | M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |
 
-実Claude/Codex、live評価、q03 DNS、S-10は未着手（L-5は0-8、S-8は0-9、S-9は0-10で完了）。
+実Claude/Codex、live評価、q03 DNSは未着手（L-5は0-8、S-8は0-9、S-9は0-10、S-10は0-11で完了）。
 
 ## 0-9. X-8.19でS-8仕様確定・通常実装・Fake/transport/CLIテスト完了
 
@@ -65,13 +65,20 @@
 |---|---|---|
 | S-8 | 子CLI processのOS終了コードを`process_exit_code`（`AgentResult`／`AgentFailure`／`AgentExecutionRecord`）、Oracle Council全体の外部終了コードを`oracle_exit_code`（`RunResult`／`RunMetadataRecord`／CLI JSONトップレベル）へ分離。取得不能・Fake Agentはnull、process 0後のparse/schema失敗は`INVALID_OUTPUT`かつprocess 0。旧トップレベル`exit_code`はschema 1.x互換エイリアスとして`oracle_exit_code`と常に同値。`executions[]`は`process_exit_code`のみ出力。R-1の0/1/2/3/4/130対応表は不変 | QandA S-8、SPEC v0.3.10 §8.5/§13.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/models.py`・`orchestrator.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`、`tests/unit/test_exit_code_separation.py` |
 
-実CLI、live評価、q03 DNS failure-boundary、S-10、L-3は引き続き未着手。
+実CLI、live評価、q03 DNS failure-boundary、L-3は引き続き未着手。
 
 ## 0-10. X-8.21でS-9仕様確定・通常実装・Fake/CLIテスト完了
 
 | # | 内容 | 反映箇所 |
 |---|---|---|
 | S-9 | Configured Adapter数（0..*）、Eligible Agent数、Selected Participants数（2..4）、Executions数を分離。選定正本をbuild_execution_planに集約し、5件以上の場合は設定順の先頭4件を選択。ExecutionPlan.participants、RunResult.participants、run_createdイベント、CLI JSON、RunMetadataRecordのparticipants定義をselected participantsに統一。executionsからparticipantsの逆算を廃止。 | QandA S-9、SPEC v0.3.11 §6.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/assignment.py`・`orchestrator.py`・`cli.py`・`models.py`、`tests/unit/test_assignment.py`・`test_cli.py` |
+
+## 0-11. X-8.22でS-10/R-4仕様確定・通常実装・Fake/CLIテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-10 | プローブ結果とcapabilitiesの正本二重化を解消し、1回のRunについて各Agentのprobe結果とcapabilitiesを不変のsnapshotとして扱う。ask、status、validateでAdapter生成経路を統一し、execute()による不必要な再probeを廃止（キャッシュを利用）。Run開始時snapshotと実行途中のAgentFailureは区別。S-9仕様を壊さない。 | QandA S-10、SPEC v0.3.11 §8.5/§15.8、CLASS、TESTCASE、SEQUENCE、`src/oracle_council/models.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`・`orchestrator.py`、`tests/unit/test_s10_probe_snapshot.py` |
+| R-4 | CLI実行時における進捗ステータスおよびエラーの標準エラー出力（stderr）への隔離とJSON出力のstdout分離。詳細ログの`--log-file`指定による保存対応。 | SPEC §15.2、CLIインタフェース実装、`tests/integration/test_cli_output.py` |
 
 ## 0. v0.3.1で解消済み
 
@@ -113,7 +120,7 @@
 | **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
 | **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 
-L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。
+L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。S-9は解消済み（0-10参照）。S-10は解消済み（0-11参照）。
 
 O-6は解消済み（0-5参照）。
 
@@ -128,14 +135,12 @@ O-6は解消済み（0-5参照）。
 | **J-4** | Clarifier 2ラウンドと上限8回 | Phase 1 (質問整理) | 質問整理結合テスト |
 | **L-3** | 構造化出力失敗時の回復 | Phase 2 (Adapter実装) | Adapter例外・復帰テスト |
 | **O-2** | 認証情報マスキングの境界 | Phase 2 (Adapter実装) | secret redactionテスト |
-| **R-4** | `probe()`の実行方式とカウント | Phase 2 (Adapter実装) | Probe・カウント検証テスト |
 | **N-3** | 障害注入テストの契約 | Phase 2〜3 | ネットワーク・遅延障害テスト |
 | **K-2** | Web取得で扱える資料範囲 | Phase 3 (Evidence) | WebEvidenceProvider Contract Test |
 | **K-4** | Claim分割とEvidence多対多 | Phase 3 (Evidence) | Evidence共有・マッピングテスト |
 | **K-5** | `critical` 6件以上のwithheld | Phase 3 (Evidence) | 保留判定基準テスト |
 | **K-6** | `freshness`判定手順と既定値 | Phase 3 (Evidence) | 鮮度バリデーションテスト |
 | **K-7** | Evidence処理90秒と並列度 | Phase 3 (Evidence) | 並行取得タイムアウトテスト |
-| **S-10**| `probe()`と`capabilities()`正本化 | Phase 2 (Adapter/Orchestrator) | アダプター能力検知テスト |
 | **N-2** | 非決定的AI判定のgolden dataset | Phase 5 (品質検証) | 精度ベンチマークテスト |
 | **R-2** | `--json`時の進捗表示の出力先 | Phase 5 (UX) | CLI標準出力検証テスト |
 | **R-3** | ユーザー応答待ちと全体タイムアウト | Phase 1 (対話実装) | 対話応答タイムアウトテスト |

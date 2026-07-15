@@ -656,7 +656,7 @@
 - **対象クラス/機能**: `AgentAdapter.capabilities` / `adapters/base.py`
 - **関連仕様・UC・SEQ**: SPEC §8.5
 - **期待結果**: アダプターが自身の `adapter_family`, `structured_output` などの能力仕様を正しく返すこと。
-- **未確定仕様への依存**: `BLOCKED: QandA S-10`
+- **未確定仕様への依存**: なし（S-10はv0.3.11で確定済み）
 
 #### **UT-AA-03: execute 正常系とJSONパース**
 - **テストレベル**: UT
@@ -1181,7 +1181,7 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 - **実行手順**: 同じparameter setをClaudeCodeAdapterとCodexCLIAdapterへ適用する。
 - **期待結果**: 両Adapterが同一`AgentResult`契約へ正規化し、stdout/stderr分離、redaction、process tree終了を満たす。
 - **期待する状態遷移**: `pending -> running -> succeeded|unavailable|failed|timed_out|cancelled`
-- **期待するAgent呼び出し回数**: parameterごとに1回。probeは`BLOCKED: R-4`。
+- **期待するAgent呼び出し回数**: parameterごとに1回。プローブはRun全体で1回キャッシュされ、予算や呼び出し回数にはカウントしない（S-10/R-4確定・実装済み）。
 - **期待する終了コード**: N/A。`process_exit_code`は子processのOS終了コードを保持する（成功0、非0は実値、command not found・timeout・起動失敗はnull。process 0後のparse/schema失敗は`INVALID_OUTPUT`かつ`process_exit_code=0`。S-8確定・実装済み、`tests/unit/test_exit_code_separation.py`）。
 - **期待するstdout**: N/A
 - **期待するstderr**: N/A
@@ -1189,7 +1189,7 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 - **保存してはいけない情報**: fixture secret、親環境、raw stderr
 - **優先度**: P0
 - **自動化可否**: CIで可。外部AIアクセス禁止
-- **未確定仕様への依存**: `BLOCKED: QandA S-10, R-4`（L-5はX-8.18、O-6はX-8.13、S-8はX-8.19で確定済み）
+- **未確定仕様への依存**: なし（S-10, R-4はv0.3.11で確定済み、L-5はX-8.18、O-6はX-8.13、S-8はX-8.19で確定済み）
 
 ### **CT-EP-LIVE-01: EvidenceProvider実API Contract**
 - **テストレベル**: CT

@@ -433,4 +433,19 @@ RunResult、run_createdイベント、CLI JSONトップレベル、RunMetadataRe
 通常pytest `293 passed, 6 deselected` （baseline 292から+1）、`git diff --check` 成功。
 
 ドキュメント更新: QandA（S-9回答確定）、SPEC v0.3.11（§6.4/§14/§15.8）、CLASS（ExecutionPlan.configuredAgentIds -> participants、Run/RunMetadataRecordにparticipants追加）、TESTCASE（S-9 BLOCKED解消）、FIX_PLAN（0-10追加、S-9を未確定テーブルから解消済みへ）を更新。
-未解決: q03 DNS failure-boundary、S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+未解決: q03 DNS failure-boundary、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+
+## X-8.22 S-10 probe and capabilities snapshot（2026-07-15）
+
+S-10仕様を確定し、通常実装が完了していることを確認・ドキュメント整合した（QandA回答確定、SPEC v0.3.11）。
+各Adapter (ClaudeAdapter, CodexAdapter, FakeAgentAdapter) におけるプローブキャッシュ（_probe_cache）の実装により、同一のRun内で複数回probe()を呼び出しても、不要な外部CLIプロセス呼び出しが発生しないようにした。
+`cli.py` 内に `probe_agents()` 共通ヘルパーを導入し、`cmd_ask`, `cmd_agents_status`, `cmd_agents_validate` でのAdapter生成および事前プローブ取得経路を統一した。
+取得したプローブ結果と設定ファイルの `capabilities` をマージして `AgentProbeSnapshot` を生成し、`ExecutionPlan` や `Orchestrator` へ不変の状態で引き回す。
+スナップショットは `run_created` イベントの payload と `RunMetadataRecord` / `RunResult` に不変の状態で記録・永続化される。
+実行途中の `AgentFailure` は実行レコード（`AgentExecutionRecord`）で記録され、開始時の不変スナップショットとは明確に区別される。
+S-9の参加者2..4名の制限および選定ロジックを破壊していないことを確認した。
+
+テスト: `tests/unit/test_s10_probe_snapshot.py` を検証。Claude/Codex/Fake各プローブキャッシュ、capabilitiesマージ規則、Orchestratorでの snapshot 永続化ライフサイクルを検証。通常pytest `299 passed, 6 deselected`、`git diff --check` 成功。
+
+ドキュメント更新: QandA.md (AUTO_DECIDED 2026-07-15)、SPEC.md (8.5 / 15.8)、CLASS.md (クラス図にAgentProbeSnapshot追加、関係性・完了追記)、SEQUENCE.md (CLI事前プローブ・R-4解決反映)、TESTCASE.md (S-10/R-4のBLOCKED解消)、FIX_PLAN.md (0-11追加、R-4/S-10を未確定テーブルから解消済みへ) を更新。
+未解決: q03 DNS failure-boundary、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。

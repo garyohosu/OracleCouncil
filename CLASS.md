@@ -192,6 +192,15 @@ classDiagram
         +consensusStatus ConsensusStatus
         +elapsedMs int
         +participants str[]
+        +agentSnapshots AgentProbeSnapshot[]
+    }
+
+    class AgentProbeSnapshot {
+        +agentId str
+        +status str
+        +capabilities object
+        +probedAt datetime
+        +errorCode str
     }
 
     class Phase {
@@ -281,6 +290,7 @@ classDiagram
         +contentSaved bool
         +oracleExitCode int
         +participants str[]
+        +agentSnapshots object[]
     }
 
     class RunEvent {
@@ -300,6 +310,7 @@ classDiagram
     Run "1" *-- "0..*" Claim
     Claim "1" *-- "0..*" Evidence
     Run "1" *-- "0..*" AuditIssue
+    Run "1" *-- "0..*" AgentProbeSnapshot
     AgentExecution "0..1" --> "0..1" AgentExecution : retryOf
     AgentExecution "0..1" --> "0..1" AgentExecution : substituteFor
     Run ..> RunMetadataRecord : metadata snapshot
@@ -567,4 +578,4 @@ classDiagram
 - K-4: 1つのEvidenceDocumentを複数Claimで共有する場合の関連
 - L-5: フェーズ別`structured_output`のschema
 
-S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6、M-5/S-5はv0.3.9で確定し、本書へ反映済み。S-9、S-10は未解決のまま。
+S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6、M-5/S-5はv0.3.9で確定し、本書へ反映済み。S-9、S-10はv0.3.11で確定・反映済み。
