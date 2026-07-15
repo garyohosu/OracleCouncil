@@ -37,8 +37,6 @@
   "push_enabled": false,
   "allow_dirty_worktree": true,
   "allowed_dirty_paths": [
-    "dream.md",
-    "loop",
-    "loop.zip"
+    "dream.md"
   ]
 }
