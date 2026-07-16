@@ -9,7 +9,9 @@ S-9は完了した（FIX_PLAN.md §0-11参照、`test_assignment.py`/`test_orche
 
 本ファイルはAutoLoopが読む唯一の実行対象タスクの正本である。AutoLoopは`status`が`pending`のときだけ動作し、`task_id`欄のタスクだけを実装して`status`を`completed`（または`blocked`）へ書き換えて停止する（`.autoloop/config.json`の`allow_task_chaining: false`、`C:\PROJECT\autoloop`のcontroller.py側で強制）。
 
-**次にAutoLoopを実行する前に、人間がこのfront matterを次の未着手タスク（例: S-4、J-4、q03 live再評価など。FIX_PLAN.mdの未解決一覧を参照）へ書き換え、`status: pending`に戻すこと。** このセッションでは新しいタスクを選定していない。
+**次にAutoLoopを実行する前に、人間がこのfront matterを次の未着手タスクへ書き換え、`status: pending`に戻すこと。** このセッションでは新しいタスクを選定していない。
+
+**2026-07-16夜の追記（重要・着手順序を変更）**: 本日、Claude Code側の別セッションがこのリポジトリを直接編集している最中に、AutoLoop（antigravity経由）が同じ作業ツリーを同時編集していたことが判明した（`cli.py`の内容がテスト実行の合間に変化する事象を実際に観測）。**次にAutoLoopを起動する前に、まずAutoLoopへ排他制御（起動時の原子的ロック、二重起動拒否、可能であれば専用worktree/専用ブランチでの実行）を実装し、Planner・複数Agent版AutoLoopの最新版をこのリポジトリへ反映すること。** それが済むまでは`task_id`をS-4へ書き換えて`status: pending`にしない。詳細はhikitsugi.md §0-18を参照。
 
 以下は2026-07-15時点でのAutoLoop実行時に、実際にはS-9以外にS-10・T-3・L-3・S-6/T-2・J-3も連鎖的に実装されてしまった記録（FIX_PLAN.md §0-11〜0-16に正本あり）。S-4は着手途中でAPI利用枠が尽きて失敗し、その未完成分は本セッションで削除・復旧済み。
 
