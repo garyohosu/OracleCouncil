@@ -273,21 +273,29 @@ sequenceDiagram
     actor U as 利用者
     participant CLI as oracle CLI
     participant O as Orchestrator
+    participant ER as ExecutionRegistry
+    participant Ad as AgentAdapter
     participant P as 実行中の子CLIプロセス
     participant S as JSONL Storage
 
     U->>CLI: Ctrl+C
-    CLI->>O: キャンセル要求
-    O->>P: process tree をterminate
-
-    alt 5秒以内に終了
-        P-->>O: 終了
-    else 5秒後も残存
-        O->>P: kill
+    CLI->>O: cancel(runId)
+    O->>ER: get_active_executions(runId)
+    ER-->>O: [(executionId, adapter), ...]
+    Note over O: 各アクティブな execution に対して並行して cancel を呼び出す
+    par 並行キャンセル
+        O->>Ad: cancel(executionId)
+        Ad->>P: proc.terminate()
+        alt 5秒以内に終了
+            P-->>Ad: 終了
+        else 5秒後も残存
+            Ad->>P: proc.kill()
+        end
     end
 
+    Note over O: 実行中スレッドの AgentAdapter.execute() が AgentFailure("CANCELLED") を投げて終了する
     O->>S: 実行中のExecution / Phase / Runをcancelledとして保存
-    O-->>CLI: cancelled で終了
+    O-->>CLI: RunResult (status=cancelled, oracle_exit_code=130)
 ```
 
 ## 5. 履歴表示（Q-2反映・metadataのみのRun）

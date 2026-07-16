@@ -44,5 +44,7 @@
     "allow_dirty_worktree":  false,
     "allowed_dirty_paths":  [
 
-                            ]
+                            ],
+    "allow_task_chaining":  false,
+    "task_file":  "instructions/instructions.md"
 }

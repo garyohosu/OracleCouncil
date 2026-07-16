@@ -4,8 +4,8 @@ envelope; the phase JSON lives in envelope["result"], not at the top level."""
 
 import json
 
-from oracle_council.adapters.base import build_phase_input
-from oracle_council.adapters.claude import _build_prompt, _extract_json_object
+from oracle_council.adapters.base import build_phase_input, extract_json_object
+from oracle_council.adapters.claude import _build_prompt
 from oracle_council.models import AgentRequest
 
 
@@ -41,21 +41,21 @@ def test_phase_input_includes_claims_evidence_and_false_premise_guidance():
 
 
 def test_extract_plain_json_object():
-    assert _extract_json_object('{"answer": "hi"}') == {"answer": "hi"}
+    assert extract_json_object('{"answer": "hi"}') == {"answer": "hi"}
 
 
 def test_extract_json_from_markdown_fence():
     text = '```json\n{"answer": "hi"}\n```'
-    assert _extract_json_object(text) == {"answer": "hi"}
+    assert extract_json_object(text) == {"answer": "hi"}
 
 
 def test_extract_json_surrounded_by_prose():
     text = 'Sure, here you go:\n{"answer": "hi"}\nHope that helps!'
-    assert _extract_json_object(text) == {"answer": "hi"}
+    assert extract_json_object(text) == {"answer": "hi"}
 
 
 def test_extract_raises_when_no_json_present():
     import pytest
 
     with pytest.raises(json.JSONDecodeError):
-        _extract_json_object("just plain text, no braces here")
+        extract_json_object("just plain text, no braces here")

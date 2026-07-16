@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import socket
 from copy import deepcopy
@@ -40,6 +41,45 @@ class _NoRedirect(BaseHandler):
     http_error_302 = http_error_303 = http_error_307 = http_error_308 = http_error_301
 
 
+@contextlib.contextmanager
+def _pinned_dns(host: str, ip: str):
+    orig_getaddrinfo = socket.getaddrinfo
+    def patched_getaddrinfo(h, port, *args, **kwargs):
+        if h == host:
+            return orig_getaddrinfo(ip, port, *args, **kwargs)
+        return orig_getaddrinfo(h, port, *args, **kwargs)
+
+    socket.getaddrinfo = patched_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = orig_getaddrinfo
+
+
+from urllib.request import HTTPHandler, HTTPSHandler
+
+class _PinnedHTTPHandler(HTTPHandler):
+    def __init__(self, host: str, ip: str):
+        super().__init__()
+        self.host = host
+        self.ip = ip
+
+    def http_open(self, req):
+        with _pinned_dns(self.host, self.ip):
+            return super().http_open(req)
+
+
+class _PinnedHTTPSHandler(HTTPSHandler):
+    def __init__(self, host: str, ip: str):
+        super().__init__()
+        self.host = host
+        self.ip = ip
+
+    def https_open(self, req):
+        with _pinned_dns(self.host, self.ip):
+            return super().https_open(req)
+
+
 class SafeHttpFetcher:
     ALLOWED_TYPES = ("text/", "application/json", "application/xml")
 
@@ -53,13 +93,25 @@ class SafeHttpFetcher:
     def fetch(self, url: str, *, max_redirects: int = 3) -> FetchedEvidence:
         current = self._iri_to_uri(url)
         for _ in range(max_redirects + 1):
-            self._validate_url(current)
+            parsed = urlparse(current)
+            pinned_ip = self._resolve_and_pin(current)
             try:
                 request = Request(current, headers={"User-Agent": "OracleCouncil/0.1"}, method="GET")
             except UnicodeError as exc:
                 raise EvidenceFetchError("INVALID_URL_ENCODING", "URL must be a valid URI") from exc
+
+            from urllib.request import OpenerDirector
+            if isinstance(self._opener, OpenerDirector):
+                opener = build_opener(
+                    _NoRedirect(),
+                    _PinnedHTTPHandler(parsed.hostname, pinned_ip),
+                    _PinnedHTTPSHandler(parsed.hostname, pinned_ip)
+                )
+            else:
+                opener = self._opener
+
             try:
-                response = self._opener.open(request, timeout=self.timeout)
+                response = opener.open(request, timeout=self.timeout)
             except HTTPError as exc:
                 if exc.code in (301, 302, 303, 307, 308):
                     location = exc.headers.get("Location")
@@ -93,28 +145,24 @@ class SafeHttpFetcher:
             return FetchedEvidence(current, "", text, content_type, "")
         raise EvidenceFetchError("TOO_MANY_REDIRECTS")
 
-    def _validate_url(self, url: str) -> None:
+    def _resolve_and_pin(self, url: str) -> str:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username:
             raise EvidenceFetchError("UNSAFE_URL", "only http(s) URLs without credentials are allowed")
         try:
             addresses = list(self._resolver(parsed.hostname))
         except socket.gaierror as exc:
-            # The SSRF pre-check resolves the hostname itself, outside
-            # fetch()'s HTTP-open try/except. A DNS resolution failure here
-            # (socket.gaierror) previously propagated raw past this method,
-            # WebEvidenceProvider, and Orchestrator, reaching the CLI's
-            # generic exception handler as an internal_error (X-8.20,
-            # observed in the X-8.14 q03 holdout run). Convert it here, at
-            # the same network boundary that already converts other
-            # resolver/HTTP-open failures, using the existing general
-            # network-failure code (FETCH_FAILED) rather than adding a new
-            # public code for what is just another connectivity failure.
             raise EvidenceFetchError("FETCH_FAILED", "DNS resolution failed") from exc
+        if not addresses:
+            raise EvidenceFetchError("FETCH_FAILED", "DNS resolution returned no addresses")
         for address in addresses:
             ip = ipaddress.ip_address(address)
             if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast:
                 raise EvidenceFetchError("UNSAFE_URL", "private or local destination")
+        return addresses[0]
+
+    def _validate_url(self, url: str) -> None:
+        self._resolve_and_pin(url)
 
     @staticmethod
     def _resolve(host: str) -> Iterable[str]:

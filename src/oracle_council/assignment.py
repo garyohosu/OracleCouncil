@@ -49,6 +49,8 @@ class ExecutionPlan:
     configured_agent_ids: tuple[str, ...]
     phase_assignments: tuple[PhaseAssignment, ...]
     agent_availability: tuple[RunAgentAvailability, ...]
+    participants: tuple[str, ...]
+    mode: str = "verify"
     max_run_retries: int = 2
     max_run_substitutions: int = 1
     max_agent_calls: int = 12
@@ -85,6 +87,15 @@ def rank(agents: Sequence[RegisteredAgent], phase: str, exclude: frozenset[str] 
     return [agent for _, agent in candidates]
 
 
+def rank_agents_for_run(agents: Sequence[RegisteredAgent]) -> list[RegisteredAgent]:
+    candidates = []
+    for index, agent in enumerate(agents):
+        max_priority = max(agent.role_priority.values()) if agent.role_priority else 0
+        candidates.append((max_priority, index, agent))
+    candidates.sort(key=lambda pair: (-pair[0], pair[1]))
+    return [agent for _, _, agent in candidates]
+
+
 _PLAN_ASSIGNMENTS = (
     ("respond", 0, 2, ("distinct_responder",)),
     ("respond", 1, 2, ("distinct_responder",)),
@@ -95,30 +106,48 @@ _PLAN_ASSIGNMENTS = (
     ("audit", 0, 1, ("synthesizer_must_be_distinct",)),
 )
 
+_QUICK_PLAN_ASSIGNMENTS = (
+    ("respond", 0, 2, ("distinct_responder",)),
+    ("respond", 1, 2, ("distinct_responder",)),
+    ("compare", 0, 1, ()),
+    ("synthesize", 0, 1, ()),
+)
 
-def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent]) -> ExecutionPlan:
+
+def build_execution_plan(run_id: str, agents: Sequence[RegisteredAgent], mode: str = "verify") -> ExecutionPlan:
     if len({agent.agent_id for agent in agents}) != len(agents):
         raise ValueError("agent_id must be unique")
     if len(agents) < 2:
         raise InsufficientAgentsError(
-            "verify requires two distinct responders and a separate auditor"
+            f"{mode} requires two distinct responders and a separate auditor" if mode != "quick" else
+            "quick requires at least two available agents"
         )
 
-    rankings = {phase: tuple(agent.agent_id for agent in rank(agents, phase))
-                for phase in {item[0] for item in _PLAN_ASSIGNMENTS}}
-    synth_id = rankings["synthesize"][0]
-    if not any(agent_id != synth_id for agent_id in rankings["audit"]):
-        raise InsufficientAgentsError("auditor distinct from synthesizer is unavailable")
+    ranked = rank_agents_for_run(agents)
+    selected_ids = {agent.agent_id for agent in ranked[:4]}
+    selected_participants = tuple(agent.agent_id for agent in agents if agent.agent_id in selected_ids)
+    selected_agents = [agent for agent in agents if agent.agent_id in selected_ids]
+
+    plan_assignments_list = _QUICK_PLAN_ASSIGNMENTS if mode == "quick" else _PLAN_ASSIGNMENTS
+
+    rankings = {phase: tuple(agent.agent_id for agent in rank(selected_agents, phase))
+                for phase in {item[0] for item in plan_assignments_list}}
+    if mode != "quick":
+        synth_id = rankings["synthesize"][0]
+        if not any(agent_id != synth_id for agent_id in rankings["audit"]):
+            raise InsufficientAgentsError("auditor distinct from synthesizer is unavailable")
 
     assignments = tuple(
         PhaseAssignment(phase, slot, required, rankings[phase], constraints)
-        for phase, slot, required, constraints in _PLAN_ASSIGNMENTS
+        for phase, slot, required, constraints in plan_assignments_list
     )
     return ExecutionPlan(
         run_id=run_id,
+        mode=mode,
         configured_agent_ids=tuple(agent.agent_id for agent in agents),
         phase_assignments=assignments,
         agent_availability=tuple(RunAgentAvailability(agent.agent_id) for agent in agents),
+        participants=selected_participants,
     )
 
 

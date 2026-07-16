@@ -155,10 +155,13 @@ class AgentExecutionStatus(StrEnum):
 
 
 class PhaseStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
     SUCCEEDED = "succeeded"
     DEGRADED = "degraded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class AgentFailure(RuntimeError):
@@ -422,11 +425,13 @@ class RunMetadataRecord:
     # S-8: the Oracle Council CLI's own exit code (SPEC §13.4), snapshotted
     # at run termination. Child process codes are never aggregated here.
     oracle_exit_code: int
+    participants: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["created_at"] = self.created_at.isoformat()
         value["error_codes"] = list(self.error_codes)
+        value["participants"] = list(self.participants)
         return value
 
 
@@ -440,12 +445,14 @@ class RunResult:
     # S-8: the Oracle Council CLI's own exit code (SPEC §13.4). The child
     # process codes live on each AgentExecutionRecord.process_exit_code.
     oracle_exit_code: int
+    mode: str = "verify"
     claims: tuple[Claim, ...] = ()
     audit_issues: tuple[AuditIssue, ...] = ()
     phases: tuple[PhaseRecord, ...] = ()
     executions: tuple[AgentExecutionRecord, ...] = ()
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
+    participants: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -453,3 +460,22 @@ class RunResult:
         field of record is oracle_exit_code. New code must not use this."""
         return self.oracle_exit_code
 
+    @property
+    def external_verification(self) -> bool:
+        return self.mode != "quick"
+
+
+@dataclass(frozen=True)
+class AgentCapabilities:
+    adapter_family: str
+    adapter_version: str
+    cli_version: str
+    supported_phases: tuple[str, ...]
+    supports_read_only: bool = True
+    supports_no_tools: bool = True
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    status: str
+    capabilities: AgentCapabilities | None = None

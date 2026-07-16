@@ -576,3 +576,43 @@ def test_collect_with_metrics_continues_after_raw_dns_failure_and_records_typed_
     rendered = repr(collected.metrics) + repr(collected.evidence)
     assert "11001" not in rendered
     assert "getaddrinfo" not in rendered
+
+
+def test_dns_pinning_prevents_rebinding(monkeypatch):
+    import socket
+    import urllib.request
+
+    connection_args = []
+    def dummy_create_connection(address, timeout=None, source_address=None, *args, **kwargs):
+        host, port = address
+        resolved = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        connection_args.append(resolved[0][4])
+        raise OSError("Connection mocked")
+
+    monkeypatch.setattr(socket, "create_connection", dummy_create_connection)
+
+    resolved_ips = ["93.184.216.34"]
+    orig_getaddrinfo = socket.getaddrinfo
+
+    def mock_getaddrinfo(host, port, *args, **kwargs):
+        if host == "example.com":
+            ip = resolved_ips[0]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+        return orig_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", mock_getaddrinfo)
+
+    fetcher = SafeHttpFetcher()
+
+    def custom_resolver(host):
+        ips = ["93.184.216.34"]
+        resolved_ips[0] = "127.0.0.1"
+        return ips
+
+    fetcher._resolver = custom_resolver
+
+    with pytest.raises(EvidenceFetchError):
+        fetcher.fetch("http://example.com/a")
+
+    assert len(connection_args) == 1
+    assert connection_args[0][0] == "93.184.216.34"

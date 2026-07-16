@@ -195,6 +195,29 @@ def _validate_claims(claims: Any) -> None:
             )
 
 
+def extract_json_object(text: str) -> Any:
+    """Parse a JSON object out of model text that may be wrapped in markdown
+    fences or preceded/followed by prose despite the prompt instruction."""
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1))
+        except json.JSONDecodeError:
+            pass
+    brace_match = re.search(r"\{.*\}", stripped, re.DOTALL)
+    if brace_match:
+        try:
+            return json.loads(brace_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise json.JSONDecodeError("no JSON object found", stripped, 0)
+
+
 def validate_phase_output(phase: str, output: Any) -> dict[str, Any]:
     """Validate the phase envelope before it reaches Orchestrator state."""
     try:

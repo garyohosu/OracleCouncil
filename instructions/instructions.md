@@ -1,9 +1,19 @@
 ---
 task_id: S-9
-status: pending
+status: completed
 ---
 
-# 今回実行するタスク
+# 今回実行するタスク（完了済み・要更新）
+
+S-9は完了した（FIX_PLAN.md §0-11参照、`test_assignment.py`/`test_orchestrator.py`のS-9関連テストがpass）。
+
+本ファイルはAutoLoopが読む唯一の実行対象タスクの正本である。AutoLoopは`status`が`pending`のときだけ動作し、`task_id`欄のタスクだけを実装して`status`を`completed`（または`blocked`）へ書き換えて停止する（`.autoloop/config.json`の`allow_task_chaining: false`、`C:\PROJECT\autoloop`のcontroller.py側で強制）。
+
+**次にAutoLoopを実行する前に、人間がこのfront matterを次の未着手タスク（例: S-4、J-4、q03 live再評価など。FIX_PLAN.mdの未解決一覧を参照）へ書き換え、`status: pending`に戻すこと。** このセッションでは新しいタスクを選定していない。
+
+以下は2026-07-15時点でのAutoLoop実行時に、実際にはS-9以外にS-10・T-3・L-3・S-6/T-2・J-3も連鎖的に実装されてしまった記録（FIX_PLAN.md §0-11〜0-16に正本あり）。S-4は着手途中でAPI利用枠が尽きて失敗し、その未完成分は本セッションで削除・復旧済み。
+
+---
 
 X-8.20 is completed. Do not re-implement.
 

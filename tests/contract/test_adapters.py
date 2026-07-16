@@ -63,15 +63,15 @@ class TestValidatePhaseOutputClaimEnums:
 
 def verify_adapter_contract(adapter):
     # probe()
-    status = adapter.probe()
-    assert isinstance(status, str)
+    probe_res = adapter.probe()
+    assert isinstance(probe_res.status, str)
 
-    # capabilities()
-    caps = adapter.capabilities()
-    assert isinstance(caps, dict)
-    assert "supported_models" in caps
-    assert caps.get("supports_read_only") is True
-    assert caps.get("supports_no_tools") is True
+    # capabilities
+    caps = probe_res.capabilities
+    assert caps is not None
+    assert isinstance(caps.adapter_family, str)
+    assert caps.supports_read_only is True
+    assert caps.supports_no_tools is True
 
 
 class TestAdapterTimeoutDefaults:

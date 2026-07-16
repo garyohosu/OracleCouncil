@@ -15,9 +15,11 @@ from .budget import TokenBudget
 from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
 from .models import (
+    AgentCapabilities,
     AgentFailure,
     AgentRequest,
     AgentResult,
+    ProbeResult,
     RunResult,
     RunStatus,
     SearchError,
@@ -52,22 +54,27 @@ class FakeAgentAdapter:
         self.mock_status = mock_status
         self._capabilities = capabilities or {"supported_models": ["mock-model"]}
 
-    def probe(self) -> str:
+    def probe(self) -> ProbeResult:
         env_status = os.environ.get(f"ORACLE_MOCK_PROBE_{self.agent_id.upper()}")
-        if env_status:
-            return env_status
-        return self.mock_status
-
-    def capabilities(self) -> dict[str, Any]:
-        caps = dict(self._capabilities)
-        caps.setdefault("supports_read_only", True)
-        caps.setdefault("supports_no_tools", True)
-        return caps
+        status = env_status or self.mock_status
+        if status != "OK":
+            return ProbeResult(status)
+        caps = AgentCapabilities(
+            adapter_family=self._capabilities.get("adapter_family", "fake-family"),
+            adapter_version=self._capabilities.get("adapter_version", "1.0"),
+            cli_version=self._capabilities.get("cli_version", "1.0"),
+            supported_phases=tuple(self._capabilities.get("supported_phases", (
+                "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
+            ))),
+            supports_read_only=self._capabilities.get("supports_read_only", True),
+            supports_no_tools=self._capabilities.get("supports_no_tools", True),
+        )
+        return ProbeResult("OK", caps)
 
     def execute(self, request: AgentRequest) -> AgentResult:
-        status = self.probe()
-        if status != "OK":
-            raise AgentFailure(status, f"Agent {self.agent_id} unavailable with status: {status}")
+        probe_res = self.probe()
+        if probe_res.status != "OK":
+            raise AgentFailure(probe_res.status, f"Agent {self.agent_id} unavailable with status: {probe_res.status}")
 
         phase = request.phase
         if phase == "respond":
@@ -287,20 +294,20 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
             # Compatibility alias (S-8): schema 1.x keeps the old top-level
             # name; it is always identical to oracle_exit_code.
             "exit_code": result.oracle_exit_code,
-            "mode": "verify",
+            "mode": result.mode,
             "question": {
                 "original": "元の質問",
                 "refined": "整理後の質問",
                 "clarification_status": "ready",
                 "assumptions": [],
             },
-            "participants": list({e.agent_id for e in result.executions}),
+            "participants": list(result.participants),
             "answer": {
                 "text": result.final_answer,
                 "result_classification": result.result_classification.value,
                 "consensus_status": "not_applicable",
                 "audit_status": "approved",
-                "external_verification": True,
+                "external_verification": result.external_verification,
             },
             "claims": [
                 {
@@ -445,7 +452,8 @@ def cmd_ask(args) -> int:
     unavailable = []
     for agent in agents:
         try:
-            probe_status = agent.adapter.probe()
+            probe_res = agent.adapter.probe()
+            probe_status = probe_res.status
         except Exception:
             probe_status = "EXECUTION_ERROR"
         if probe_status == "OK":
@@ -501,10 +509,13 @@ def cmd_ask(args) -> int:
 
     if not args.json:
         sys.stderr.write("Starting Oracle Council...\n")
-        sys.stderr.write("[1/7] 質問を整理しています\n")
+        if args.mode == "quick":
+            sys.stderr.write("[1/4] 2 Agentが独立回答中...\n")
+        else:
+            sys.stderr.write("[1/7] 質問を整理しています\n")
 
     try:
-        result = orchestrator.run_verify(args.question)
+        result = orchestrator.run_verify(args.question, mode=args.mode)
         return output_run_result(result, args.json)
     except SearchError as e:
         return exit_stop(
@@ -538,8 +549,9 @@ def cmd_agents_status(args) -> int:
             capabilities=entry.get("capabilities"),
         )
 
-        status = adapter.probe()
-        caps = adapter.capabilities()
+        probe_res = adapter.probe()
+        status = probe_res.status
+        caps = probe_res.capabilities
 
         print(f"Agent ID: {agent_id}")
         print(f"  Status: {status}")
@@ -573,7 +585,8 @@ def cmd_agents_validate(args) -> int:
                 agent_id=agent_id,
                 mock_status=entry.get("mock_status", "OK"),
             )
-            status = adapter.probe()
+            probe_res = adapter.probe()
+            status = probe_res.status
             if status != "OK":
                 errors.append(f"Agent {agent_id} probe failed: {status}")
 

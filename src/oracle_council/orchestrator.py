@@ -38,6 +38,28 @@ from .models import (
 )
 from .storage import StorageBackend, StorageWriteError
 from .phase_schema import get_phase_schema
+import threading
+
+class ExecutionRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._registry: dict[str, tuple[str, Any]] = {}
+
+    def register(self, run_id: str, execution_id: str, adapter: Any) -> None:
+        with self._lock:
+            self._registry[execution_id] = (run_id, adapter)
+
+    def unregister(self, execution_id: str) -> None:
+        with self._lock:
+            self._registry.pop(execution_id, None)
+
+    def get_active_executions(self, run_id: str) -> list[tuple[str, Any]]:
+        with self._lock:
+            return [
+                (exec_id, adapter)
+                for exec_id, (rid, adapter) in self._registry.items()
+                if rid == run_id
+            ]
 
 # oracleExitCode (SPEC §13.4). Only the codes reachable from the phase-0
 # flow are mapped here; the remaining input/environment stops and cancel
@@ -47,6 +69,7 @@ EXIT_FAILED = 1
 EXIT_INSUFFICIENT_AGENTS = 3
 EXIT_VERIFICATION_UNAVAILABLE = 3
 EXIT_WITHHELD = 4
+EXIT_CANCELLED = 130
 
 _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
 _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
@@ -71,12 +94,15 @@ _MINIMUM_SUCCESS = {
     "criticize": 1,
     "synthesize": 1,
     "audit": 1,
+    "compare": 1,
 }
 
 
 def _execution_status(error_code: str) -> AgentExecutionStatus:
     if error_code == "TIMEOUT":
         return AgentExecutionStatus.TIMED_OUT
+    if error_code == "CANCELLED":
+        return AgentExecutionStatus.CANCELLED
     if error_code in _UNAVAILABLE_ERROR_CODES:
         return AgentExecutionStatus.UNAVAILABLE
     return AgentExecutionStatus.FAILED
@@ -98,21 +124,51 @@ class Orchestrator:
         self._budget = budget
         self._storage = storage
         self._store_content = store_content
+        self._registry = ExecutionRegistry()
+        self._cancelled_runs: set[str] = set()
 
-    def run_verify(self, question: str) -> RunResult:
+    def cancel(self, run_id: str) -> None:
+        active = self._registry.get_active_executions(run_id)
+        threads = []
+        for exec_id, adapter in active:
+            t = threading.Thread(target=adapter.cancel, args=(exec_id,))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+    def run_verify(self, question: str, mode: str = "verify") -> RunResult:
         # Pre-flight (V-1): assignment failures such as insufficient_agents
         # stop before a Run exists, so nothing is persisted and the error
         # propagates to the CLI layer with its own status and exit code.
         run_id = str(uuid4())
-        plan = build_execution_plan(run_id, self._agents)
+        plan = build_execution_plan(run_id, self._agents, mode=mode)
         sequence = count(1)
         state = _RunState(question, plan)
         try:
             self._append(
                 run_id,
                 "run_created",
-                {"mode": "verify", "participants": [a.agent_id for a in self._agents]},
+                {"mode": mode, "participants": list(plan.participants)},
             )
+            if mode == "quick":
+                respond_index = 0
+                for phase in ("respond", "respond", "compare", "synthesize"):
+                    slot_index = respond_index if phase == "respond" else 0
+                    if phase == "respond":
+                        respond_index += 1
+                    failure = self._execute_phase(run_id, phase, slot_index, sequence, state)
+                    if failure is not None:
+                        return failure
+                return self._finish(
+                    run_id,
+                    RunStatus.COMPLETED,
+                    ResultClassification.UNVERIFIED,
+                    state.final_answer,
+                    state,
+                    EXIT_OK,
+                )
+
             respond_index = 0
             for phase in _VERIFY_PHASES:
                 slot_index = respond_index if phase == "respond" else 0
@@ -202,6 +258,15 @@ class Orchestrator:
         self, run_id: str, phase: str, slot_index: int, sequence, state: _RunState
     ) -> RunResult | None:
         """Execute one logical slot using the immutable plan candidate order."""
+        if run_id in self._cancelled_runs:
+            record = state.phase(run_id, phase)
+            record.status = PhaseStatus.CANCELLED
+            record.error_code = "PHASE_CANCELLED"
+            record.error_summary = _summary(phase, "PHASE_CANCELLED")
+            record.finished_at = utc_now()
+            return self._finish(
+                run_id, RunStatus.CANCELLED, ResultClassification.UNVERIFIED, None, state, EXIT_CANCELLED
+            )
         record = state.phase(run_id, phase)
         assignment = state.plan.assignment_for(phase, slot_index)
         agents_by_id = {agent.agent_id: agent for agent in self._agents}
@@ -247,6 +312,14 @@ class Orchestrator:
                         **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
                 )
+                if failure.error_code == "CANCELLED":
+                    record.status = PhaseStatus.CANCELLED
+                    record.error_code = "PHASE_CANCELLED"
+                    record.error_summary = _summary(phase, "PHASE_CANCELLED")
+                    record.finished_at = utc_now()
+                    return self._finish(
+                        run_id, RunStatus.CANCELLED, ResultClassification.UNVERIFIED, None, state, EXIT_CANCELLED
+                    )
                 failed_slot_agents.add(agent.agent_id)
                 if failure.error_code in _UNAVAILABLE_ERROR_CODES:
                     state.mark_run_unavailable(agent.agent_id, failure.error_code)
@@ -367,7 +440,7 @@ class Orchestrator:
             candidates.sort(key=lambda item: item.agent_id != state.current_synthesizer_agent_id)
         if phase == "audit" and state.current_auditor_agent_id:
             candidates.sort(key=lambda item: item.agent_id != state.current_auditor_agent_id)
-        if phase == "synthesize":
+        if phase == "synthesize" and state.plan.mode != "quick":
             candidates = [
                 a for a in candidates
                 if any(
@@ -397,7 +470,7 @@ class Orchestrator:
             ]
         if phase == "audit" and state.current_synthesizer_agent_id:
             candidates = [a for a in candidates if a.agent_id != state.current_synthesizer_agent_id]
-        if phase == "synthesize":
+        if phase == "synthesize" and state.plan.mode != "quick":
             audit_ids = state.plan.assignment_for("audit").candidate_agent_ids
             candidates = [
                 a for a in candidates
@@ -410,6 +483,8 @@ class Orchestrator:
         return candidates[0] if candidates else None
 
     def _attempt(self, run_id, phase, agent, execution_id, retry_of, substitute_for, state: _RunState):
+        if run_id in self._cancelled_runs:
+            raise AgentFailure("CANCELLED", "run cancelled")
         # Retry and substitution are separate executions and reservations (S-7).
         reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
         started_at = utc_now()
@@ -424,7 +499,11 @@ class Orchestrator:
                 "critique": state.critique,
                 "final_answer": state.final_answer,
             }
-            result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload, get_phase_schema(phase)))
+            self._registry.register(run_id, execution_id, agent.adapter)
+            try:
+                result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload, get_phase_schema(phase)))
+            finally:
+                self._registry.unregister(execution_id)
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
             state.executions.append(
@@ -491,6 +570,8 @@ class Orchestrator:
             state.claims = _merge_verified_claims(state.claims, output.get("claims", []))
         elif phase == "criticize":
             state.critique = output.get("critique", "")
+        elif phase == "compare":
+            state.critique = output.get("comparison", output.get("critique", ""))
         elif phase == "synthesize":
             state.final_answer = output["answer"]
         elif phase == "audit":
@@ -566,17 +647,18 @@ class Orchestrator:
         metadata = RunMetadataRecord(
             run_id=run_id,
             created_at=state.created_at,
-            mode="verify",
+            mode=state.plan.mode,
             status=status,
             result_classification=classification,
             consensus_status="not_applicable",
-            participant_count=len(self._agents),
+            participant_count=len(state.plan.participants),
             claim_count=len(state.claims),
             evidence_count=len(state.evidence),
             error_codes=tuple(error_codes),
             elapsed_ms=_elapsed_ms(state.created_at, finished_at),
             content_saved=self._store_content,
             oracle_exit_code=oracle_exit_code,
+            participants=state.plan.participants,
         )
         result = RunResult(
             run_id=run_id,
@@ -585,12 +667,14 @@ class Orchestrator:
             final_answer=answer,
             call_count=state.calls,
             oracle_exit_code=oracle_exit_code,
+            mode=state.plan.mode,
             claims=state.claims,
             audit_issues=tuple(state.issues),
             phases=tuple(state.phases.values()),
             executions=tuple(state.executions),
             metadata=metadata,
             evidence=_evidence_snapshot(state),
+            participants=state.plan.participants,
         )
         self._append(
             run_id,

@@ -6,7 +6,7 @@ from functools import lru_cache
 from importlib.resources import files
 from typing import Any
 
-_PHASES = ("respond", "claim_extract", "verify", "criticize", "synthesize", "audit")
+_PHASES = ("respond", "claim_extract", "verify", "criticize", "synthesize", "audit", "compare")
 _KEYS = {"type", "properties", "required", "additionalProperties", "enum", "items", "minLength", "maxLength", "minItems", "maxItems"}
 
 

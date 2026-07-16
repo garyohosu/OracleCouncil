@@ -199,7 +199,7 @@ class CaptureOrchestrator:
         self.kwargs = kwargs
         CaptureOrchestrator.instances.append(self)
 
-    def run_verify(self, question):
+    def run_verify(self, question, mode="verify"):
         return RunResult(
             "run-test",
             RunStatus.COMPLETED,
@@ -207,6 +207,7 @@ class CaptureOrchestrator:
             "captured answer",
             0,
             0,
+            mode=mode,
         )
 
 
@@ -826,3 +827,20 @@ def test_cli_history_purge_and_list(temp_config, capsys, tmp_path):
             assert exit_code == 0
             captured = capsys.readouterr()
             assert "Purged 1 runs." in captured.out
+
+
+def test_cli_ask_quick_mode_success(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the third planet?", "--mode", "quick", "--json", "--adapter-mode", "fake"])
+        assert exit_code == 0
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+
+        assert data["mode"] == "quick"
+        assert data["answer"]["external_verification"] is False
+        assert data["status"] == "completed"
+        assert data["oracle_exit_code"] == 0
+
+        phases = [p["phase"] for p in data["phases"]]
+        assert phases == ["respond", "compare", "synthesize"]

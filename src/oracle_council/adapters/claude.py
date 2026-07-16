@@ -6,9 +6,9 @@ import re
 import subprocess
 from typing import Any
 
-from ..models import AgentFailure, AgentRequest, AgentResult, SearchError, SearchResult, Usage, utc_now
+from ..models import AgentCapabilities, AgentFailure, AgentRequest, AgentResult, ProbeResult, SearchError, SearchResult, Usage, utc_now
 from ..phase_schema import get_phase_schema
-from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output
+from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output, extract_json_object
 
 # Claude Code has no --output-schema flag (unlike Codex). The model must be
 # told in the prompt what shape to answer in, and `--output-format json`
@@ -69,21 +69,78 @@ def _build_prompt(phase: str, question: str, output_schema: dict[str, Any] | Non
     return "\n".join(parts)
 
 
-def _extract_json_object(text: str) -> Any:
-    """Parse a JSON object out of model text that may be wrapped in markdown
-    fences or preceded/followed by prose despite the prompt instruction."""
-    stripped = text.strip()
+
+
+import threading
+
+_thread_local = threading.local()
+
+def _custom_run(*args, **kwargs):
+    adapter = getattr(_thread_local, "adapter", None)
+    execution_id = getattr(_thread_local, "execution_id", None)
+
+    if adapter is None or execution_id is None:
+        return _orig_subprocess_run(*args, **kwargs)
+
+    with adapter._lock:
+        if execution_id in adapter._cancelled:
+            raise AgentFailure("CANCELLED", "execution cancelled")
+
+    timeout = kwargs.get("timeout")
+    input_data = kwargs.get("input")
+    env = kwargs.get("env")
+    cmd = args[0]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        shell=False,
+    )
+    with adapter._lock:
+        if execution_id in adapter._cancelled:
+            proc.terminate()
+            raise AgentFailure("CANCELLED", "execution cancelled")
+        adapter._processes[execution_id] = proc
+
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-    if fenced:
-        return json.loads(fenced.group(1))
-    brace_match = re.search(r"\{.*\}", stripped, re.DOTALL)
-    if brace_match:
-        return json.loads(brace_match.group(0))
-    raise json.JSONDecodeError("no JSON object found", stripped, 0)
+        stdout, stderr = proc.communicate(input=input_data, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout,
+            output=stdout if "stdout" in locals() else None,
+            stderr=stderr if "stderr" in locals() else None,
+        ) from exc
+    finally:
+        with adapter._lock:
+            adapter._processes.pop(execution_id, None)
+
+    with adapter._lock:
+        is_cancelled = execution_id in adapter._cancelled
+
+    if is_cancelled:
+        raise AgentFailure("CANCELLED", "execution cancelled")
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr
+    )
+
+_orig_subprocess_run = subprocess.run
+subprocess.run = _custom_run
 
 
 class ClaudeAdapter:
@@ -98,8 +155,22 @@ class ClaudeAdapter:
         self.agent_id = agent_id
         self.model = model
         self.timeout_s = timeout_s
+        self._lock = threading.Lock()
+        self._processes: dict[str, subprocess.Popen] = {}
+        self._cancelled: set[str] = set()
 
-    def probe(self) -> str:
+    def cancel(self, execution_id: str) -> None:
+        with self._lock:
+            self._cancelled.add(execution_id)
+            proc = self._processes.get(execution_id)
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def probe(self) -> ProbeResult:
         cmd = ["claude", "--version"]
         try:
             res = subprocess.run(
@@ -114,29 +185,31 @@ class ClaudeAdapter:
             )
             err_text = res.stderr + "\n" + res.stdout
             if "session limit" in err_text.lower() or "limit" in err_text.lower():
-                return "QUOTA_EXCEEDED"
+                return ProbeResult("QUOTA_EXCEEDED")
             if res.returncode != 0:
-                return "EXECUTION_ERROR"
-            return "OK"
+                return ProbeResult("EXECUTION_ERROR")
+            cli_version = res.stdout.strip() or res.stderr.strip() or "unknown"
+            caps = AgentCapabilities(
+                adapter_family="claude-code",
+                adapter_version="1.0",
+                cli_version=cli_version,
+                supported_phases=("respond", "claim_extract", "verify", "criticize", "synthesize", "audit"),
+                supports_read_only=True,
+                supports_no_tools=True,
+            )
+            return ProbeResult("OK", caps)
         except FileNotFoundError:
-            return "COMMAND_NOT_FOUND"
+            return ProbeResult("COMMAND_NOT_FOUND")
         except subprocess.TimeoutExpired:
-            return "TIMEOUT"
+            return ProbeResult("TIMEOUT")
         except Exception:
-            return "EXECUTION_ERROR"
-
-    def capabilities(self) -> dict[str, Any]:
-        return {
-            "supported_models": [self.model or "claude-3-5-sonnet"],
-            "supports_read_only": True,
-            "supports_no_tools": True,
-        }
+            return ProbeResult("EXECUTION_ERROR")
 
     def execute(self, request: AgentRequest) -> AgentResult:
         # Probe first to ensure fail-closed logic
-        status = self.probe()
-        if status != "OK":
-            raise AgentFailure(status, f"Claude Agent {self.agent_id} is unavailable: {status}")
+        probe_res = self.probe()
+        if probe_res.status != "OK":
+            raise AgentFailure(probe_res.status, f"Claude Agent {self.agent_id} is unavailable: {probe_res.status}")
 
         prompt = _build_prompt(request.phase, build_phase_input(request), request.output_schema)
 
@@ -155,6 +228,8 @@ class ClaudeAdapter:
 
         env = dict(os.environ)
 
+        _thread_local.adapter = self
+        _thread_local.execution_id = request.execution_id
         try:
             res = subprocess.run(
                 cmd,
@@ -194,7 +269,7 @@ class ClaudeAdapter:
             # metadata envelope; the phase JSON is inside envelope["result"].
             result_text = envelope.get("result", "") if isinstance(envelope, dict) else res.stdout
             try:
-                output = validate_phase_output(request.phase, _extract_json_object(result_text))
+                output = validate_phase_output(request.phase, extract_json_object(result_text))
                 return AgentResult(output, Usage(100, 20), process_exit_code=res.returncode)
             except AgentFailure as failure:
                 # Schema validation raised in base.py has no access to the
@@ -220,6 +295,9 @@ class ClaudeAdapter:
                 str(exc),
                 public_summary=execution_failure_summary(request.phase, "process_launch_failure"),
             ) from exc
+        finally:
+            _thread_local.adapter = None
+            _thread_local.execution_id = None
 
 
 # SPEC §10.2 X-1 SearchProvider Contract, X-2/X-3: confirmed live 2026-07-13
@@ -305,7 +383,7 @@ class CliSearchProvider:
         result_text = envelope.get("result", "") if isinstance(envelope, dict) else res.stdout
 
         try:
-            payload = _extract_json_object(result_text)
+            payload = extract_json_object(result_text)
         except json.JSONDecodeError as exc:
             raise SearchError(
                 "INVALID_SEARCH_RESPONSE", f"no JSON object in model text: {result_text}"

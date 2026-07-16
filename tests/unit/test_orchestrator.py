@@ -875,3 +875,78 @@ def test_substitution_event_contains_metadata_only():
     assert set(selected[0].payload) == {
         "phase", "slot_index", "failed_execution_id", "original_agent_id", "substitute_agent_id"
     }
+
+
+def test_s9_participant_integration_with_five_agents():
+    storage = InMemoryStorageBackend()
+    adapters = [
+        ScriptedAgentAdapter([]),
+        ScriptedAgentAdapter([
+            {"answer": "B-respond"},
+            {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},
+        ]),
+        ScriptedAgentAdapter([
+            {"answer": "C-respond"},
+        ]),
+        ScriptedAgentAdapter([
+            {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},
+        ]),
+        ScriptedAgentAdapter([]),
+    ]
+    agents = [
+        RegisteredAgent("agent-a", adapters[0], {"respond": 0}),
+        RegisteredAgent("agent-b", adapters[1], {"synthesize": 90}),
+        RegisteredAgent("agent-c", adapters[2], {"audit": 80}),
+        RegisteredAgent("agent-d", adapters[3], {"verify": 70}),
+        RegisteredAgent("agent-e", adapters[4], {"criticize": 100}),
+    ]
+    orchestrator = Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    )
+
+    result = orchestrator.run_verify("test question")
+    assert result.status is RunStatus.COMPLETED
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+    assert result.metadata.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+
+    events = storage.load(result.run_id).events
+    assert events[0].event_type == "run_created"
+    assert events[0].payload["participants"] == ["agent-b", "agent-c", "agent-d", "agent-e"]
+
+    # agent-e is not executed, but participants remain the full selected council
+    assert len(adapters[4].requests) == 0
+    assert not any(e.agent_id == "agent-e" for e in result.executions)
+    assert result.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+
+
+def test_quick_mode_flow_success():
+    # In quick mode:
+    # 1. respond #1 (agent-a) -> {"answer": "A"}
+    # 2. respond #2 (agent-b) -> {"answer": "B"}
+    # 3. compare (agent-a) -> {"comparison": "compared"}
+    # 4. synthesize (agent-a) -> {"answer": "quick-final"}
+    script_a = [
+        {"answer": "A"},
+        {"comparison": "compared"},
+        {"answer": "quick-final"},
+    ]
+    script_b = [
+        {"answer": "B"},
+    ]
+    orchestrator, adapter_a, adapter_b = build_raw(script_a, script_b)
+    result = orchestrator.run_verify("test question", mode="quick")
+    assert result.status == RunStatus.COMPLETED
+    assert result.result_classification == ResultClassification.UNVERIFIED
+    assert result.final_answer == "quick-final"
+    assert result.oracle_exit_code == 0
+    assert result.mode == "quick"
+    assert result.external_verification is False
+
+    phases = [p.phase for p in result.phases]
+    assert phases == ["respond", "compare", "synthesize"]
+    for p in result.phases:
+        assert p.status == PhaseStatus.SUCCEEDED

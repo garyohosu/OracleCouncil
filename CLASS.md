@@ -24,11 +24,20 @@ classDiagram
         -adapters AgentAdapter[]
         -evidenceProvider EvidenceProvider
         -storage StorageBackend
+        -registry ExecutionRegistry
         +run(command) RunResult
         +cancel(runId) void
         +buildExecutionPlan(runContext) ExecutionPlan
         -classifyClaims(claims, evidence) void
         -deriveCriticalIssues(issues) AuditStatus
+    }
+
+    class ExecutionRegistry {
+        -lock Lock
+        -registry dict
+        +register(runId, executionId, adapter) void
+        +unregister(executionId) void
+        +getActiveExecutions(runId) list
     }
 
     class ClarificationEngine {
@@ -39,7 +48,6 @@ classDiagram
     class AgentAdapter {
         <<interface>>
         +probe() ProbeResult
-        +capabilities() AgentCapabilities
         +execute(request) AgentResult
         +cancel(executionId) void
     }
@@ -93,7 +101,9 @@ classDiagram
     }
     class ExecutionPlan {
         +runId str
+        +mode VerificationMode
         +configuredAgentIds str[]
+        +participants str[]
         +phaseAssignments PhaseAssignment[]
         +maxRunRetries int
         +maxRunSubstitutions int
@@ -143,11 +153,12 @@ classDiagram
 
     OracleCLI --> Orchestrator : commands
     Orchestrator *-- ClarificationEngine
-    Orchestrator o-- "2..4" AgentAdapter
+    Orchestrator o-- "0..*" AgentAdapter
     Orchestrator o-- EvidenceProvider
     Orchestrator o-- StorageBackend
     Orchestrator *-- TokenBudget
     Orchestrator *-- ExecutionPlan
+    Orchestrator *-- ExecutionRegistry
     ExecutionPlan *-- PhaseAssignment
     ExecutionPlan *-- RunAgentAvailability
 
@@ -565,4 +576,4 @@ classDiagram
 - K-4: 1つのEvidenceDocumentを複数Claimで共有する場合の関連
 - L-5: フェーズ別`structured_output`のschema
 
-S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6、M-5/S-5はv0.3.9で確定し、本書へ反映済み。S-9、S-10は未解決のまま。
+S-1（Provider内部委譲）、M-4（RunPhase / EvidenceOutcome / EvidenceErrorCode）、R-1（終了コード）はSPEC v0.3.3、S-2/T-5はv0.3.4、S-3/S-7/T-1/T-4はv0.3.6、M-5/S-5はv0.3.9で確定し、本書へ反映済み。S-9（多重度分離・participants定義の統一）、S-10（capabilitiesのprobe一本化）も確定し、本書へ反映済み。
