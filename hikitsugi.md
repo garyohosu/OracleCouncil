@@ -566,3 +566,22 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 3. AutoLoopに排他制御を追加する: 起動時に原子的な排他ロック（PID・開始時刻・対象リポジトリを記録）を作成し、既存ロックが有効なら二重起動を拒否、正常終了時に削除、異常終了した古いロックは明示操作でのみ解除する。ロックだけでは人間が起動したClaude Codeとの同時編集を完全には防げないため、最も安全な方式はAutoLoopを専用のGit worktreeまたは専用ブランチで動かすこと
 4. 最新のPlanner・複数Agent版AutoLoopをOracleCouncilへ反映する。`instructions/instructions.md`を人間が次タスクへ書き換える必要がある現状は、Planner自動生成がOracleCouncil側でまだ有効になっていないことを示している。Plannerが正しく導入されれば、S-4を人間が指示書へ書く必要はなくなる
 5. 上記が済んでからS-4を実行する（設計はAUTO_DECIDED済み。再実装時は`cli.py`でのimport漏れに注意し、`fakes.py`の`supported_phases`変更と整合するテスト更新を忘れないこと）
+
+## 0-19. S-4再着手調査（2026-07-17）: 実装前提の欠落を確認し実装せず停止
+
+**経緯**: AutoLoop側の排他ロック・single-task gate実装がcommit・push済み（`C:\PROJECT\autoloop` HEAD `21c9f7d`、origin/mainと一致）となったことを受け、§0-18で保留していたS-4（ClarificationEngineからのAgent呼び出し）へ再着手する準備としてOracleCouncilを調査した。
+
+**調査結果**: `git status`はクリーン、未追跡ファイルなし、HEADは`dfef617`でorigin/mainと一致。`src/oracle_council/clarification.py`・`schemas/clarify.json`は存在せず（§0-18で削除済みのまま）、`phase_schema.py`の`_PHASES`にも`clarify`はない。`cli.py`の`cmd_ask`には`if "clarify_trigger" in args.question:`という、実際のClarificationEngineやAgentを一切呼ばないマジック文字列シミュレータが残っているが、`grep -ri clarify tests/`は0件でテストからも参照されていない死んだコードだった（兄弟の`strict_trigger`等は`test_cli.py`で使用されている）。
+
+実装に着手する前に、S-4の前提となる仕様が複数未確定であることが判明したため、**実装は行わず**QandA.mdへ4件の未回答質問（S-4.1〜S-4.4）を追加し、この節へ記録するにとどめた。詳細はQandA.md S-4.1〜S-4.4を参照。要点:
+
+- `TESTCASE.md` UT-CE-01〜07は`ClarificationEngine.inspect(question)`が質問文から直接判定する設計を前提にしているが、`CLASS.md`のシグネチャ`inspect(question, context)`およびS-4のAUTO_DECIDED回答（Agent構造化出力を検証する設計）と矛盾している（S-4.1）
+- SPEC §7.5が定める3段階フォールバックのうち、第1段階「決定的既定値」・第2段階「テンプレート規則」にはタスクIDも具体的仕様も存在しない（S-4.2）
+- Clarifier Agentを実際に呼び出す条件（第1・第2段階で解決できなかった場合のみ、という大枠はSPECの文言から読めるが、判定主体・判定手順・戻り値は未定義）（S-4.3）。`tests/unit/test_orchestrator.py`に`assert result.call_count == 7`が最低4箇所あり、Clarifierを無条件で呼び出す実装はこれらを破壊する
+- Clarifier使用時にAI呼び出し総数が7→8へ変わる場合の、`cli.py`固定文字列`"[1/7] 質問を整理しています"`（進捗と非連動の静的文言）の扱いも未定義（S-4.4）
+
+**2026-07-16に撤回された実装試行の内容**（git履歴には残っていない。commit前に削除されたため。文書と記憶からの確認のみで、復元・cherry-pickはしていない）: `ClarificationEngine.inspect(question, context)`が`validate_phase_schema("clarify", context)`で`context`（Agent構造化出力）を検証し、`questions`内に`importance: critical`があれば`needs_clarification`へ格上げする実装だった。`clarify.json`の`status` enumは5値（ready/ready_with_assumptions/needs_clarification/unsupported/safety_blocked）で、SPEC §7.2が定める6値目の`premise_issue`が欠落していた。API利用枠切れで中断し、`cli.py`の`ClarificationStopError`未import等によりテスト10件が失敗する状態のまま撤回された。
+
+**今回変更していないもの**: ソースコード・テストは一切変更していない。既存のS-4・J-4のAUTO_DECIDED回答も変更していない。CLIへの新規フラグ追加、`clarify_trigger`の機能昇格、質問文の長さ・キーワードによる独自判定ロジックはいずれも実装していない。AutoLoopリポジトリ（`C:\PROJECT\autoloop`）は変更していない。worktree分離には着手していない。
+
+**次の推奨作業**: QandA.md S-4.1〜S-4.4（`ClarificationEngine.inspect()`の責務、SPEC §7.5第1・第2段階の具体化、Clarifier Agent呼び出し条件、CLI進捗表示の扱い）をユーザー判断で正式決定してから、S-4の実装に着手すること。この4点はいずれも実装者の推測で決めるべきではない設計判断であり、次回セッションが独断で決定しないよう本節に明記する。
