@@ -41,8 +41,25 @@ classDiagram
     }
 
     class ClarificationEngine {
-        +inspect(question, context) ClarificationResult
+        +inspect(question, context) ClarificationPreCheck
+        +evaluateAgentOutput(question, context, output) ClarificationResult
         +applyAnswers(result, answers) ClarificationResult
+    }
+
+    class ClarificationPreCheck {
+        +agentRequired bool
+        +result ClarificationResult
+        +assumptions string[]
+        +ambiguities string[]
+        +status string
+    }
+
+    class ClarificationResult {
+        +status string
+        +refinedQuestion string
+        +assumptions string[]
+        +questions object[]
+        +note string
     }
 
     class AgentAdapter {
@@ -153,6 +170,8 @@ classDiagram
 
     OracleCLI --> Orchestrator : commands
     Orchestrator *-- ClarificationEngine
+    ClarificationEngine ..> ClarificationPreCheck
+    ClarificationEngine ..> ClarificationResult
     Orchestrator o-- "0..*" AgentAdapter
     Orchestrator o-- EvidenceProvider
     Orchestrator o-- StorageBackend

@@ -113,6 +113,12 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 |---|---|---|
 | J-3 | quickモードにおける実行グラフ（respond * 2 -> compare -> synthesize）を定義。監査・検証・証拠収集フェーズの省略、auditor分離制約のスキップ、常にResultClassification.UNVERIFIEDでの exit 0 終了をサポート。出力JSONに `external_verification: false` を含める。 | QandA J-3, SPEC v0.3.12 §6.3/§12.1, CLASS.md, TESTCASE.md, `src/oracle_council/assignment.py`・`orchestrator.py`・`cli.py`・`phase_schema.py`・`schemas/compare.json`, unit/integration/CLI tests |
 
+## 0-17. S-4 (ClarificationEngineからのAgent呼び出し) 仕様確定・通常実装・テスト完了（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-4 | `ClarificationEngine`を`inspect(question, context)`（決定的既定値・テンプレート規則・critical ambiguity検出）と`evaluateAgentOutput(question, context, output)`（clarify schema検証・決定規則適用）の2段階APIに分離。critical ambiguity（6種類に限定）が残る場合だけOrchestratorがclarifyのrole_priority最高の適格Agentを決定的に選び、`clarify`フェーズのAgentRequestを非対話モードで最大1回実行。SPEC §7.2の6 status（premise_issue含む）をclarify schemaへ実装。Agent呼び出し失敗は`auth_required`または新設`clarification_unavailable`（ともにexit 3）、停止statusは`needs_clarification`/`premise_issue`/`unsupported`/`safety_blocked`（exit 2、いずれもRun非生成）。通常経路は`call_count`が7のまま変わらず、Clarifier使用時だけ8になる。CLI進捗表示`[1/7]`/`[1/8]`は`ClarificationEngine.inspect()`の結果から動的に計算し、死んだコードだった`clarify_trigger`マジック文字列分岐は削除した。 | QandA S-4/S-4.1/S-4.2/S-4.3/S-4.4, SPEC §7.5/§13.4, CLASS.md, TESTCASE.md §2.3, `src/oracle_council/clarification.py`（新規）・`schemas/clarify.json`（新規）・`phase_schema.py`・`models.py`・`assignment.py`・`orchestrator.py`・`cli.py`, `tests/unit/test_clarification.py`（新規）・`test_orchestrator.py`・`test_cli.py`・`test_assignment.py`・`test_adapter_capabilities.py` |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |
@@ -147,9 +153,8 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 
 | ID | 項目 | 概要 | 依存するテスト設計領域 |
 |---|---|---|---|
-| **S-4** | ClarificationEngineからのAgent呼び出し | 責務境界・データフローはQandA S-4でAUTO_DECIDED済み（2026-07-15）。実装は2026-07-16に一度試行されテスト10件を破壊したため撤回済み。2026-07-17の再着手調査で、実装前提となる仕様が未確定であることが判明し実装を再度見送った。QandA S-4.1（inspect()の入力仕様）、S-4.2（SPEC §7.5決定的既定値・テンプレート規則の具体化）、S-4.3（Clarifier呼び出し条件・判定主体）、S-4.4（呼び出し総数変化時のCLI進捗表示）が未回答のまま残っており、これらの決定後に実装すること。詳細はhikitsugi.md §0-19参照 | 質問整理結合テスト |
 
-J-3は解消済み（0-16参照）。L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。
+現在このセクションに残っているブロッカーはない。J-3は解消済み（0-16参照）。L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。S-4は解消済み（0-17参照）。
 
 O-6は解消済み（0-5参照）。
 

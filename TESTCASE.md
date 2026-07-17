@@ -537,72 +537,73 @@
 ---
 
 
-### 2.3 ClarificationEngine
+### 2.3 ClarificationEngine（S-4確定、2026-07-18で実装済み）
 
-#### **UT-CE-01: ready 判定**
+`ClarificationEngine`は2段階の公開APIに分離する（QandA S-4.1）。`inspect(question, context=None)`は決定的規則（SPEC Sec7.5 第1・第2段階）だけで判定し、Agent不要ならClarificationResultを、critical ambiguityが残ればAgent要求を示すClarificationPreCheckを返す。`evaluateAgentOutput(question, context, output)`はClarifier Agentの構造化出力をclarify phase schemaで検証し、決定規則を適用する。
+
+#### **UT-CE-01: inspectがAgentなしでready_with_assumptionsを返す**
 - **テストレベル**: UT
 - **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
-- **関連仕様・UC・SEQ**: SPEC §7.2 / SEQ: 1
-- **前提条件**: 完全で曖昧性のない質問が入力されること。
+- **関連仕様・UC・SEQ**: SPEC §7.2, §7.5 / SEQ: 1
+- **前提条件**: 完全で曖昧性のない質問が入力されること。critical ambiguity（QandA S-4.3の6種類）に該当しないこと。
 - **入力**: 質問: `"2025年の日本の消費税率は何パーセントですか？"`
-- **期待結果**: `ClarificationResult` の `status` が `ready` となり、追加の質問が生成されないこと。
+- **期待結果**: `ClarificationPreCheck.agentRequired`が`False`、`result.status`が`ready`または`ready_with_assumptions`（第1段階の既定値が必ず1件以上assumptionsへ記録されるため、実装上は`ready_with_assumptions`になる）となり、Clarifier Agentは呼ばれないこと。
 
-#### **UT-CE-02: ready_with_assumptions 判定**
+#### **UT-CE-02: テンプレート規則で解決しAgentを呼ばない**
 - **テストレベル**: UT
 - **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
-- **関連仕様・UC・SEQ**: SPEC §7.2 / SEQ: 2
-- **前提条件**: 地域や通貨が不明だが、仮定を付与すれば処理可能な質問であること。
-- **入力**: 質問: `"美味しいラーメン屋を教えて"`
-- **期待結果**: `status` が `ready_with_assumptions` となり、`assumptions` に「地域＝東京と仮定します」などの仮定が格納されること。
+- **関連仕様・UC・SEQ**: SPEC §7.2, §7.5 / SEQ: 2
+- **前提条件**: 要約・説明・比較・一覧/ランキング・コード作成・校正・調査のいずれかのテンプレートに一致すること。
+- **入力**: 質問: `"美味しいラーメン屋を教えて"`（説明テンプレート相当）
+- **期待結果**: `agentRequired`が`False`、`assumptions`に第1段階の既定値（地域等）が記録されること。
 
-#### **UT-CE-03: needs_clarification 判定**
+#### **UT-CE-03: critical ambiguityでAgentが必要と判定される**
 - **テストレベル**: UT
 - **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
-- **関連仕様・UC・SEQ**: SPEC §7.2, §7.3 / SEQ: 2
-- **前提条件**: 意図が不明瞭で、結論が逆転するような質問であること。
+- **関連仕様・UC・SEQ**: SPEC §7.2, §7.3, §7.5 / SEQ: 2
+- **前提条件**: 比較対象が特定できない（critical ambiguityの1種）質問であること。
 - **入力**: 質問: `"どちらのプランが良いですか？"`
-- **期待結果**: `status` が `needs_clarification` となり、不足している選択条件を問う追加質問が生成されること。
+- **期待結果**: `ClarificationPreCheck.agentRequired`が`True`、`result`が`None`、`status`が`needs_clarification`（provisional）、`ambiguities`に検出理由が1件以上含まれること。
 
-#### **UT-CE-04: premise_issue 判定**
+#### **UT-CE-04: evaluateAgentOutputがpremise_issueを判定する**
 - **テストレベル**: UT
-- **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
+- **対象クラス/機能**: `ClarificationEngine.evaluateAgentOutput` / `clarification.py`
 - **関連仕様・UC・SEQ**: SPEC §7.2
-- **前提条件**: 明らかに誤った前提を含む質問であること。
-- **入力**: 質問: `"太陽が西から昇る理由は？"`
-- **期待結果**: `status` が `premise_issue` となり、「太陽は東から昇ります」という前提の誤り指摘を含む説明が返されること。
+- **前提条件**: Clarifier Agentがclarify schemaに従い`status: premise_issue`を含む構造化出力を返すこと。
+- **入力**: Agent出力: `{"status": "premise_issue", "refined_question": "...", "assumptions": [], "questions": [], "note": "太陽は東から昇ります"}`
+- **期待結果**: `ClarificationResult.status`が`premise_issue`となり、`note`に前提の誤り指摘が含まれること。critical questionがあっても`premise_issue`から`needs_clarification`へ格下げしないこと。
 
-#### **UT-CE-05: unsupported 判定**
+#### **UT-CE-05: evaluateAgentOutputがunsupportedを判定する**
 - **テストレベル**: UT
-- **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
+- **対象クラス/機能**: `ClarificationEngine.evaluateAgentOutput` / `clarification.py`
 - **関連仕様・UC・SEQ**: SPEC §7.2
-- **前提条件**: 機能範囲（例: 画像認識等）を超える質問であること。
-- **入力**: 質問: `"この添付画像の人物は誰ですか？"`
-- **期待結果**: `status` が `unsupported` となり、対応できない理由が返されること。
+- **前提条件**: Clarifier Agentが`status: unsupported`を返すこと（例: 画像認識等、機能範囲を超える質問）。
+- **入力**: Agent出力: `{"status": "unsupported", "refined_question": "...", "assumptions": [], "questions": [], "note": "画像は扱えません"}`
+- **期待結果**: `status`が`unsupported`となること。
 
-#### **UT-CE-06: safety_blocked 判定**
+#### **UT-CE-06: evaluateAgentOutputがsafety_blockedを判定する**
 - **テストレベル**: UT
-- **対象クラス/機能**: `ClarificationEngine.inspect` / `clarification.py`
+- **対象クラス/機能**: `ClarificationEngine.evaluateAgentOutput` / `clarification.py`
 - **関連仕様・UC・SEQ**: SPEC §7.2
-- **前提条件**: 安全ポリシーに違反する質問であること。
-- **入力**: 質問: `"他人のPCにハッキングする方法は？"`
-- **期待結果**: `status` が `safety_blocked` となり、ブロックメッセージが返されること。
+- **前提条件**: Clarifier Agentが`status: safety_blocked`を返すこと。
+- **入力**: Agent出力: `{"status": "safety_blocked", "refined_question": "...", "assumptions": [], "questions": [], "note": "安全上の理由でブロック"}`
+- **期待結果**: `status`が`safety_blocked`となること。
 
-#### **UT-CE-07: 最大3問制限**
+#### **UT-CE-07: 追加質問は最大3問（clarify schema契約）**
 - **テストレベル**: UT
-- **対象クラス/機能**: `ClarificationEngine` / `clarification.py`
+- **対象クラス/機能**: `ClarificationEngine.evaluateAgentOutput` / `schemas/clarify.json`
 - **関連仕様・UC・SEQ**: SPEC §7.4
-- **前提条件**: 非常に曖昧な質問が入力され、多数の不明点がある状態。
-- **入力**: 質問: `"何か作って"`
-- **期待結果**: 生成される追加質問リストの要素数が、最大でも3つまでに制限されていること。
+- **前提条件**: Clarifier Agentの出力に`questions`が4件以上含まれること。
+- **期待結果**: clarify schemaの`questions`が`maxItems: 3`のため、4件以上は`SchemaValidationError`（`INVALID_OUTPUT`）となり、既存の失敗分類に従うこと。
 
 #### **UT-CE-08: 最大2ラウンド制限**
 - **テストレベル**: UT
 - **対象クラス/機能**: `Orchestrator` / `orchestrator.py`
 - **関連仕様・UC・SEQ**: SPEC §7.4
-- **前提条件**: ユーザーが追加質問に答えたが、まだ曖昧な状態。
+- **前提条件**: ユーザーが追加質問に答えたが、まだ曖昧な状態（対話モード）。
 - **入力**: 3回目の質問やり取り要求。
 - **期待結果**: 3ラウンド目の追加質問を生成しないこと。2ラウンド後の継続/停止はassertしない。
-- **未確定仕様への依存**: `BLOCKED: QandA J-4`
+- **未確定仕様への依存**: `BLOCKED: QandA J-4`（非対話モードの1回呼び出しはS-4で実装済み。対話モードの複数ラウンドは未実装のまま）
 
 #### **UT-CE-09: 高リスク質問検出**
 - **テストレベル**: UT
@@ -610,8 +611,8 @@
 - **関連仕様・UC・SEQ**: SPEC §7.3, §12.3 / UC: 1 / SEQ: 2
 - **前提条件**: 医療・法律・金融・安全に関する記述が含まれること。
 - **入力**: 質問: `"この胸の痛みに対する薬の処方量は？"`
-- **期待結果**: Clarificationの構造化結果が高リスクであることを示し、通常リスクとして扱われないこと。正式フィールド名はL-5確定後にassertする。
-- **未確定仕様への依存**: `BLOCKED: QandA L-5`
+- **期待結果**: この種の質問は現行のcritical ambiguity 6種類（QandA S-4.3）に該当しないため、`ClarificationEngine`単独では高リスクと判定しない。既存の`strict_trigger`/`high_risk`検出（cli.py、UT-CE-10/11と同じ経路）が別途高リスク判定を担う。
+- **未確定仕様への依存**: なし（L-5確定済み、hikitsugi.md 0-14参照）
 
 #### **UT-CE-10: strict確認推奨**
 - **テストレベル**: UT
@@ -635,7 +636,7 @@
 - **テストレベル**: UT
 - **対象クラス/機能**: `ClarificationEngine.applyAnswers`
 - **関連仕様・UC・SEQ**: SPEC §7.4 / UC: 不足条件を回答 / SEQ: 2
-- **前提条件**: 1回目の`ClarificationResult`が`needs_clarification`で質問IDを3件以下含む。
+- **前提条件**: 1回目の`ClarificationResult`が`needs_clarification`で質問IDを3件以下含む（対話モード）。
 - **入力**: 質問IDに対応する回答、未知の質問ID、空回答。
 - **モック/Fixture**: `ClarificationResultFactory`。
 - **実行手順**: valid/unknown/emptyをparameterizeして`applyAnswers`を呼ぶ。
@@ -647,7 +648,27 @@
 - **保存してはいけない情報**: N/A
 - **優先度**: P0
 - **自動化可否**: CIで可
-- **未確定仕様への依存**: `BLOCKED: QandA J-4, S-4`
+- **未確定仕様への依存**: `BLOCKED: QandA J-4`（対話モードの複数ラウンド実装が前提。S-4自体は解消済み）
+
+#### **UT-CE-13: Orchestrator経由でClarifier Agentが1回呼ばれ通常フローへ進む（実装済み、test_orchestrator.py）**
+- **テストレベル**: IT
+- **対象クラス/機能**: `Orchestrator._run_clarification` / `orchestrator.py`
+- **関連仕様・UC・SEQ**: SPEC §6.3, §7.5
+- **前提条件**: critical ambiguityな質問（例: UT-CE-03の入力）。
+- **モック/Fixture**: `ScriptedAgentAdapter`でclarify出力を`ready`に設定。
+- **期待結果**: `agent_call_count`が8（clarify 1回＋既存7回）、`phases`の先頭が`clarify`、通常の`respond`〜`audit`が続くこと。role_priorityが最も高い適格AgentのみがclarifyのAgentRequestを受け取ること。
+
+#### **UT-CE-14: 停止statusはRunを生成しない（実装済み、test_orchestrator.py）**
+- **テストレベル**: IT
+- **対象クラス/機能**: `Orchestrator._run_clarification` / `ClarificationStopError` / `clarification.py`
+- **関連仕様・UC・SEQ**: SPEC §7.5, §13.4
+- **期待結果**: `needs_clarification`/`premise_issue`/`unsupported`/`safety_blocked`のいずれでも`ClarificationStopError`（`exit_code=2`）が送出され、Storageに一切イベントが書き込まれないこと（InsufficientAgentsErrorと同じ事前停止契約）。
+
+#### **UT-CE-15: Agent呼び出し失敗はclarification_unavailable/auth_requiredへ分類される（実装済み、test_orchestrator.py）**
+- **テストレベル**: IT
+- **対象クラス/機能**: `Orchestrator._run_clarification` / `clarification.py`
+- **関連仕様・UC・SEQ**: SPEC §7.5, §13.4
+- **期待結果**: `AgentFailure("AUTH_REQUIRED", ...)`は`auth_required`（exit 3）、それ以外の`AgentFailure`（`TIMEOUT`、`EXECUTION_ERROR`、`INVALID_OUTPUT`等）はすべて`clarification_unavailable`（exit 3）となり、既存の失敗分類・schema検証経路（`validate_phase_schema`）をそのまま利用すること。
 
 ---
 

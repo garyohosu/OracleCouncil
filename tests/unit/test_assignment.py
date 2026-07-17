@@ -75,7 +75,7 @@ def test_execution_plan_is_deterministic_and_contains_all_slots_and_limits():
     assert all(plan == plans[0] for plan in plans)
     assert plans[0].configured_agent_ids == ("a", "b", "c")
     assert [(item.phase, item.slot_index) for item in plans[0].phase_assignments] == [
-        ("respond", 0), ("respond", 1), ("claim_extract", 0), ("verify", 0),
+        ("clarify", 0), ("respond", 0), ("respond", 1), ("claim_extract", 0), ("verify", 0),
         ("criticize", 0), ("synthesize", 0), ("audit", 0),
     ]
     assert (plans[0].max_run_retries, plans[0].max_run_substitutions, plans[0].max_agent_calls) == (2, 1, 12)

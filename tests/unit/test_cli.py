@@ -844,3 +844,89 @@ def test_cli_ask_quick_mode_success(temp_config, capsys, tmp_path):
 
         phases = [p["phase"] for p in data["phases"]]
         assert phases == ["respond", "compare", "synthesize"]
+# ---------------------------------------------------------------------------
+# S-4: ClarificationEngine -> Clarifier Agent CLI wiring (QandA S-4.1-S-4.4)
+# ---------------------------------------------------------------------------
+
+_AMBIGUOUS_CLI_QUESTION = "どちらのプランが良いですか？"
+
+
+def test_cli_ask_ordinary_question_keeps_one_of_seven_progress(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the height of Fuji?"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "[1/7]" in captured.err
+
+
+def test_cli_ask_ambiguous_question_shows_one_of_eight_progress(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "[1/8]" in captured.err
+
+
+def test_cli_ask_ambiguous_question_json_has_eight_calls(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
+        assert exit_code == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["agent_call_count"] == 8
+
+
+def test_cli_ask_needs_clarification_stops_before_run_json(temp_config, capsys, tmp_path):
+    os.environ["ORACLE_MOCK_CLARIFY_STATUS"] = "needs_clarification"
+    try:
+        with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+            exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
+    finally:
+        del os.environ["ORACLE_MOCK_CLARIFY_STATUS"]
+    assert exit_code == 2
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "needs_clarification"
+    assert data["run_id"] is None
+    assert data["oracle_exit_code"] == 2
+    assert data["exit_code"] == 2
+
+
+@pytest.mark.parametrize(
+    "status,expected_exit",
+    [
+        ("premise_issue", 2),
+        ("unsupported", 2),
+        ("safety_blocked", 2),
+    ],
+)
+def test_cli_ask_stop_statuses_use_exit_code_two(temp_config, capsys, tmp_path, status, expected_exit):
+    os.environ["ORACLE_MOCK_CLARIFY_STATUS"] = status
+    try:
+        with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+            exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
+    finally:
+        del os.environ["ORACLE_MOCK_CLARIFY_STATUS"]
+    assert exit_code == expected_exit
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == status
+    assert data["run_id"] is None
+
+
+def test_cli_ask_clarify_trigger_string_is_no_longer_special_cased(temp_config, capsys, tmp_path):
+    # S-4: the dead magic-string simulator is removed. The literal text
+    # "clarify_trigger" is now just ordinary question text and is handled
+    # like any other question by the real ClarificationEngine (it resolves
+    # via tiers 1/2 without needing the Clarifier Agent, since it contains
+    # none of the six critical-ambiguity signals).
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "clarify_trigger", "--no-interactive", "--json"])
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] != "needs_clarification"
+
+
+def test_cli_ask_clarify_trigger_source_removed():
+    import inspect
+    import oracle_council.cli as cli_module
+
+    source = inspect.getsource(cli_module)
+    assert '"clarify_trigger" in args.question' not in source

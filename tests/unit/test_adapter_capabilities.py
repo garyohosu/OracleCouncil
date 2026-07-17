@@ -20,7 +20,7 @@ def test_fake_agent_adapter_probe_and_capabilities():
     assert probe_res.capabilities.supports_read_only is True
     assert probe_res.capabilities.supports_no_tools is True
     assert probe_res.capabilities.supported_phases == (
-        "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
+        "clarify", "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
     )
     # Check capabilities method does not exist or raises AttributeError
     with pytest.raises(AttributeError):

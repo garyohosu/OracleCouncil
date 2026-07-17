@@ -97,6 +97,9 @@ def rank_agents_for_run(agents: Sequence[RegisteredAgent]) -> list[RegisteredAge
 
 
 _PLAN_ASSIGNMENTS = (
+    # S-4: clarify is a single-agent slot (highest clarify role_priority),
+    # resolved before a Run exists; see Orchestrator._run_clarification.
+    ("clarify", 0, 1, ()),
     ("respond", 0, 2, ("distinct_responder",)),
     ("respond", 1, 2, ("distinct_responder",)),
     ("claim_extract", 0, 1, ()),

@@ -4,6 +4,7 @@ import itertools
 import pytest
 
 from oracle_council.assignment import InsufficientAgentsError, RegisteredAgent
+from oracle_council.clarification import ClarificationStopError
 from oracle_council.budget import TokenBudget
 from oracle_council.fakes import FakeEvidenceProvider, ScriptedAgentAdapter
 from oracle_council.models import AgentFailure, EvidenceCollectionResult, PhaseStatus, ResultClassification, RunStatus, SearchError
@@ -950,3 +951,228 @@ def test_quick_mode_flow_success():
     assert phases == ["respond", "compare", "synthesize"]
     for p in result.phases:
         assert p.status == PhaseStatus.SUCCEEDED
+# ---------------------------------------------------------------------------
+# S-4: ClarificationEngine -> Clarifier Agent wiring (QandA S-4.1-S-4.4)
+# ---------------------------------------------------------------------------
+
+_AMBIGUOUS_QUESTION = "どちらのプランが良いですか？"
+
+_READY_CLARIFY_OUTPUT = {
+    "status": "ready",
+    "refined_question": _AMBIGUOUS_QUESTION,
+    "assumptions": [],
+    "questions": [],
+}
+
+_NORMAL_FLOW_SCRIPT_A = [
+    {"answer": "A"},
+    {"claims": [{"claim_id": "c1", "importance": "major", "status": "unverified"}]},
+    {"claims": [{"claim_id": "c1", "importance": "major", "status": "verified"}]},
+    {"critique": "ok"},
+    {"answer": "final"},
+]
+_NORMAL_FLOW_SCRIPT_B = [{"answer": "B"}, {"status": "approved"}]
+
+
+def test_clarify_not_invoked_for_template_matching_question_call_count_seven():
+    orchestrator, adapter_a, adapter_b = build_raw(_NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B)
+    result = orchestrator.run_verify("この記事を要約してください")
+    assert result.call_count == 7
+    assert "clarify" not in [p.phase for p in result.phases]
+    assert [r.phase for r in adapter_a.requests][0] != "clarify"
+
+
+def test_clarify_invoked_for_critical_ambiguity_call_count_eight():
+    orchestrator, adapter_a, adapter_b = build_raw(
+        [_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B
+    )
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert result.call_count == 8
+    assert [r.phase for r in adapter_a.requests][0] == "clarify"
+    assert [p.phase for p in result.phases][0] == "clarify"
+    assert result.status is RunStatus.COMPLETED
+    assert result.oracle_exit_code == EXIT_OK
+
+
+def test_clarify_agent_selected_by_role_priority():
+    adapter_a = ScriptedAgentAdapter(_NORMAL_FLOW_SCRIPT_A)
+    adapter_b = ScriptedAgentAdapter([_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_B)
+    agents = [
+        RegisteredAgent("agent-a", adapter_a, role_priority={"clarify": 10}),
+        RegisteredAgent("agent-b", adapter_b, role_priority={"clarify": 100}),
+    ]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert [r.phase for r in adapter_a.requests][0] != "clarify"
+    assert [r.phase for r in adapter_b.requests][0] == "clarify"
+
+
+def test_clarify_agent_request_contains_the_question():
+    orchestrator, adapter_a, adapter_b = build_raw(
+        [_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B
+    )
+    orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    clarify_request = adapter_a.requests[0]
+    assert clarify_request.phase == "clarify"
+    assert clarify_request.payload["question"] == _AMBIGUOUS_QUESTION
+
+
+def test_clarify_ready_with_assumptions_proceeds_to_normal_run():
+    output = dict(_READY_CLARIFY_OUTPUT)
+    output.update(status="ready_with_assumptions", assumptions=["region: Tokyo"])
+    orchestrator, adapter_a, adapter_b = build_raw([output] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B)
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert result.status is RunStatus.COMPLETED
+    assert result.final_answer == "final"
+
+
+def _stop_status_output(status, note="stop"):
+    return {
+        "status": status,
+        "refined_question": _AMBIGUOUS_QUESTION,
+        "assumptions": [],
+        "questions": [],
+        "note": note,
+    }
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["needs_clarification", "premise_issue", "unsupported", "safety_blocked"],
+)
+def test_clarify_stop_status_raises_clarification_stop_error_no_run_persisted(status):
+    storage = InMemoryStorageBackend()
+    adapter_a = ScriptedAgentAdapter([_stop_status_output(status)])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == status
+    assert exc_info.value.exit_code == 2
+    assert storage._events == {}
+
+
+def test_clarify_critical_question_upgrades_to_needs_clarification_stop():
+    output = {
+        "status": "ready_with_assumptions",
+        "refined_question": _AMBIGUOUS_QUESTION,
+        "assumptions": [],
+        "questions": [{"text": "target?", "importance": "critical"}],
+    }
+    adapter_a = ScriptedAgentAdapter([output])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "needs_clarification"
+
+
+def test_clarify_agent_failure_raises_clarification_unavailable():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("EXECUTION_ERROR", "boom")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_agent_timeout_raises_clarification_unavailable():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("TIMEOUT", "timed out")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_agent_invalid_output_raises_clarification_unavailable():
+    # Simulates the adapter's own schema validation failure (empty response,
+    # malformed JSON, or a schema mismatch all surface as INVALID_OUTPUT
+    # before Orchestrator ever sees a dict) - the existing failure
+    # classification, unchanged for this new phase.
+    adapter_a = ScriptedAgentAdapter([AgentFailure("INVALID_OUTPUT", "missing field: status")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+
+
+def test_clarify_auth_required_maps_to_auth_required_status():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("AUTH_REQUIRED", "login required")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "auth_required"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_skipped_entirely_in_quick_mode():
+    # J-3's quick-mode call graph (respond*2 -> compare -> synthesize) must
+    # stay untouched; quick mode has no clarify slot in its ExecutionPlan.
+    script_a = [{"answer": "A"}, {"comparison": "compared"}, {"answer": "quick-final"}]
+    script_b = [{"answer": "B"}]
+    orchestrator, adapter_a, adapter_b = build_raw(script_a, script_b)
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION, mode="quick")
+    assert result.status is RunStatus.COMPLETED
+    assert [p.phase for p in result.phases] == ["respond", "compare", "synthesize"]
+
+
+def test_clarify_budget_settled_after_stop_error():
+    # The clarify pre-flight now runs inside run_verify's try/finally, so
+    # assert_settled() must still run (and not raise) even when clarify
+    # stops before a Run is created.
+    adapter_a = ScriptedAgentAdapter([_stop_status_output("needs_clarification")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    budget = TokenBudget(input_limit=10**6, output_limit=10**6)
+    orchestrator = orchestrator_module.Orchestrator(
+        agents, FakeEvidenceProvider([{"evidence_id": "ev-1"}]), budget, None
+    )
+    with pytest.raises(ClarificationStopError):
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    budget.assert_settled()  # must not raise

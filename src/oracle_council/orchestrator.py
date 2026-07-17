@@ -13,6 +13,7 @@ from .assignment import (
     build_execution_plan,
 )
 from .budget import BudgetExceededError, TokenBudget
+from .clarification import STOP_STATUSES, ClarificationEngine, ClarificationStopError
 from .classification import classify, is_withheld
 from .models import (
     AgentExecutionRecord,
@@ -146,11 +147,31 @@ class Orchestrator:
         sequence = count(1)
         state = _RunState(question, plan)
         try:
+            # S-4: clarification runs before run_created, same as the
+            # assignment pre-flight above - a stop status (needs_clarification
+            # etc.) must never leave a Run behind. quick mode has no clarify
+            # slot in its ExecutionPlan (J-3) and is skipped here entirely.
+            clarify_execution = (
+                self._run_clarification(run_id, plan, state, sequence)
+                if mode != "quick"
+                else None
+            )
             self._append(
                 run_id,
                 "run_created",
                 {"mode": mode, "participants": list(plan.participants)},
             )
+            if clarify_execution is not None:
+                self._append(
+                    run_id,
+                    "agent_execution_succeeded",
+                    {
+                        "phase": "clarify",
+                        "execution_id": clarify_execution.execution_id,
+                        "agent_id": clarify_execution.agent_id,
+                        "process_exit_code": clarify_execution.process_exit_code,
+                    },
+                )
             if mode == "quick":
                 respond_index = 0
                 for phase in ("respond", "respond", "compare", "synthesize"):
@@ -253,6 +274,71 @@ class Orchestrator:
             )
         finally:
             self._budget.assert_settled()
+
+    def _run_clarification(
+        self, run_id: str, plan: ExecutionPlan, state: "_RunState", sequence
+    ) -> AgentExecutionRecord | None:
+        """S-4: deterministic pre-check (tiers 1/2), then the Clarifier
+        Agent only for a critical ambiguity (QandA S-4.3). Returns the
+        execution record to fold into the Run once it is created, or None
+        when tiers 1/2 resolved the question without an agent call.
+        Raises ClarificationStopError (no Run created) for every stop
+        status, matching InsufficientAgentsError's pre-flight contract.
+        """
+        engine = ClarificationEngine()
+        precheck = engine.inspect(state.question)
+        if not precheck.agent_required:
+            state.clarification_assumptions = precheck.assumptions
+            return None
+
+        assignment = plan.assignment_for("clarify", 0)
+        agents_by_id = {agent.agent_id: agent for agent in self._agents}
+        candidates = [
+            agents_by_id[agent_id]
+            for agent_id in assignment.candidate_agent_ids
+            if state.agent_status(agent_id) == "available"
+        ]
+        if not candidates:
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                "利用可能なClarifier Agentがありません",
+                exit_code=3,
+            )
+        agent = candidates[0]
+        execution_id = f"exec-{next(sequence)}"
+        try:
+            result = self._attempt(run_id, "clarify", agent, execution_id, None, None, state)
+        except BudgetExceededError:
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                "Clarifier Agent呼び出しの予算を確保できません",
+                exit_code=3,
+            ) from None
+        except AgentFailure as failure:
+            if failure.error_code == "AUTH_REQUIRED":
+                raise ClarificationStopError(
+                    "auth_required", "Clarifier Agentの認証が必要です", exit_code=3
+                ) from failure
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                f"Clarifier Agentを実行できませんでした: {failure.error_code}",
+                exit_code=3,
+            ) from failure
+
+        evaluated = engine.evaluate_agent_output(state.question, None, result.output)
+        if evaluated.status in STOP_STATUSES:
+            raise ClarificationStopError(
+                evaluated.status,
+                evaluated.note or "追加の質問回答が必要です",
+                exit_code=2,
+            )
+
+        state.clarification_assumptions = evaluated.assumptions
+        record = state.phase(run_id, "clarify")
+        record.status = PhaseStatus.SUCCEEDED
+        record.success_count = 1
+        record.finished_at = utc_now()
+        return state.executions[-1]
 
     def _execute_phase(
         self, run_id: str, phase: str, slot_index: int, sequence, state: _RunState
@@ -885,6 +971,7 @@ class _RunState:
         self.current_auditor_agent_id: str | None = None
         self.phases: dict[str, PhaseRecord] = {}
         self.executions: list[AgentExecutionRecord] = []
+        self.clarification_assumptions: list[str] = []
 
     def phase(self, run_id: str, name: str) -> PhaseRecord:
         if name not in self.phases:

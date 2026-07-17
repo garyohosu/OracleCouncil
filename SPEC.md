@@ -223,22 +223,41 @@ SynthesizerとAuditorは異なる`agent_id`とする。Synthesizer候補は別Au
 - ユーザーはいつでも「この条件で進める」を選べる
 - 整理後の質問と仮定を確認可能にする
 
-### 7.5 非対話モードの仮定生成
+### 7.5 非対話モードの仮定生成（S-4確定、2026-07-18）
 
-`--no-interactive`では次の順に仮定を決める。
+`--no-interactive`では次の順に仮定を決める。`ClarificationEngine`は`inspect(question, context=None)`と`evaluateAgentOutput(question, context, output)`の2段階責務に分離する（QandA S-4.1）。
 
-1. 地域、通貨、日時などの決定的な規定値
-2. 質問種別ごとのテンプレート規則
-3. Clarifier Agentによる構造化された仮定案
+1. **第1段階（決定的既定値、QandA S-4.2）**: 出力形式（未指定なら通常のテキスト回答）、対象読者（未指定なら一般読者）、長さ（未指定なら簡潔）、言語（未指定なら質問文の主要言語）、タイムゾーン（未指定なら実行環境のタイムゾーン）、時点（時事性のある質問は現在、なければ指定なし）を補い、補った値をすべてassumptionsへ記録する。これら単独ではClarifier Agentを呼ばない。
+2. **第2段階（テンプレート規則、QandA S-4.2）**: 要約・説明・比較・一覧やランキング・コード作成・校正・調査の7種類の質問テンプレートのいずれかで一意に処理できれば、Clarifier Agentを呼ばずに解決する。規則は入力を勝手に拡張せず、補完内容はassumptionsへ記録する。
+3. **第3段階（Clarifier Agent、QandA S-4.3）**: 第1・第2段階を適用してもなお回答や処理結果を大きく変える「critical ambiguity」が残る場合だけ呼ぶ。critical ambiguityは次の6種類に限定する。
+   - 指示対象が特定できない
+   - 実行すべき操作が複数に解釈できる
+   - 必須の対象、範囲、入力データが欠けている
+   - 指示同士が矛盾している
+   - 外部への送信、削除、公開、購入など、取り返しのつきにくい操作の対象または範囲が不明
+   - 安全性、権限、法令順守に関わる重要条件が不明
 
-Orchestratorは、設定された適格なエージェントの中から最も `clarify` の優先度（`role_priority`値）が高いエージェントを決定的に選出し、そのエージェントに対して `clarify` フェーズの `AgentRequest` を実行する。`ClarificationEngine` はエージェントが返却した構造化出力を受け取り、検証および決定規則の適用を行う。
+   単なる出力形式、文章量、読者、語調などの不足はcritical ambiguityにしない。
 
-次の場合は自動仮定せず、終了コード`2`で`needs_clarification`を返す。
+Orchestratorは、設定された適格なエージェントの中から最も `clarify` の優先度（`role_priority`値）が高いエージェントを決定的に選出し、そのエージェントに対して `clarify` フェーズの `AgentRequest` を最大1回実行する（非対話モード、QandA J-4）。`ClarificationEngine.evaluateAgentOutput()` はエージェントが返却した構造化出力をclarify phase schemaで検証し、決定規則の適用を行う。
 
-- 結論が逆転する不足情報
-- 医療、法律、金融、安全に関わる重要条件
-- 個人を特定する必要がある質問
-- Clarifierが`importance: critical`とした不足情報
+Agent出力検証後の判定:
+
+- critical questionが残る: `needs_clarification`
+- 非criticalな仮定だけで続行可能: `ready_with_assumptions`
+- 問題なし: `ready`
+- 前提誤り: `premise_issue`
+- 対応不能: `unsupported`
+- 安全上停止: `safety_blocked`
+
+次の場合は自動仮定せず、終了コード`2`で該当ステータスを返す（Runは生成しない）。
+
+- 結論が逆転する不足情報（`needs_clarification`）
+- 医療、法律、金融、安全に関わる重要条件（`needs_clarification`または既存の`strict_required`経路）
+- 個人を特定する必要がある質問（`needs_clarification`）
+- Clarifierが`importance: critical`とした不足情報（`needs_clarification`への格上げ。ただし`unsupported`/`safety_blocked`/`premise_issue`はより具体的な停止理由のため格下げしない）
+
+Clarifier Agent呼び出し自体が失敗した場合（タイムアウト、不正JSON、schema不一致、空応答、認証エラー等）は既存の失敗分類に従う。`AUTH_REQUIRED`は`auth_required`（終了コード3）、それ以外は新設ステータス`clarification_unavailable`（終了コード3）とし、いずれもRunを生成しない。
 
 AIが生成した仮定は実行記録へ保存する。完全な再現性は保証しないが、同じテンプレート、低いランダム性、対応CLIでのseed指定を用いて変動を抑える。
 
@@ -836,8 +855,8 @@ Oracle Council自身の終了コード（oracleExitCode）は次の6値とする
 |---:|---|---|
 | 0 | 公開可能な回答あり | `completed`、`partial`（公開可能な`final_answer`が存在する場合だけ） |
 | 1 | 実行失敗 | `failed`、`internal_error` |
-| 2 | 入力・追加判断が必要 | `needs_clarification`、`strict_required`、`invalid_arguments`、`unsupported`、`safety_blocked` |
-| 3 | 実行環境を整える必要あり | `verification_unavailable`、`insufficient_agents`、`auth_required`、`configuration_error` |
+| 2 | 入力・追加判断が必要 | `needs_clarification`、`strict_required`、`invalid_arguments`、`unsupported`、`safety_blocked`、`premise_issue`（S-4確定、2026-07-18） |
+| 3 | 実行環境を整える必要あり | `verification_unavailable`、`insufficient_agents`、`auth_required`、`configuration_error`、`clarification_unavailable`（S-4確定、2026-07-18） |
 | 4 | 回答保留 | `withheld` |
 | 130 | ユーザーキャンセル | `cancelled_by_user` |
 

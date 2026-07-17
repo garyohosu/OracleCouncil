@@ -191,6 +191,7 @@ _PHASE_NAMES = {
     "criticize",
     "synthesize",
     "audit",
+    "clarify",
 }
 _SCHEMA_FIELD_NAMES = {
     "answer",
@@ -205,6 +206,11 @@ _SCHEMA_FIELD_NAMES = {
     "issue_id",
     "issue_type",
     "severity",
+    "refined_question",
+    "assumptions",
+    "questions",
+    "options",
+    "note",
 }
 _JSON_TYPE_NAMES = {"array", "object", "string", "number", "boolean", "null"}
 _SIMPLE_PUBLIC_SUMMARIES = {

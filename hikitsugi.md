@@ -585,3 +585,30 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 **今回変更していないもの**: ソースコード・テストは一切変更していない。既存のS-4・J-4のAUTO_DECIDED回答も変更していない。CLIへの新規フラグ追加、`clarify_trigger`の機能昇格、質問文の長さ・キーワードによる独自判定ロジックはいずれも実装していない。AutoLoopリポジトリ（`C:\PROJECT\autoloop`）は変更していない。worktree分離には着手していない。
 
 **次の推奨作業**: QandA.md S-4.1〜S-4.4（`ClarificationEngine.inspect()`の責務、SPEC §7.5第1・第2段階の具体化、Clarifier Agent呼び出し条件、CLI進捗表示の扱い）をユーザー判断で正式決定してから、S-4の実装に着手すること。この4点はいずれも実装者の推測で決めるべきではない設計判断であり、次回セッションが独断で決定しないよう本節に明記する。
+
+## 0-20. S-4実装完了（2026-07-18）: ClarificationEngineからClarifier Agent呼び出しの配線
+
+**経緯**: §0-19でユーザーへ提示した4つの未回答質問（S-4.1〜S-4.4）に対し、ユーザーから正式決定が示された。決定内容に従い、追加調査や質問での停止はせず、実装・テスト・文書更新まで一気に完了した。
+
+**実装内容**:
+- `src/oracle_council/clarification.py`（新規）: `ClarificationEngine`を`inspect(question, context=None)`（決定的既定値・テンプレート規則・critical ambiguity検出、Agent不要ならClarificationResultを、必要ならClarificationPreCheckを返す）と`evaluate_agent_output(question, context, output)`（clarify schema検証・SPEC Sec7.2/Sec7.5決定規則適用）の2段階APIに分離した。`ClarificationStopError`（status・exit_codeを保持）も同モジュールに定義。
+- `src/oracle_council/schemas/clarify.json`（新規）: SPEC Sec7.2の6 status（ready/ready_with_assumptions/needs_clarification/premise_issue/unsupported/safety_blocked）をすべて含む。2026-07-16の撤回実装で欠落していたpremise_issueも含む。
+- `src/oracle_council/phase_schema.py`・`models.py`: `clarify`をphase一覧・safe-summary許可リストへ追加。
+- `src/oracle_council/assignment.py`: `_PLAN_ASSIGNMENTS`（verify/strict）へ`("clarify", 0, 1, ())`スロットを追加（quickモードは対象外）。既存の`rank()`がrole_priority最高のAgent選定にそのまま使える。
+- `src/oracle_council/orchestrator.py`: `run_verify()`のrun_created発行前に`_run_clarification()`を実行。tier1/2で解決すればAgent呼び出しなしで既存フローへ完全に素通り（call_count・イベント順とも無変更）。critical ambiguityが残る場合だけ`_attempt()`（既存の予算・実行記録機構をそのまま再利用）でclarify Agentを1回呼び、favorable（ready/ready_with_assumptions）ならrun_created後にphase/execution/eventを遡って記録し通常フローへ、非favorableなら`ClarificationStopError`を送出しRunを一切生成しない（InsufficientAgentsErrorと同じ事前停止契約）。
+- `src/oracle_council/cli.py`: `ClarificationEngine().inspect()`を`run_verify()`呼び出し前に実行し、進捗表示`[1/7]`/`[1/8]`を動的に切り替え。死んだコードだった`clarify_trigger`マジック文字列分岐を削除。`except ClarificationStopError`を追加（`InsufficientAgentsError`と同様の事前停止処理）。`FakeAgentAdapter`にclarifyケースを追加（`ORACLE_MOCK_CLARIFY_STATUS`環境変数でCLIテストからstatusを制御可能）。
+
+**Agent呼び出し失敗の扱い**: `AUTH_REQUIRED`は`auth_required`（exit 3）、それ以外の`AgentFailure`（TIMEOUT、EXECUTION_ERROR、INVALID_OUTPUT等）はすべて新設`clarification_unavailable`（exit 3）とし、SPEC §13.4の既存6値のうちexit 3バケットへ割り当てた（新しいexit codeは増やしていない）。
+
+**critical ambiguity検出の実装範囲**: QandA S-4.3で確定した6カテゴリのうち、初期実装では「比較対象不明（どちら/どっち）」「指示対象不明（これ/それ/あれ で始まる文）」「指示矛盾（しかし...しないで等）」「取り返しのつきにくい操作の対象不明（これ/それ/あれ/全部/すべて を削除/送信/購入/公開/投稿/消去して）」の4パターンを保守的な正規表現で実装した。既存テスト問題文（`"q"`、`"富士山の標高は？"`、`"この薬の服用量は？"`等）はいずれも該当せずAgentを呼ばないことを確認済み。パターンの網羅性は今後の拡張余地として残る。
+
+**検証**: `py -m pytest` は**370 passed, 6 deselected**（既存310件は無傷、純増60件）。`git diff --check`成功。実Claude/Codex呼び出し、Web検索、実HTTPアクセスは一切行っていない。
+
+**文書更新**: `QandA.md`（S-4.1〜S-4.4を「確定」として記録）、`SPEC.md`（§7.5の3段階詳細化、§13.4 exit codeテーブルへpremise_issue/clarification_unavailable追加）、`CLASS.md`（`ClarificationEngine`のAPI分離、`ClarificationPreCheck`/`ClarificationResult`追加）、`TESTCASE.md`（§2.3を新API・6 status・IT-level 3件に合わせて更新、UT-CE-08/12のBLOCKEDタグをJ-4のみに整理）、`FIX_PLAN.md`（§0-17でS-4解消済みへ）、本ファイル。
+
+**残存課題**:
+- J-4（対話モードでの2ラウンド質問整理、`applyAnswers`の実装）は未着手のまま
+- critical ambiguity検出パターンは4種類の保守的な実装にとどまり、6カテゴリ全てを高精度に検出するものではない
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）
+
+**次の推奨作業**: J-4（Clarifier対話モードの2ラウンド実装）、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目（J-4以外に大きなブロッカーは現在なし）。

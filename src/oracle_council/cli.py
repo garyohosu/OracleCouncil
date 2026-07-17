@@ -26,6 +26,7 @@ from .models import (
     Usage,
     safe_error_summary,
 )
+from .clarification import ClarificationEngine, ClarificationStopError
 from .orchestrator import Orchestrator
 from .adapters import CliSearchProvider, ClaudeAdapter, CodexAdapter
 from .storage import (
@@ -64,7 +65,7 @@ class FakeAgentAdapter:
             adapter_version=self._capabilities.get("adapter_version", "1.0"),
             cli_version=self._capabilities.get("cli_version", "1.0"),
             supported_phases=tuple(self._capabilities.get("supported_phases", (
-                "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
+                "clarify", "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
             ))),
             supports_read_only=self._capabilities.get("supports_read_only", True),
             supports_no_tools=self._capabilities.get("supports_no_tools", True),
@@ -77,6 +78,19 @@ class FakeAgentAdapter:
             raise AgentFailure(probe_res.status, f"Agent {self.agent_id} unavailable with status: {probe_res.status}")
 
         phase = request.phase
+        if phase == "clarify":
+            question = request.payload.get("question", "")
+            status_val = os.environ.get("ORACLE_MOCK_CLARIFY_STATUS", "ready")
+            return AgentResult(
+                {
+                    "status": status_val,
+                    "refined_question": question,
+                    "assumptions": [],
+                    "questions": [],
+                    "note": "mock clarification note" if status_val != "ready" else "",
+                },
+                Usage(100, 20),
+            )
         if phase == "respond":
             return AgentResult({"answer": f"Mock respond from {self.agent_id}"}, Usage(100, 20))
         elif phase == "claim_extract":
@@ -382,13 +396,6 @@ def cmd_ask(args) -> int:
                     )
                 args.mode = "strict"
 
-    if "clarify_trigger" in args.question:
-        if args.no_interactive:
-            return exit_stop("needs_clarification", 2, "追加の質問回答が必要です", args.json)
-        else:
-            sys.stderr.write("追加質問: 用途は何ですか？: ")
-            sys.stdin.readline().strip()
-
     if "unsupported_trigger" in args.question:
         return exit_stop("unsupported", 2, "サポートされていない質問です", args.json)
 
@@ -512,7 +519,14 @@ def cmd_ask(args) -> int:
         if args.mode == "quick":
             sys.stderr.write("[1/4] 2 Agentが独立回答中...\n")
         else:
-            sys.stderr.write("[1/7] 質問を整理しています\n")
+            # S-4.4: the total is computed from the same deterministic
+            # pre-check Orchestrator itself runs, not a hardcoded guess -
+            # it only becomes 8 when a critical ambiguity actually requires
+            # the Clarifier Agent (QandA S-4.3); otherwise it stays 7,
+            # unchanged from before S-4 existed.
+            precheck = ClarificationEngine().inspect(args.question)
+            total_calls = 8 if precheck.agent_required else 7
+            sys.stderr.write(f"[1/{total_calls}] 質問を整理しています\n")
 
     try:
         result = orchestrator.run_verify(args.question, mode=args.mode)
@@ -526,6 +540,8 @@ def cmd_ask(args) -> int:
         )
     except InsufficientAgentsError as e:
         return exit_stop("insufficient_agents", 3, str(e), args.json)
+    except ClarificationStopError as e:
+        return exit_stop(e.status, e.exit_code, str(e), args.json)
     except Exception as e:
         return exit_stop("internal_error", 1, str(e), args.json)
 
