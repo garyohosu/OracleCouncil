@@ -1767,4 +1767,39 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-13 — W-1〜W-10、K-2、X-1、X-2、X-3、X-4、X-5、X-6、X-7、X-7.1確定。X-8固定評価セット準備完了。X-8.1でINVALID_OUTPUTの安全な構造診断を追加。X-8.2で誤前提訂正と回答保留の判定を分離。実機2 Agent完走達成、metrics成功条件4点クリア、CliSearchProviderのCLI実験接続、Evidence監査概要JSON出力、Evidence収集Phase計測、非ASCII URL/IRI正規化を完了。既回答77問、未回答23問。*
+## Y. Grok / agy 4AI評議会Adapter
+
+### Y-1. Grok・agy CLIの実起動仕様確定（2026-07-18ライブ確認）
+
+**重要度**: Critical
+**箇所**: `adapters/grok.py` / `adapters/agy.py` / `config/agents.yaml`
+**背景**: S-4完了後、参加AIをClaude/Codexの2種類からClaude/Codex/Grok/agyの4種類へ拡張する作業（4AI評議会）で、Grok・agyの実CLI起動形式が未確認だった。garyohosu/werewolf-gameの`config/agents.json`（実際に複数回のゲームで使われた実績値）を一次資料とし、さらに本機上で`grok --version`/`agy --version`および`grok -p "..." --output-format json`/`agy --print "..."`を最小限のプロンプトで実行して実際の出力形状を直接確認した。
+**確認結果**:
+- **grok**: `grok -p "<prompt>" --output-format json`（プロンプトはstdinではなく引数、werewolf-gameの`prompt_mode: "arg"`と一致）。応答はCLIメタデータ封筒`{"text": "<回答文>", "stopReason": ..., "usage": {...}, ...}`でラップされ、フェーズJSONは`envelope["text"]`という文字列の中にある。Claudeの`envelope["result"]`と同型のパターンとして実装した。
+- **agy**: `agy --print "<prompt>"`（同じく引数渡し）。封筒は一切なく、標準出力がそのままモデルの回答文字列（Codexと同型の直接パースパターン）。
+- 両CLIともネイティブなJSON Schema制約フラグ（grokの`--json-schema`、Codexの`--output-schema`相当）を持つが、grokの`--json-schema`は本実装では未使用とし、プロンプト埋め込みのschema hintで統一した（werewolf-gameの実績アプローチに合わせ、検証済みでない2つ目のコードパスを増やさないため）。agyにはそもそもネイティブなschema制約フラグが存在しない。
+**回答**: 確定。`GrokAdapter`（Claude型: envelope展開）と`AgyAdapter`（Codex型: 直接パース）として実装し、両者とも既存の`AgentAdapter` Contract（`probe`/`execute`/`cancel`）、`classify_cli_error`、`validate_phase_output`、キャンセル対応`subprocess.run`差し替えパターンをClaude/Codexと共通化した。タイムアウトは既存のSPEC §8.4既定180秒をそのまま使用（werewolf-gameのQandA記録にある「Grokは60秒で不足、120秒で成功」という実測値に180秒は既に余裕を持って上回っているため、Grok専用の値を新設しなかった）。
+
+---
+
+### Y-2. 4AI評議会のrole_priority設計
+
+**重要度**: Major
+**箇所**: `config/agents.yaml`
+**背景**: `assignment.py`の`build_execution_plan`は`ranked[:4]`で参加者を最大4体に制限する既存実装（S-9）があり、ちょうどClaude/Codex/Grok/agyの4体に一致する。しかし`role_priority`を設定しないと全フェーズでclaude-code/codex-cliの2体だけがtie-break順で常に勝ち、grok-cli/agy-cliが一度も発言しない構成になってしまう。
+**回答**: 確定。既存2体（claude-code: respond/synthesize/audit、codex-cli: respond/verify/audit）に加え、grok-cli（claim_extract/clarify）とagy-cli（criticize/clarify）を、既存の勝者と重ならないフェーズの最高優先度に設定した。これにより4体全てが少なくとも1フェーズで実行されることを`tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（Scripted Adapterによる決定的統合テスト）で確認した。
+
+---
+
+### Y-3. 実CLI live smoke testの`ProbeResult`比較バグ（既存Claude/Codexテストにも波及）
+
+**重要度**: Critical
+**箇所**: `tests/contract/test_adapters.py`
+**背景**: Grok/agy用に`test_grok_adapter_live_probe`等をClaude/Codex用の既存テストをひな形にコピーして追加した際、`status = adapter.probe()`の後に`assert status in ("OK", ...)`（`status`は`ProbeResult`オブジェクトであり文字列と比較している）という誤りをそのまま複製してしまい、実行して初めて気づいた。
+**発見**: 既存のClaude/Codex用`test_claude_adapter_live_probe`・`test_codex_adapter_live_execute`等も同じ誤りを持っており、`if status != "OK":`は`ProbeResult != str`が常に真になるため常に`pytest.skip`し、`execute()`本体が一度も実行されないdead codeになっていた。これらは`@pytest.mark.live`（既定`-m "not live"`でdeselect）のため、通常のテスト実行では長期間気づかれていなかった。
+**回答**: 確定。4 Adapter分・8テスト全てで`status.status`を参照するよう修正した。修正後、本機にインストール済みのClaude Code、Codex CLI、Grok、agyの4 CLI全てで`probe`が`OK`を返し、`respond`フェーズの`execute()`が実際に成功することを2026-07-18に確認した（`pytest -m live`: 8 passed, 2 skipped [別ファイルの`ORACLE_COUNCIL_LIVE`ゲート付きテスト、Claude/Codex専用で今回変更対象外]）。
+**教訓**: `@pytest.mark.live`で通常スイートからdeselectされるテストは、CIで日常的に検証されないぶん自己バグに気づきにくい。新しいAdapterを既存のliveテストからコピーする際は、コピー元も含めて一度は`pytest -m live`を実際に実行して確認する必要がある。
+
+---
+
+*最終更新: 2026-07-18 — Y-1〜Y-3追加。Grok・agy CLIの実起動仕様をライブ確認し、GrokAdapter/AgyAdapterを実装。4AI評議会のrole_priority設計とFake統合テストを追加。既存Claude/Codex liveテストにも波及していた`ProbeResult`比較バグを発見・修正し、Claude/Codex/Grok/agyの4 CLI全てでprobe/executeの実ライブ成功を確認。既回答80問、未回答23問。*

@@ -28,7 +28,7 @@ from .models import (
 )
 from .clarification import ClarificationEngine, ClarificationStopError
 from .orchestrator import Orchestrator
-from .adapters import CliSearchProvider, ClaudeAdapter, CodexAdapter
+from .adapters import AgyAdapter, CliSearchProvider, ClaudeAdapter, CodexAdapter, GrokAdapter
 from .storage import (
     JSONLStorageBackend,
     StorageCorruptionError,
@@ -437,6 +437,10 @@ def cmd_ask(args) -> int:
                 adapter = ClaudeAdapter(agent_id, entry.get("model"))
             elif use_real and entry.get("adapter") == "codex":
                 adapter = CodexAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "grok":
+                adapter = GrokAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "agy":
+                adapter = AgyAdapter(agent_id, entry.get("model"))
             else:
                 adapter = FakeAgentAdapter(
                     agent_id=agent_id,

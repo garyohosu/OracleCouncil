@@ -63,7 +63,7 @@ Oracle Councilは、ユーザーの質問をそのまま1つのAIへ渡すので
 
 ## 3. MVPの目標
 
-- Claude CodeとCodex CLIを公式サポートし、既定2 Agent、設定上最大4 Agentを並列実行できる
+- Claude Code、Codex CLI、Grok CLI、agy（Antigravity）CLIの4種類を公式サポートし、設定上最大4 Agentを並列実行できる（2026-07-18時点、config/agents.yamlは既定でこの4種類全てを有効化する）
 - AIごとの利用可否、タイムアウト、利用上限を判定できる
 - 不完全な質問に対して必要な場合だけ追加質問できる
 - 各AIが他の回答を見ずに独立回答できる
@@ -281,16 +281,26 @@ agents:
       claim_extract: 90
       verify: 90
 
-  - id: gemini
-    adapter: gemini
-    enabled: false
+  - id: grok
+    adapter: grok
+    enabled: true
+    role_priority:
+      respond: 80
+      claim_extract: 100
 
-  - id: agent4
+  - id: agy
+    adapter: agy
+    enabled: true
+    role_priority:
+      respond: 70
+      criticize: 100
+
+  - id: agent5
     adapter: custom
     enabled: false
 ```
 
-既定で有効にするのは公式サポートの2 Agentのみとし、3つ目以降は利用者が明示的に有効化する。
+既定でClaude Code、Codex CLI、Grok CLI、agyの4 Agentすべてを有効にする（config/agents.yaml参照）。5つ目以降のカスタムAdapterは利用者が明示的に追加する。
 
 ### 8.2 Agent状態
 
@@ -366,7 +376,7 @@ class AgentAdapter(Protocol):
 
 `process_exit_code`（S-8）は子CLI processのOS終了コードだけを表す。正常終了は`0`、非0終了は実際の整数値、子processが起動していない・終了コードを取得できない場合（command not found、timeout、起動失敗、Fake Agent）は`null`とする。子processが`0`で終了した後のJSON parse失敗・schema不適合は`error_code=INVALID_OUTPUT`かつ`process_exit_code=0`とする。この際、AdapterはMarkdownコードフェンスの除去や前後の不要テキストのトリミングといった決定的なクレンジングのみを試み、AIへの再送や自動的な修復（再生成）は行わずに直ちにエラーとする。`process_exit_code=0`は意味的成功を保証せず、非0だけから公開`AgentErrorCode`を決めない。失敗時は`AgentFailure`が同名の`process_exit_code`を保持してOrchestratorへ伝える。
 
-未知のCLIバージョン、`supports_no_tools=false`、`supports_read_only=false`、schema不適合はfail closedとする。`custom` AdapterはPython entry pointで登録し、Adapter Contract Testに合格したものだけを読み込む。MVPで公式サポートするのはClaude CodeとCodex CLIの2種類とする。
+未知のCLIバージョン、`supports_no_tools=false`、`supports_read_only=false`、schema不適合はfail closedとする。`custom` AdapterはPython entry pointで登録し、Adapter Contract Testに合格したものだけを読み込む。MVPで公式サポートするのはClaude Code、Codex CLI、Grok CLI、agyの4種類とする。
 
 ### 8.6 トークン予算と縮約
 
@@ -1405,7 +1415,7 @@ OracleCouncil/
 
 ### 20.2 Agent実行
 
-- Claude CodeとCodex CLIの2 Adapterで独立回答を生成できる
+- Claude Code、Codex CLI、Grok CLI、agyの4 Adapterで独立回答を生成できる
 - Orchestratorと設定スキーマは最大4 Agentを扱える
 - Responder 2件を得られない場合は継続しない
 - 利用上限、認証切れ、タイムアウトを区別できる

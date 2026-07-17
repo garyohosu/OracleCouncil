@@ -71,6 +71,8 @@ classDiagram
 
     class ClaudeCodeAdapter
     class CodexCLIAdapter
+    class GrokCLIAdapter
+    class AgyCLIAdapter
 
     class EvidenceProvider {
         <<interface>>
@@ -183,6 +185,8 @@ classDiagram
 
     AgentAdapter <|.. ClaudeCodeAdapter
     AgentAdapter <|.. CodexCLIAdapter
+    AgentAdapter <|.. GrokCLIAdapter
+    AgentAdapter <|.. AgyCLIAdapter
     EvidenceProvider <|.. WebEvidenceProvider
     EvidenceProvider <|.. NoneEvidenceProvider
     EvidenceProvider <|.. ManualEvidenceProvider

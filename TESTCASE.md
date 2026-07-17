@@ -672,7 +672,7 @@
 
 ---
 
-### 2.4 AgentAdapter (ClaudeCodeAdapter / CodexCLIAdapter)
+### 2.4 AgentAdapter (ClaudeCodeAdapter / CodexCLIAdapter / GrokCLIAdapter / AgyCLIAdapter)
 
 #### **UT-AA-01: probe 正常系**
 - **テストレベル**: UT
@@ -1191,9 +1191,9 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 
 ### **CT-AA-LIVE-01: AgentAdapter実CLI Contract**
 - **テストレベル**: CT
-- **対象クラス/機能**: `ClaudeCodeAdapter`, `CodexCLIAdapter`
+- **対象クラス/機能**: `ClaudeCodeAdapter`, `CodexCLIAdapter`, `GrokCLIAdapter`, `AgyCLIAdapter`
 - **関連仕様**: SPEC §8.5, §16.1 / SEQ: 1
-- **前提条件**: テスト環境に実CLI（Claude Code等）がセットアップされており、APIキー環境変数が存在すること。
+- **前提条件**: テスト環境に実CLI（Claude Code、Codex CLI、Grok CLI、agy）がセットアップされており、それぞれの認証が完了していること。
 - **モック/Fixture**: なし (実CLIを実行)。
 - **実行手順**:
   1. `probe()` を実行してバージョン等の整合性を検証。
@@ -1202,6 +1202,17 @@ Contract Test は、外部の具象サービスや環境とモックとの間の
 - **期待結果**: 実プロセスの戻り値、終了コード、JSONフォーマットがアダプターの期待スキーマに100%適合すること。
 - **実行制限**: 手動またはNightlyビルド専用（Opt-in）。
 - **未確定仕様への依存**: `BLOCKED: QandA R-4`
+
+### **CT-AA-LIVE-02: Grok/agy 実CLI probe/execute smoke test**
+- **テストレベル**: CT (`@pytest.mark.live`, 既定スイートでは`-m "not live"`によりdeselect)
+- **対象クラス/機能**: `GrokCLIAdapter`, `AgyCLIAdapter` / `tests/contract/test_adapters.py`
+- **関連仕様**: SPEC §8.5, §16.1
+- **前提条件**: `grok`・`agy` CLIがインストール・認証済みであること。
+- **モック/Fixture**: なし（実CLIを起動）。
+- **実行手順**: `probe()`を実行し`status`を検証、`OK`ならrespondフェーズの`execute()`を1回実行し出力をパースする。CLIが利用不可（`QUOTA_EXCEEDED`/`AUTH_REQUIRED`/`RATE_LIMITED`等）の場合は失敗ではなくskipする。
+- **期待結果**: `ProbeResult.status`が既定のenum値に含まれ、利用可能な場合は`AgentResult.output`が辞書として返ること。
+- **既知の不具合修正（2026-07-18）**: この4 Adapter分のprobe/executeテストは`status = adapter.probe()`の戻り値（`ProbeResult`）をそのまま文字列と比較しており、`assert status in (...)`は`ProbeResult`が文字列と等価になることがなく実質検証されず、`if status != "OK":`は常に真となり`execute()`本体が到達しないdead codeだった。`status.status`を参照するよう修正し、Claude/Codex/Grok/agyの4種すべてで`probe`・`execute`が実際に実行され成功することを2026-07-18に確認した。
+- **実行制限**: 手動実行専用（`pytest -m live`）。CIの既定実行では起動しない。
 
 ### **CT-AA-01: AgentAdapter Fake Process Contract**
 - **テストレベル**: CT

@@ -924,6 +924,60 @@ def test_s9_participant_integration_with_five_agents():
     assert result.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
 
 
+def test_four_ai_council_all_participate():
+    # Mirrors config/agents.yaml's role_priority split across
+    # claude-code/codex-cli/grok-cli/agy-cli: each of the 4 registered
+    # participants wins exactly the phase(s) that config assigns it, so
+    # this proves all 4 configured AI types can be selected and speak in
+    # one verify-mode council, not just the historical 2-agent case.
+    adapter_claude = ScriptedAgentAdapter([
+        {"answer": "claude-respond"},
+        {"answer": "claude-final"},
+    ])
+    adapter_codex = ScriptedAgentAdapter([
+        {"answer": "codex-respond"},
+        claims_output("verified", "major"),
+        {"status": "approved"},
+    ])
+    adapter_grok = ScriptedAgentAdapter([
+        claims_output("unverified", "major"),
+    ])
+    adapter_agy = ScriptedAgentAdapter([
+        {"critique": "agy-critique"},
+    ])
+    agents = [
+        RegisteredAgent("claude-code", adapter_claude, {"respond": 100, "synthesize": 100, "audit": 90}),
+        RegisteredAgent("codex-cli", adapter_codex, {"respond": 90, "verify": 100, "audit": 100}),
+        RegisteredAgent("grok-cli", adapter_grok, {"respond": 80, "claim_extract": 100, "clarify": 100}),
+        RegisteredAgent("agy-cli", adapter_agy, {"respond": 70, "criticize": 100, "clarify": 90}),
+    ]
+    orchestrator = Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        InMemoryStorageBackend(),
+    )
+
+    result = orchestrator.run_verify("What is the boiling point of water at sea level?")
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.result_classification is ResultClassification.VERIFIED
+    assert result.participants == ("claude-code", "codex-cli", "grok-cli", "agy-cli")
+
+    # every one of the 4 configured AI types actually executed at least one
+    # phase - not just selected as a participant on paper
+    phases_by_agent = {
+        "claude-code": [r.phase for r in adapter_claude.requests],
+        "codex-cli": [r.phase for r in adapter_codex.requests],
+        "grok-cli": [r.phase for r in adapter_grok.requests],
+        "agy-cli": [r.phase for r in adapter_agy.requests],
+    }
+    assert phases_by_agent["claude-code"] == ["respond", "synthesize"]
+    assert phases_by_agent["codex-cli"] == ["respond", "verify", "audit"]
+    assert phases_by_agent["grok-cli"] == ["claim_extract"]
+    assert phases_by_agent["agy-cli"] == ["criticize"]
+
+
 def test_quick_mode_flow_success():
     # In quick mode:
     # 1. respond #1 (agent-a) -> {"answer": "A"}

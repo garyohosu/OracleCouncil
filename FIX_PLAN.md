@@ -119,6 +119,12 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 |---|---|---|
 | S-4 | `ClarificationEngine`を`inspect(question, context)`（決定的既定値・テンプレート規則・critical ambiguity検出）と`evaluateAgentOutput(question, context, output)`（clarify schema検証・決定規則適用）の2段階APIに分離。critical ambiguity（6種類に限定）が残る場合だけOrchestratorがclarifyのrole_priority最高の適格Agentを決定的に選び、`clarify`フェーズのAgentRequestを非対話モードで最大1回実行。SPEC §7.2の6 status（premise_issue含む）をclarify schemaへ実装。Agent呼び出し失敗は`auth_required`または新設`clarification_unavailable`（ともにexit 3）、停止statusは`needs_clarification`/`premise_issue`/`unsupported`/`safety_blocked`（exit 2、いずれもRun非生成）。通常経路は`call_count`が7のまま変わらず、Clarifier使用時だけ8になる。CLI進捗表示`[1/7]`/`[1/8]`は`ClarificationEngine.inspect()`の結果から動的に計算し、死んだコードだった`clarify_trigger`マジック文字列分岐は削除した。 | QandA S-4/S-4.1/S-4.2/S-4.3/S-4.4, SPEC §7.5/§13.4, CLASS.md, TESTCASE.md §2.3, `src/oracle_council/clarification.py`（新規）・`schemas/clarify.json`（新規）・`phase_schema.py`・`models.py`・`assignment.py`・`orchestrator.py`・`cli.py`, `tests/unit/test_clarification.py`（新規）・`test_orchestrator.py`・`test_cli.py`・`test_assignment.py`・`test_adapter_capabilities.py` |
 
+## 0-18. Grok・agy Adapter追加、4AI評議会（Claude/Codex/Grok/agy）実現（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Y-1/Y-2/Y-3 | `GrokAdapter`（Claude型: `--output-format json`封筒`envelope["text"]`展開）と`AgyAdapter`（Codex型: 封筒なし直接パース）を追加し、既存`AgentAdapter` Contract・`classify_cli_error`・キャンセル対応subprocess差し替えパターンをClaude/Codexと共通化。`config/agents.yaml`をclaude-code/codex-cli/grok-cli/agy-cliの4参加者へ拡張し、role_priorityを4体がそれぞれ異なるフェーズで最高優先度を持つよう設計（既存のS-9 `ranked[:4]`参加者上限とちょうど一致）。`cli.py`のAgent構築ループへgrok/agy分岐を追加。Fake/Scripted統合テストで4体全てが実際に選出・実行されることを確認。実CLI（本機にインストール済みのgrok・agy）へのライブprobe/execute smoke testも追加し、既存Claude/Codex用liveテストに潜んでいた`ProbeResult`比較バグ（`status != "OK"`が常に真となりexecute本体へ到達しないdead code）も同時に発見・修正し、Claude/Codex/Grok/agyの4 CLI全てで実際にprobe/executeが成功することをライブ確認した。 | QandA Y-1/Y-2/Y-3, SPEC §3/§8.1/§8.5/§20.2, CLASS.md, TESTCASE.md §2.4・CT-AA-LIVE-02, `src/oracle_council/adapters/grok.py`（新規）・`adapters/agy.py`（新規）・`adapters/__init__.py`・`cli.py`, `config/agents.yaml`, `tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（新規）・`tests/contract/test_adapters.py` |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |

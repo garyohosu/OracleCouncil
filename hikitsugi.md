@@ -612,3 +612,32 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 - `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）
 
 **次の推奨作業**: J-4（Clarifier対話モードの2ラウンド実装）、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目（J-4以外に大きなブロッカーは現在なし）。
+
+## 0-21. Grok・agy Adapter追加、4AI評議会（Claude/Codex/Grok/agy）実現（2026-07-18）
+
+**経緯**: S-4完了（ecec8b6）後、ユーザーからOracleCouncilを本来の目標である4AI会議（Claude/Codex/Grok/agy）へ進める指示があった。参照実績として`C:\PROJECT\werewolf-game`（実際に複数回のゲームで4 CLI全てを呼び出した実装）の`scripts/agents.py`・`config/agents.json`・QandA.mdを調査し、確認済みの知見を再利用した。
+
+**実装内容**:
+- `src/oracle_council/adapters/grok.py`（新規）: `GrokAdapter`。`grok -p "<prompt>" --output-format json`を実行し、CLIメタデータ封筒`envelope["text"]`からフェーズJSONを抽出する（Claude型のパターン）。プロンプト埋め込みのJSON Schema hint、Claude/Codexと同じキャンセル対応`subprocess.run`差し替え、`classify_cli_error`/`validate_phase_output`等の共通ヘルパーを再利用。
+- `src/oracle_council/adapters/agy.py`（新規）: `AgyAdapter`。`agy --print "<prompt>"`を実行し、封筒なしの標準出力を直接パースする（Codex型のパターン）。agyにネイティブなschema制約フラグがないため、プロンプト埋め込みのschema hintで対応。
+- `src/oracle_council/adapters/__init__.py`: `AgyAdapter`・`GrokAdapter`をexportへ追加。
+- `src/oracle_council/cli.py`: Agent構築ループへ`entry.get("adapter") == "grok"`/`"agy"`の分岐を追加（既存のclaude/codex分岐と同型）。
+- `config/agents.yaml`: `grok-cli`・`agy-cli`を追加し4参加者体制に。既存2体（claude-code: respond/synthesize/audit、codex-cli: respond/verify/audit）に加え、grok-cli（claim_extract/clarify）とagy-cli（criticize/clarify）を、既存の勝者と重ならないフェーズの最高優先度に設定。`assignment.py`のS-9由来`ranked[:4]`参加者上限（既存実装、無改修）とちょうど4体で一致するため、4体全員が選出される。
+- `tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（新規）: Scripted Adapterで4体それぞれ役割を割り当て、`result.participants`が4体全て・各Adapterが期待どおりのフェーズ列で呼ばれることを決定的に検証。
+
+**実CLI live smoke test**:
+- `tests/contract/test_adapters.py`へ`test_grok_adapter_live_probe`/`test_grok_adapter_live_execute`/`test_agy_adapter_live_probe`/`test_agy_adapter_live_execute`（`@pytest.mark.live`、既定`-m "not live"`でdeselect）を追加。
+- 追加作業中に、これらのひな形にしたClaude/Codex用の既存liveテストにもあった実装バグを発見: `status = adapter.probe()`の後`assert status in (...)`/`if status != "OK":`は`status`が`ProbeResult`オブジェクトであり文字列と比較しているため、`assert`は実質検証されず、`if`は常に真でexecute本体へ到達しないdead codeだった。4 Adapter・8テスト全てで`status.status`を参照するよう修正。
+- 修正後、本機にインストール済みのClaude Code・Codex CLI・Grok・agyの4 CLI全てで`probe()`が`OK`、`respond`フェーズの`execute()`が実際に成功することを2026-07-18にライブ確認した（`pytest -m live`: 8 passed, 2 skipped — 別ファイル`tests/e2e/test_real_adapter_e2e.py`の`ORACLE_COUNCIL_LIVE`環境変数ゲート付きテスト2件、Claude/Codex専用で今回の変更対象外）。
+
+**検証**: `py -m pytest`は既定スイートで**373 passed, 10 deselected**（Task D着手前の370 passed, 6 deselectedから、4AI統合テスト+1、grok/agy live probe/execute各2×2=4個の新規live testで純増）。`pytest -m live`は**8 passed, 2 skipped**。`git diff --check`成功。APIキー・認証情報の読み出し・記録は一切行っていない（環境変数はサブプロセスへそのまま引き継ぐのみで、内容を読んだりログ・テスト・commitへ書き出したりしていない）。
+
+**文書更新**: `QandA.md`（Y-1/Y-2/Y-3を新規追加）、`SPEC.md`（§3 MVP目標、§8.1設定例、§8.5、§20.2をClaude/Codex/Grok/agyの4種類へ更新）、`CLASS.md`（`GrokCLIAdapter`/`AgyCLIAdapter`をクラス図へ追加）、`TESTCASE.md`（§2.4見出しを4 Adapter対応へ、CT-AA-LIVE-02を新規追加）、`FIX_PLAN.md`（§0-18で本作業を記録）、本ファイル。
+
+**残存課題（4AIによる実会議までに残るギャップ）**:
+- 本作業のFake統合テストとlive smoke testは「各Adapterが単独で正しく動く」ことと「4体が選出・実行される」ことまでを検証したが、4体同時参加でのRun全体（clarify→respond×2→claim_extract→verify→criticize→synthesize→audit、Evidence収集含む）を実CLI 4種同時実行で完走させる実機E2Eはまだ実施していない（コスト・実行時間の都合上、今回はrespondフェーズ単発の最小smoke testに留めた）。
+- J-4（対話モードでの2ラウンド質問整理）は引き続き未着手。
+- critical ambiguity検出パターンはS-4時点の4種類の保守的な実装のままで、grok/agy追加による変更はない。
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
+
+**次の推奨作業**: 実CLI 4種同時参加でのRun全体E2E（コスト許容範囲内で計画すること）、またはJ-4（Clarifier対話モードの2ラウンド実装）。
