@@ -1802,4 +1802,24 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-18 — Y-1〜Y-3追加。Grok・agy CLIの実起動仕様をライブ確認し、GrokAdapter/AgyAdapterを実装。4AI評議会のrole_priority設計とFake統合テストを追加。既存Claude/Codex liveテストにも波及していた`ProbeResult`比較バグを発見・修正し、Claude/Codex/Grok/agyの4 CLI全てでprobe/executeの実ライブ成功を確認。既回答80問、未回答23問。*
+### Y-4. 「神託」としての最終回答構造（証拠評価とは独立した利用者向け結論）
+
+**重要度**: Critical
+**箇所**: SPEC §2.2.1（新設） / `adapters/base.py` / `orchestrator.py` / `models.py`
+**背景**: Y-1〜Y-3で4AI評議会が実装された後、実際にClaude/Codex/Grok/agyの4 CLIで「神は存在しますか？」を実行したところ、`result_classification: conflicting`のまま「信仰では存在する、無神論では存在しない、不可知論では知り得ない」と複数の立場を並べるだけで利用者へ判断を委ねる最終回答が生成された。これはOracle Councilの目的（§1「根拠のある回答を返す」）に反するとユーザーが判断した。
+
+**回答**: 確定。「一つの結論を返すこと」と「証拠状態を`conflicting`／`withheld`として正直に記録すること」は矛盾しないという整理のもと、SPEC §2.2の証拠評価（`verified`/`partially_verified`/`unverified`/`conflicting`/`withheld`）はそのまま維持し、synthesize・auditフェーズが生成・監査する利用者向け最終回答の**構造**だけを変更した。最終回答は「1. 神託（一文で一つの結論） 2. 理由 3. 採用しなかった見解 4. 不確実性」の4要素とし、「判定不能」「現時点の証拠では確認できない」も正式な結論として認める（詳細はSPEC §2.2.1）。実装はプロンプト指示（`_ORACLE_VERDICT_GUIDANCE_SYNTHESIZE`/`_AUDIT`）のみで、`AgentResult`のスキーマは変更していない。
+
+**実行して判明した2件の副次的不具合と修正**:
+1. **無関係なmeta-claimによる早期withheld**: claim_extract（Grok）が「AIは断定を避ける」という自己言及的claimを抽出し、verify（Codex）がそれを`contradicted`と判定したため、質問内容と無関係にStage 1で早期withheldとなった。claim_extractへ、AI自身の回答姿勢・生成過程についての記述を除外し（質問自体がAIの性質を問う場合を除く）、本質的でないclaimは`minor`重要度とする指示を追加した。
+2. **audit指摘がre-synthesizeへ伝わっていなかった**: 修正サイクルの再synthesize呼び出しが最初のsynthesizeと全く同じcontextしか受け取っておらず、直前auditの指摘内容を一切知らないまま再生成していたことがコード調査で判明した（実機で2回連続`changes_required`となり、修正1回の予算を使い切ってwithheldになった直接の原因と推定）。`_PHASE_CONTEXT_KEYS["synthesize"]`へ`audit_issues`を追加し、修正機会へ具体的指摘を渡すようにした。
+
+**追加**: `--store-content`指定時、synthesizeの草稿とauditの判定・指摘を、withheldになった場合も含めてイベントログへ保存するようにした（`"disclosure": "internal_audit_trail_only"`で公開回答と明確に区別）。`RunMetadataRecord`へ`audit_status`を追加し、withheldの理由を永続metadataだけで再構成できるようにした。
+
+**テスト**: `test_classification.py`（minor+contradicted単独ではwithholdしない）、`test_claude_envelope.py`（claim_extract除外指示、audit「判定不能」受理）、`test_orchestrator.py`（audit指摘のre-synthesize伝播、store_content時のwithheld草稿保存、store_content無指定時は保存されないこと）を追加。既存の証拠評価・終了コードは無改修。
+
+**修正回数の上限**: ユーザーの明示指示により、synthesize→auditの修正許容回数（1回）は変更していない。1回の修正で収束できるよう、audit指摘の伝播を優先して修正した。
+
+---
+
+*最終更新: 2026-07-18 — Y-1〜Y-4追加。Grok・agy CLIの実起動仕様をライブ確認し、GrokAdapter/AgyAdapterを実装。4AI評議会のrole_priority設計とFake統合テストを追加。既存Claude/Codex liveテストにも波及していた`ProbeResult`比較バグを発見・修正し、Claude/Codex/Grok/agyの4 CLI全てでprobe/executeの実ライブ成功を確認。実機で「神は存在しますか？」を検証し、証拠評価とは独立した利用者向け「神託」構造（SPEC §2.2.1）を追加、claim_extractの関連性スコープとaudit指摘の伝播不具合を修正。既回答81問、未回答23問。*

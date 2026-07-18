@@ -432,6 +432,11 @@ class RunMetadataRecord:
     # at run termination. Child process codes are never aggregated here.
     oracle_exit_code: int
     participants: tuple[str, ...] = ()
+    # W-11/W-12: the real, final audit status (e.g. "changes_required" for a
+    # withheld run), not the "approved" placeholder cli.py used to hardcode -
+    # this makes "why was this withheld" reconstructible from the persisted
+    # metadata snapshot alone.
+    audit_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -459,6 +464,14 @@ class RunResult:
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
     participants: tuple[str, ...] = ()
+    # W-11: the CLI's --json "question"/"answer" blocks previously hardcoded
+    # the SPEC Sec14 illustrative example text ("元の質問" etc.) instead of the
+    # real values; these fields carry the real per-Run data through to cli.py.
+    original_question: str | None = None
+    refined_question: str | None = None
+    clarification_status: str = "ready"
+    clarification_assumptions: tuple[str, ...] = ()
+    audit_status: str | None = None
 
     @property
     def exit_code(self) -> int:

@@ -125,6 +125,12 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 |---|---|---|
 | Y-1/Y-2/Y-3 | `GrokAdapter`（Claude型: `--output-format json`封筒`envelope["text"]`展開）と`AgyAdapter`（Codex型: 封筒なし直接パース）を追加し、既存`AgentAdapter` Contract・`classify_cli_error`・キャンセル対応subprocess差し替えパターンをClaude/Codexと共通化。`config/agents.yaml`をclaude-code/codex-cli/grok-cli/agy-cliの4参加者へ拡張し、role_priorityを4体がそれぞれ異なるフェーズで最高優先度を持つよう設計（既存のS-9 `ranked[:4]`参加者上限とちょうど一致）。`cli.py`のAgent構築ループへgrok/agy分岐を追加。Fake/Scripted統合テストで4体全てが実際に選出・実行されることを確認。実CLI（本機にインストール済みのgrok・agy）へのライブprobe/execute smoke testも追加し、既存Claude/Codex用liveテストに潜んでいた`ProbeResult`比較バグ（`status != "OK"`が常に真となりexecute本体へ到達しないdead code）も同時に発見・修正し、Claude/Codex/Grok/agyの4 CLI全てで実際にprobe/executeが成功することをライブ確認した。 | QandA Y-1/Y-2/Y-3, SPEC §3/§8.1/§8.5/§20.2, CLASS.md, TESTCASE.md §2.4・CT-AA-LIVE-02, `src/oracle_council/adapters/grok.py`（新規）・`adapters/agy.py`（新規）・`adapters/__init__.py`・`cli.py`, `config/agents.yaml`, `tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（新規）・`tests/contract/test_adapters.py` |
 
+## 0-19. 「神託」構造の追加とE2E実行で判明した2件のOracle Council側不具合を修正（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Y-4 | Claude/Codex/Grok/agyの4実CLIで「神は存在しますか？」を検証し、証拠状態(`conflicting`等)とは独立した利用者向け最終回答の構造(神託→理由→採用しなかった見解→不確実性の4要素)をsynthesize/auditのプロンプト指示のみで追加(SPEC §2.2.1、モデル/スキーマ変更なし)。実行時に判明した2件の不具合、(1) AI自身の回答姿勢についての無関係なmeta-claimがStage 1で早期withholdを引き起こす、(2) 修正サイクルのre-synthesizeがauditの指摘内容を一切受け取っていない、を修正。`--store-content`時にwithheldになった草稿・audit指摘も監査証跡として保存するようにした。 | QandA Y-4, SPEC §2.2.1, `src/oracle_council/adapters/base.py`・`orchestrator.py`・`models.py`, `tests/unit/test_classification.py`・`test_claude_envelope.py`・`test_orchestrator.py` |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |

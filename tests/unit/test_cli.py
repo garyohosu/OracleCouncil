@@ -110,6 +110,33 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert evidence_phase["outcome"] == "evidence_found"
         assert evidence_phase["metrics"]["evidence_count"] == 1
 
+        # W-11 regression: question.original/refined must be the real question
+        # text, not the SPEC Sec14 illustrative example placeholder
+        # ("元の質問"/"整理後の質問") that output_run_result() used to hardcode
+        # verbatim, and audit_status must reflect the real audit outcome.
+        assert data["question"]["original"] == "What is the height of Fuji?"
+        assert data["question"]["refined"] == "What is the height of Fuji?"
+        assert data["question"]["clarification_status"] == "ready_with_assumptions"
+        assert isinstance(data["question"]["assumptions"], list) and len(data["question"]["assumptions"]) > 0
+        assert data["answer"]["audit_status"] == "approved"
+
+
+def test_cli_ask_json_reports_real_audit_status_when_withheld(temp_config, capsys, tmp_path, monkeypatch):
+    """W-11 regression: audit_status was hardcoded to "approved" even when the
+    Run was actually withheld after an unapproved re-audit - this reproduces
+    that exact shape (changes_required both times) and asserts the JSON now
+    reports the true final status instead of the old constant."""
+    monkeypatch.setenv("ORACLE_MOCK_AUDIT_STATUS", "changes_required")
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the height of Fuji?", "--json"])
+        assert exit_code == 4
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["answer"]["result_classification"] == "withheld"
+        assert data["answer"]["text"] is None
+        assert data["answer"]["audit_status"] == "changes_required"
+        assert data["question"]["original"] == "What is the height of Fuji?"
+
 
 def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, capsys, monkeypatch):
     """Deterministic counterpart of the live insufficient-agents E2E: one of

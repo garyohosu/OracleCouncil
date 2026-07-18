@@ -310,17 +310,17 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
             "exit_code": result.oracle_exit_code,
             "mode": result.mode,
             "question": {
-                "original": "元の質問",
-                "refined": "整理後の質問",
-                "clarification_status": "ready",
-                "assumptions": [],
+                "original": result.original_question,
+                "refined": result.refined_question,
+                "clarification_status": result.clarification_status,
+                "assumptions": list(result.clarification_assumptions),
             },
             "participants": list(result.participants),
             "answer": {
                 "text": result.final_answer,
                 "result_classification": result.result_classification.value,
                 "consensus_status": "not_applicable",
-                "audit_status": "approved",
+                "audit_status": result.audit_status,
                 "external_verification": result.external_verification,
             },
             "claims": [
@@ -701,6 +701,13 @@ def cmd_history_purge(args) -> int:
 
 
 def main(args: list[str] | None = None) -> int:
+    # W-11: on Windows, stdout/stderr default to the system codepage (e.g.
+    # cp932) instead of UTF-8 once redirected to a file/pipe, silently
+    # corrupting every non-ASCII character in --json output. reconfigure()
+    # is a no-op where streams are already UTF-8 (most non-Windows setups).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     if args is None:
         args = sys.argv[1:]
 

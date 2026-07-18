@@ -271,6 +271,11 @@ class Orchestrator:
                 call_count=state.calls,
                 oracle_exit_code=EXIT_FAILED,
                 evidence=_evidence_snapshot(state),
+                original_question=state.question,
+                refined_question=state.refined_question,
+                clarification_status=state.clarification_status,
+                clarification_assumptions=tuple(state.clarification_assumptions),
+                audit_status=state.audit_status,
             )
         finally:
             self._budget.assert_settled()
@@ -289,6 +294,9 @@ class Orchestrator:
         precheck = engine.inspect(state.question)
         if not precheck.agent_required:
             state.clarification_assumptions = precheck.assumptions
+            state.clarification_status = precheck.status
+            if precheck.result is not None:
+                state.refined_question = precheck.result.refined_question
             return None
 
         assignment = plan.assignment_for("clarify", 0)
@@ -334,6 +342,8 @@ class Orchestrator:
             )
 
         state.clarification_assumptions = evaluated.assumptions
+        state.clarification_status = evaluated.status
+        state.refined_question = evaluated.refined_question
         record = state.phase(run_id, "clarify")
         record.status = PhaseStatus.SUCCEEDED
         record.success_count = 1
@@ -502,6 +512,7 @@ class Orchestrator:
                     "process_exit_code": getattr(result, "process_exit_code", None),
                     **({"retry_of": retry_of} if retry_of else {}),
                     **({"substitute_for": substitute_for} if substitute_for else {}),
+                    **self._audit_trail_content(phase, result.output),
                 },
             )
             if phase == "respond":
@@ -511,6 +522,29 @@ class Orchestrator:
             elif phase == "audit":
                 state.current_auditor_agent_id = agent.agent_id
             return None
+
+    def _audit_trail_content(self, phase: str, output: dict) -> dict:
+        """W-12: when --store-content is set, persist synthesize drafts and
+        audit results/issues to the event log even when the run ends up
+        withheld, so "audit rejected it but nobody can see what was
+        rejected" is not a silent gap. Every key here is explicitly tagged
+        "disclosure": "internal_audit_trail_only" so it is never mistaken
+        for the published user-facing final answer, which stays gated by
+        the normal publish/withhold decision and is never exposed here."""
+        if not self._store_content:
+            return {}
+        if phase == "synthesize":
+            return {
+                "draft_answer": output.get("answer"),
+                "disclosure": "internal_audit_trail_only",
+            }
+        if phase == "audit":
+            return {
+                "audit_result_status": output.get("status"),
+                "audit_issues": output.get("issues", []),
+                "disclosure": "internal_audit_trail_only",
+            }
+        return {}
 
     def _select_initial_agent(self, phase, slot_index, assignment, state, agents_by_id):
         candidates = [
@@ -584,6 +618,10 @@ class Orchestrator:
                 "evidence": state.evidence,
                 "critique": state.critique,
                 "final_answer": state.final_answer,
+                # W-12: empty on the first synthesize call, populated with
+                # the prior audit's issues on a revision - see
+                # adapters/base.py's _PHASE_CONTEXT_KEYS["synthesize"].
+                "audit_issues": state.last_audit_issues,
             }
             self._registry.register(run_id, execution_id, agent.adapter)
             try:
@@ -745,6 +783,7 @@ class Orchestrator:
             content_saved=self._store_content,
             oracle_exit_code=oracle_exit_code,
             participants=state.plan.participants,
+            audit_status=state.audit_status,
         )
         result = RunResult(
             run_id=run_id,
@@ -761,6 +800,11 @@ class Orchestrator:
             metadata=metadata,
             evidence=_evidence_snapshot(state),
             participants=state.plan.participants,
+            original_question=state.question,
+            refined_question=state.refined_question,
+            clarification_status=state.clarification_status,
+            clarification_assumptions=tuple(state.clarification_assumptions),
+            audit_status=state.audit_status,
         )
         self._append(
             run_id,
@@ -972,6 +1016,8 @@ class _RunState:
         self.phases: dict[str, PhaseRecord] = {}
         self.executions: list[AgentExecutionRecord] = []
         self.clarification_assumptions: list[str] = []
+        self.refined_question = question
+        self.clarification_status = "ready"
 
     def phase(self, run_id: str, name: str) -> PhaseRecord:
         if name not in self.phases:

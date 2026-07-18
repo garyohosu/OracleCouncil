@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import itertools
+import json
 
 import pytest
 
@@ -569,6 +570,145 @@ def test_reaudit_rejection_withholds_instead_of_failing():
     assert result.exit_code == EXIT_WITHHELD
     by_id = {i.issue_id: i.status.value for i in result.audit_issues}
     assert by_id == {"i1": "open", "i2": "resolved"}  # only the re-reported issue stays open
+
+
+def test_revision_synthesize_receives_prior_audit_issues():
+    """W-12: before this fix, a revised synthesize call received the exact
+    same context as the first attempt - no information about what the
+    audit rejected or why - so revision was effectively a blind re-roll.
+    This is the confirmed root cause of a real 4-agent run needing two
+    rejected drafts on "Does God exist?" before giving up and withholding."""
+    orchestrator, adapter_a, adapter_b = build(
+        audits=[
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+            {"status": "approved"},
+        ],
+    )
+
+    orchestrator.run_verify("q")
+
+    synth_requests = [r for r in adapter_a.requests if r.phase == "synthesize"]
+    assert len(synth_requests) == 2
+    assert synth_requests[0].payload["audit_issues"] == []
+    assert synth_requests[1].payload["audit_issues"][0]["issue_id"] == "i1"
+
+
+def test_withheld_run_stores_synthesize_drafts_and_audit_issues_when_store_content():
+    """W-12: --store-content must persist synthesize drafts and audit
+    results/issues even when the run ends up withheld, so "audit rejected
+    it but nobody can see what was rejected" is not a silent gap - found via
+    a real 4-agent run where a rejected draft was completely unrecoverable
+    after the fact."""
+    storage = InMemoryStorageBackend()
+    adapter_a = ScriptedAgentAdapter(
+        [
+            {"answer": "A"},
+            claims_output("unverified", "major"),
+            claims_output("verified", "major"),
+            {"critique": "ok"},
+            {"answer": "draft-1"},
+            {"answer": "draft-2"},
+        ]
+    )
+    adapter_b = ScriptedAgentAdapter(
+        [
+            {"answer": "B"},
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+        ]
+    )
+    orchestrator = Orchestrator(
+        [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+        store_content=True,
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.final_answer is None  # rejected drafts never become the public answer
+
+    events = storage.load(result.run_id).events
+    synth_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "synthesize"
+    ]
+    audit_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "audit"
+    ]
+    assert [e.payload["draft_answer"] for e in synth_events] == ["draft-1", "draft-2"]
+    assert all(e.payload["disclosure"] == "internal_audit_trail_only" for e in synth_events)
+    assert [e.payload["audit_result_status"] for e in audit_events] == [
+        "changes_required", "changes_required",
+    ]
+    assert audit_events[0].payload["audit_issues"][0]["issue_id"] == "i1"
+    assert all(e.payload["disclosure"] == "internal_audit_trail_only" for e in audit_events)
+
+    run_completed = next(e for e in events if e.event_type == "run_completed")
+    assert run_completed.payload["metadata"]["audit_status"] == "changes_required"
+    # the withheld reason is reconstructible from the persisted metadata
+    # alone, and the rejected draft text never leaks into it
+    assert "draft-1" not in json.dumps(run_completed.payload)
+    assert "draft-2" not in json.dumps(run_completed.payload)
+
+
+def test_withheld_run_without_store_content_does_not_persist_drafts():
+    storage = InMemoryStorageBackend()
+    orchestrator, _, _ = build(
+        audits=[
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}]},
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}]},
+        ],
+        storage=storage,
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.result_classification is ResultClassification.WITHHELD
+    events = storage.load(result.run_id).events
+    synth_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "synthesize"
+    ]
+    audit_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "audit"
+    ]
+    assert all("draft_answer" not in e.payload for e in synth_events)
+    assert all("audit_issues" not in e.payload for e in audit_events)
 
 
 def test_initial_blocked_withholds_without_revision():

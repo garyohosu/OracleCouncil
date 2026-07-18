@@ -641,3 +641,31 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 - `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
 
 **次の推奨作業**: 実CLI 4種同時参加でのRun全体E2E（コスト許容範囲内で計画すること）、またはJ-4（Clarifier対話モードの2ラウンド実装）。
+
+## 0-22. 「神託」構造の追加とE2Eで判明した2件のOracle Council側不具合を修正（2026-07-18）
+
+**経緯**: 0-21でGrok/agy Adapterを追加した後、ユーザーからOracleCouncilの最終完成確認として、Claude/Codex/Grok/agyの4実CLIによる神託会議を「神は存在しますか？」で実行するよう指示された。
+
+1回目の実行（修正前）は`result_classification: conflicting`のまま公開されたが、内容は「信仰では存在する、無神論では存在しない、不可知論では知り得ない」と複数の立場を並べるだけで、利用者へ判断を委ねる回答だった。ユーザーはこれをOracle Councilの目的（「根拠のある回答を返す」）に反すると判断し、証拠評価（SPEC §2.2: verified/partially_verified/unverified/conflicting/withheld）は維持したまま、synthesize/auditの利用者向け最終回答の**構造**だけを変更する正式決定を下した（SPEC §2.2.1として新設）。
+
+**実装**: `adapters/base.py`の`build_phase_input()`へ、synthesize向け`_ORACLE_VERDICT_GUIDANCE_SYNTHESIZE`（神託→理由→採用しなかった見解→不確実性の4要素、「判定不能」も正式な結論として明記）とaudit向け`_ORACLE_VERDICT_GUIDANCE_AUDIT`（構造の有無だけを確認し、特定の結論を強制しない）を追加。`AgentResult`のスキーマは変更していない。
+
+**再実行で判明した2件の不具合**:
+
+1. **無関係なmeta-claimによる早期withheld（2回目の実行）**: claim_extract（Grok担当）が「AIは断定を避ける」という、AI自身の回答姿勢についての自己言及claimを抽出し、verify（Codex担当）がそれを`contradicted`と判定した。これは質問「神は存在しますか？」の内容と無関係だが、SPEC §2.2の既存規則（major+contradictedはStage 1でwithhold）どおりの正しい動作として、criticize/synthesize/audit到達前に早期withheldとなった。修正: `_CLAIM_EXTRACT_RELEVANCE_GUIDANCE`を追加し、AI自身の回答姿勢・文章構成・生成過程についての記述をclaim対象から除外（ただし質問自体がAIの性質を問う場合は除外しない）、本質的でないclaimは`minor`重要度とするよう指示。証拠評価規則自体（is_withheld等）は無改修。
+
+2. **audit指摘がre-synthesizeへ伝わっていなかった（3回目の実行）**: 全フェーズが実行され、synthesize→audit(changes_required)→revision→re-synthesize→re-audit(changes_required)まで進んだが、2回とも`changes_required`となり、SPEC上許容される修正1回分を使い切ってwithheldとなった。コード調査の結果、`_PHASE_CONTEXT_KEYS["synthesize"]`が`("question", "responses", "claims", "evidence", "critique")`のみで、直前auditの`issues`を一切含んでいないことが判明した。つまりre-synthesize呼び出しは最初のsynthesizeと全く同じcontextしか受け取っておらず、何を修正すべきか一切知らないまま再生成していた。これが2回連続`changes_required`になった直接の原因と推定される。修正: `orchestrator.py`の`_attempt()`のpayloadへ`"audit_issues": state.last_audit_issues`を追加し、`_PHASE_CONTEXT_KEYS["synthesize"]`へ`"audit_issues"`を追加。空配列なら初回呼び出し、非空なら修正呼び出しと判別でき、非空時はプロンプトへ「これは修正であり、列挙された指摘へ具体的に対応すること」という一文も追加した。修正回数の上限（1回）はユーザー指示により変更していない。
+
+**withheld草稿の監査証跡保存**: `--store-content`指定時、synthesizeの草稿とauditの判定・指摘が、withheldになった場合も含めて一切永続化されておらず、「監査で落ちたが何が落ちたか運営側にも分からない」状態だったため、`agent_execution_succeeded`イベントへ`draft_answer`（synthesize）・`audit_result_status`/`audit_issues`（audit）と`"disclosure": "internal_audit_trail_only"`を`--store-content`時のみ追加した。`RunMetadataRecord`へ`audit_status`も追加し、`run_completed`イベントの永続metadataだけで「なぜwithheldになったか」を再構成できるようにした。利用者向け公開`final_answer`（`RunResult.final_answer`）とは別経路であり、混同しない。
+
+**テスト**: `test_classification.py`（minor+contradicted単独ではwithholdしないことの直接テスト）、`test_claude_envelope.py`（claim_extract除外指示・例外・minor指示の内容、audit「判定不能」受理）、`test_orchestrator.py`（audit指摘がre-synthesizeへ伝播すること、store_content時にwithheld草稿・audit指摘が保存されること、store_content無指定時は保存されないこと）を追加。`py -m pytest`は**384 passed, 10 deselected**（既存378件は無傷、純増6件）。`git diff --check`成功。実Claude/Codex/Grok/agy呼び出しは、S-4以降ずっと実施している一次調査（`grok --version`等）に加え、今回は本文全体のE2E runを複数回実行し、認証情報の読み出し・記録は一切行っていない。
+
+**文書更新**: `SPEC.md`（§2.2.1新設・追記）、`QandA.md`（Y-4追加）、`FIX_PLAN.md`（§0-19）、本ファイル。
+
+**残存課題**:
+- 今回の4要素構造要件は、synthesize/auditへのプロンプト指示のみで実現しており、ローカルでの決定的な構造検証（正規表現等によるチェック）は追加していない（ユーザーが「必要なら」とした任意選択肢であり、audit指摘の伝播修正で根本原因に対処できると判断したため）。
+- claim_extractの除外ガイダンスは「AIの回答姿勢について」という一般的なパターンを対象としており、他の無関係meta-claimパターンを完全に網羅するものではない。
+- J-4（対話モードでの2ラウンド質問整理）は引き続き未着手。
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
+
+**次の推奨作業**: 修正後の最終E2E再実行結果（次のセクションまたはinstructions/result.mdを参照）。J-4、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目。
