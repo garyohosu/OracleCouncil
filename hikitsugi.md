@@ -669,3 +669,15 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 - `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
 
 **次の推奨作業**: 修正後の最終E2E再実行結果（次のセクションまたはinstructions/result.mdを参照）。J-4、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目。
+
+## 4-24. Z-1: Evidence Provider透明化・claim_nature分類・--traceデバッグ機能（2026-07-20）
+
+v0.4完成（0b81ee9）後、ユーザーが実機ライブで「富士山の標高」（withheld/exit4）と「神は存在しますか？」（2回目の実行でwithheld/exit4、監査未承認2回）を実行し、不具合調査と修正を依頼した。詳細はQandA Z-1、FIX_PLAN §0-20を参照。要点:
+
+- **根本原因**: (A) 既定`FakeEvidenceProvider`は実検索を一切行わず固定1件（実質空）のEvidenceしか返さないため、事実確認が必要なcritical claimがほぼ確実に`unverified`になる（X-5で意図された既定挙動そのものだが、利用者への可視化が無かった）。(B) SPEC §10.5は`not_applicable`（意見・提案・創作など事実検証対象外）を既に定義していたが、claim_extract/verifyのプロンプトがこの区別をAgentへ伝えておらず、価値判断的なclaimが`unverified`のまま扱われ、audit不承認の直接原因になっていた。
+- **修正**: `claim_nature`（factual/reasoning/opinion/normative/hedge/structural、既定factual・後方互換）をClaimへ追加し、非事実的claimはverifyの指示 + Orchestratorの決定的正規化（`unverified`→`not_applicable`のみ、`contradicted`/`conflicting`は対象外）で`not_applicable`化。evidence_collectの検索対象からも除外。`evidence_collect.metrics`へ`provider_type`/`real_search_performed`を追加し、Fake成功と実検索0件を区別可能に。`--adapter-mode real`かつEvidence Provider省略時のstderr警告を追加（`--json`時は非表示）。`--trace`/`--trace-output`（新規`trace.py`、best-effort redaction）で明示指定時だけ各Phase・Agentの生出力を確認可能にした。
+- **意図的に変更しなかったもの**: §11.1監査ゲート（approvedのみ公開という二値判定）、既定Evidence Providerそのもの（後方互換）、critical/major factualクレームの安全側withheld判定、修正サイクル上限（1回）。
+- **テスト**: 新規`test_trace.py`、既存`test_classification.py`/`test_orchestrator.py`/`test_evidence.py`/`test_adapter_schema.py`/`test_cli.py`へ追加。`py -m pytest`は**419 passed, 10 deselected**（既存384件は無傷、純増35件）。
+- **副次的発見**: `adapters/base.py`の`_validate_claims()`/`_CLAIM_ROLE_VALUES`等はdead code（実際のvalidationは`phase_schema.py`のJSON schema経由）。今回`claim_nature`をこの慣習に合わせて両方に追加したが、実効性があるのは`schemas/claim_extract.json`側のみ。将来のリファクタリング候補として記録するに留め、今回は無関係な削除を行っていない。
+- **文書更新**: `SPEC.md`（§10.4.2新設、§10.5・§15.7・§13.1.1加筆）、`README.md`、`QandA.md`（Z-1）、`FIX_PLAN.md`（§0-20）、本ファイル。
+- **未実施**: 実機ライブ再実行（ユーザー承認後に実施予定）、コミット・push（ユーザー承認待ち）。

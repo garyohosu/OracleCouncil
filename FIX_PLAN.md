@@ -131,6 +131,12 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 |---|---|---|
 | Y-4 | Claude/Codex/Grok/agyの4実CLIで「神は存在しますか？」を検証し、証拠状態(`conflicting`等)とは独立した利用者向け最終回答の構造(神託→理由→採用しなかった見解→不確実性の4要素)をsynthesize/auditのプロンプト指示のみで追加(SPEC §2.2.1、モデル/スキーマ変更なし)。実行時に判明した2件の不具合、(1) AI自身の回答姿勢についての無関係なmeta-claimがStage 1で早期withholdを引き起こす、(2) 修正サイクルのre-synthesizeがauditの指摘内容を一切受け取っていない、を修正。`--store-content`時にwithheldになった草稿・audit指摘も監査証跡として保存するようにした。 | QandA Y-4, SPEC §2.2.1, `src/oracle_council/adapters/base.py`・`orchestrator.py`・`models.py`, `tests/unit/test_classification.py`・`test_claude_envelope.py`・`test_orchestrator.py` |
 
+## 0-20. Evidence Provider透明化・claim_nature分類・--traceデバッグ機能（2026-07-20、実機E2Eで発見）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Z-1 | 実機ライブ実行2件（「富士山の標高」「神は存在しますか？」）で判明した2件の不具合を修正。(1) `Claim.claim_nature`（factual/reasoning/opinion/normative/hedge/structural、既定factual）を追加し、claim_extractが提案、verifyが`opinion`/`normative`/`hedge`/`structural`を`not_applicable`とするよう指示、Agent非準拠時はOrchestratorが決定的に正規化(`contradicted`/`conflicting`は対象外)。これにより非事実的claimだけを理由にした不必要な`withheld`を防止(critical/major factualの安全側判定は不変)。evidence_collectの検索対象選定からも非事実claimを除外。(2) `evidence_collect.Phase.metrics`へ`provider_type`/`real_search_performed`を追加し、Fake Evidence成功と実検索0件を区別可能化。`--adapter-mode real`かつEvidence Provider省略時にstderr警告を追加(既定挙動自体は後方互換のため不変)。(3) `--trace`/`--trace-output`(新規`trace.py`)を追加し、明示指定時だけ各Phase・Agentの生出力(best-effort redaction適用)を確認可能に。Storage Contractとは完全独立。監査ゲート(§11.1、approvedのみ公開)自体の二値判定は意図的設計として維持。 | QandA Z-1, SPEC §10.4.2・§10.5・§15.7・§13.1.1, `src/oracle_council/models.py`・`orchestrator.py`・`evidence.py`・`adapters/base.py`・`cli.py`・`trace.py`(新規)・`schemas/claim_extract.json`, `tests/unit/test_classification.py`・`test_orchestrator.py`・`test_evidence.py`・`test_adapter_schema.py`・`test_cli.py`・`test_trace.py`(新規) |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |

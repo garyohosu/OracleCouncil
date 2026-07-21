@@ -1822,4 +1822,20 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-18 — Y-1〜Y-4追加。Grok・agy CLIの実起動仕様をライブ確認し、GrokAdapter/AgyAdapterを実装。4AI評議会のrole_priority設計とFake統合テストを追加。既存Claude/Codex liveテストにも波及していた`ProbeResult`比較バグを発見・修正し、Claude/Codex/Grok/agyの4 CLI全てでprobe/executeの実ライブ成功を確認。実機で「神は存在しますか？」を検証し、証拠評価とは独立した利用者向け「神託」構造（SPEC §2.2.1）を追加、claim_extractの関連性スコープとaudit指摘の伝播不具合を修正。既回答81問、未回答23問。*
+### Z-1. 事実確認質問のwithheld偏りと、非事実Claimによる不必要なwithheld（実機E2Eで発見、X-9で修正）
+
+**重要度**: Critical
+**箇所**: SPEC §10.4.2（新設） / §10.5 / §15.7 / §13.1.1（新設） / `models.py` / `orchestrator.py` / `evidence.py` / `adapters/base.py` / `trace.py`（新設）
+**背景**: 2026-07-20、v0.4試作版（Y-4完成後）でユーザーが実機ライブ実行を2件行った。(A)「富士山の標高は何メートルですか。」が`withheld`（exit 4）になった。既定の`FakeEvidenceProvider`は固定1件（実質空）のEvidenceしか返さず実Web検索を行わないため、critical claim「富士山の標高は3776メートルである」が根拠不足で`unverified`となった。(B)「神は存在しますか？」で、minor重要度の非事実的claim（「結論を出す必要はなく個人の価値観に委ねられる」という趣旨）がverifyで`unverified`のまま残り、auditorがこれを理由に`changes_required`を2回返し、修正上限（1回）に達して最終回答が`withheld`になった。
+
+**調査結果**: (A)はSPEC・実装とも既存の意図どおりの動作だった（X-5で「既定はFake、`--evidence-provider cli-search`は明示指定時のみ」と確定済み）。問題は「Fake Providerで処理が成功したこと」と「実検索で根拠を確認できたこと」を区別する手段がなく、利用者への警告もなかった点。(B)はSPEC §10.5が`not_applicable`（意見・提案・創作など事実検証対象外）を既に定義していたにもかかわらず、claim_extract/verifyのプロンプトがこの区別をAgentへ一切伝えておらず、Orchestratorにも決定的な後ろ盾がなかった点が根本原因だった。§11.1の「再監査`changes_required`は`withheld`」という監査ゲート自体は意図的な設計（保留は失敗ではない、というプロジェクトの中核方針）であり、変更していない。
+
+**回答**: 確定。(1) `claim_nature`（factual/reasoning/opinion/normative/hedge/structural、既定`factual`）をClaimへ追加し、claim_extractがこれを提案する。verifyは`opinion`/`normative`/`hedge`/`structural`のClaimを`unverified`ではなく`not_applicable`とするよう指示され、Agentが従わない場合はOrchestratorが決定的に正規化する（`contradicted`/`conflicting`は正規化しない）。これにより、事実確認の対象外である価値判断的Claimだけを理由にした不必要な`withheld`を防いだ。critical/majorな`factual`Claimが未検証の場合に安全側へ倒す既存の判定は変更していない。(2) `evidence_collect.Phase.metrics`へ`provider_type`（fake/manual/cli_search）と`real_search_performed`（真偽値）を追加し、「Fake Providerが成功したこと」と「実検索で見つからなかったこと」を区別可能にした。既定のEvidence Provider（Fake）自体は後方互換のため変更せず、`--adapter-mode real`かつEvidence Provider省略時にstderr警告を追加した。(3) `--trace`/`--trace-output`を追加し、明示指定時だけ各Phase・各Agentの生出力（best-effort redaction適用済み）を確認できるようにした。Storage Contract（`--store-content`/`--no-store`）とは完全に独立させた。
+
+**採用しなかった案**: §11.1の監査ゲート（「approvedだけが公開可能」という二値判定）自体をseverity考慮の多段判定へ変更する案も検討したが不採用とした。理由は、この二値判定はプロジェクトの中核方針（「AIに真偽を決めさせない」「保留は失敗ではない」）そのものであり、根本原因は監査ゲートの粒度ではなく、その手前でclaimを事実/非事実に正しく分類できていなかったことにあったため。分類を直せば、非事実的claimはそもそもauditorへ「未検証の主張」として見えなくなり、監査ゲートの厳格さを一切緩めずに問題を解消できる。
+
+**テスト**: `test_classification.py`（not_applicable claimはimportanceに関わらずwithholdしない、factualなclaimの安全側判定は不変）、`test_orchestrator.py`（非factual+unverifiedの正規化、contradicted/conflictingは正規化しない、claim_nature mergeでの保持、evidence_collect metricsのprovider_type/real_search_performed）、`test_evidence.py`（非factual claimは検索対象から除外、claim_nature省略時はfactual扱い）、`test_adapter_schema.py`（claim_nature enum検証、省略時後方互換）、`test_cli.py`（provider_type配線、fake警告の表示条件、--trace/--trace-output）、`test_trace.py`（redaction、新設）を追加。既存384件は無改修で全パス。
+
+---
+
+*最終更新: 2026-07-20 — Z-1追加。実機E2Eで発見した2件の不具合（事実確認質問のFake Evidence起因withheld、非事実的claimによる不必要なaudit withheld）をclaim_nature分類とEvidence Provider透明化、--traceデバッグ機能で修正。監査ゲート自体の二値判定は意図的設計として維持。*

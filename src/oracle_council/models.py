@@ -56,6 +56,35 @@ class ClaimRole(StrEnum):
     CONTEXTUAL = "contextual"
 
 
+class ClaimNature(StrEnum):
+    """X-9: what kind of statement a claim is, independent of ClaimStatus
+    (what verification found). Existing SPEC §10.5 already defines
+    ClaimStatus.NOT_APPLICABLE as "opinion, proposal, creative content -
+    outside the scope of fact verification"; this enum is what lets that
+    definition actually be reached deterministically instead of relying on
+    an Agent to remember it. FACTUAL is the default so claims from adapters
+    that predate this field (or omit it) keep their exact prior behavior."""
+
+    FACTUAL = "factual"
+    REASONING = "reasoning"
+    OPINION = "opinion"
+    NORMATIVE = "normative"
+    HEDGE = "hedge"
+    STRUCTURAL = "structural"
+
+
+# Natures that SPEC §10.5's not_applicable definition covers: opinion,
+# proposal/advice (normative), and non-factual hedging/uncertainty framing.
+# STRUCTURAL (answer-formatting scaffolding) is also out of fact-verification
+# scope. FACTUAL and REASONING remain ordinarily verifiable.
+NON_FACTUAL_CLAIM_NATURES = (
+    ClaimNature.OPINION,
+    ClaimNature.NORMATIVE,
+    ClaimNature.HEDGE,
+    ClaimNature.STRUCTURAL,
+)
+
+
 @dataclass(frozen=True)
 class Usage:
     input_tokens: int
@@ -200,6 +229,7 @@ _SCHEMA_FIELD_NAMES = {
     "importance",
     "status",
     "claim_role",
+    "claim_nature",
     "text",
     "critique",
     "issues",
@@ -341,6 +371,7 @@ class Claim:
     status: ClaimStatus
     text: str = ""
     claim_role: ClaimRole = ClaimRole.PROPOSED_ANSWER
+    claim_nature: ClaimNature = ClaimNature.FACTUAL
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> Claim:
@@ -350,6 +381,7 @@ class Claim:
             status=ClaimStatus(value.get("status", ClaimStatus.UNVERIFIED)),
             text=value.get("text", ""),
             claim_role=ClaimRole(value.get("claim_role", ClaimRole.PROPOSED_ANSWER)),
+            claim_nature=ClaimNature(value.get("claim_nature", ClaimNature.FACTUAL)),
         )
 
 

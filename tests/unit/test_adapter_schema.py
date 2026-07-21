@@ -33,6 +33,64 @@ def test_phase_schema_reports_safe_structural_detail_without_raw_value():
     assert "SECRET-IMPORTANCE" not in error.value.public_summary
 
 
+def test_phase_schema_rejects_invalid_claim_nature():
+    with pytest.raises(AgentFailure) as error:
+        validate_phase_output(
+            "claim_extract",
+            {
+                "claims": [
+                    {
+                        "claim_id": "c1",
+                        "importance": "critical",
+                        "status": "unverified",
+                        "claim_role": "proposed_answer",
+                        "claim_nature": "not-a-real-nature",
+                        "text": "claim",
+                    }
+                ]
+            },
+        )
+    assert error.value.error_code == "INVALID_OUTPUT"
+    assert error.value.public_summary == "invalid enum for field: claim_nature"
+
+
+def test_phase_schema_accepts_claim_nature_and_accepts_it_omitted():
+    with_nature = validate_phase_output(
+        "claim_extract",
+        {
+            "claims": [
+                {
+                    "claim_id": "c1",
+                    "importance": "minor",
+                    "status": "unverified",
+                    "claim_role": "proposed_answer",
+                    "claim_nature": "normative",
+                    "text": "claim",
+                }
+            ]
+        },
+    )
+    assert with_nature["claims"][0]["claim_nature"] == "normative"
+
+    # Backward compatibility: an adapter/model that omits claim_nature
+    # entirely (pre-X-9 behavior) must still validate.
+    without_nature = validate_phase_output(
+        "claim_extract",
+        {
+            "claims": [
+                {
+                    "claim_id": "c1",
+                    "importance": "minor",
+                    "status": "unverified",
+                    "claim_role": "proposed_answer",
+                    "text": "claim",
+                }
+            ]
+        },
+    )
+    assert "claim_nature" not in without_nature["claims"][0]
+
+
 def test_public_summary_allowlist_rejects_arbitrary_strings():
     assert AgentFailure(
         "INVALID_OUTPUT",

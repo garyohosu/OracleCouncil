@@ -1,15 +1,23 @@
 import pytest
 
 from oracle_council.classification import classify, is_withheld
-from oracle_council.models import Claim, ClaimImportance, ClaimRole, ClaimStatus, ResultClassification
+from oracle_council.models import (
+    Claim,
+    ClaimImportance,
+    ClaimNature,
+    ClaimRole,
+    ClaimStatus,
+    ResultClassification,
+)
 
 
-def claim(importance, status, claim_id="c1", role="proposed_answer"):
+def claim(importance, status, claim_id="c1", role="proposed_answer", nature="factual"):
     return Claim(
         claim_id,
         ClaimImportance(importance),
         ClaimStatus(status),
         claim_role=ClaimRole(role),
+        claim_nature=ClaimNature(nature),
     )
 
 
@@ -108,3 +116,35 @@ def test_only_contradicted_user_premise_still_withholds():
 
     assert is_withheld(claims) is True
     assert classify(claims) is ResultClassification.WITHHELD
+
+
+# X-9: claim_nature interacts with Stage 1/2 purely through ClaimStatus - a
+# claim already carrying not_applicable (whether an Agent set it directly or
+# Orchestrator's normalization backstop did) is excluded from the safety
+# gate and from Stage 2's "verifiable" set exactly like any other
+# not_applicable claim. classification.py itself needed no changes for this;
+# these tests pin that down so a future refactor cannot regress it silently.
+def test_claim_default_nature_is_factual_for_backward_compatibility():
+    assert Claim("c1", ClaimImportance.CRITICAL, ClaimStatus.UNVERIFIED).claim_nature is ClaimNature.FACTUAL
+    from_old_dict = Claim.from_dict(
+        {"claim_id": "c1", "importance": "critical", "status": "unverified"}
+    )
+    assert from_old_dict.claim_nature is ClaimNature.FACTUAL
+
+
+@pytest.mark.parametrize("nature", ["opinion", "normative", "hedge", "structural"])
+def test_critical_not_applicable_claim_does_not_withhold_regardless_of_nature(nature):
+    """A critical claim that ended up not_applicable (e.g. an opinion/value
+    judgment normalized away from a spurious "unverified") must not block
+    publication - not_applicable is explicitly outside fact-verification
+    scope (SPEC §10.5), independent of importance."""
+    claims = [claim("critical", "not_applicable", nature=nature)]
+    assert is_withheld(claims) is False
+    assert classify(claims) is not ResultClassification.WITHHELD
+
+
+def test_critical_factual_unverified_claim_still_withholds():
+    """Unchanged safety behavior: a genuinely factual critical claim that
+    verify could not confirm must still block publication."""
+    claims = [claim("critical", "unverified", nature="factual")]
+    assert is_withheld(claims) is True

@@ -1981,13 +1981,47 @@ tests/
   - **目的**: Real Adapterが後続phaseへrun contextを渡すことを確認する。
   - **期待結果**: `verify`/`criticize`/`synthesize`/`audit`のpromptにはclaims、evidence、final_answer等の必要contextがJSONデータとして含まれ、誤前提訂正の指示が含まれる。
 
+## 7.8 Z-1 claim_nature・Evidence Provider透明化・traceケース
+
+- **UT-MODEL-Z1-001**
+  - **目的**: `claim_nature`の後方互換既定値を確認する。
+  - **期待結果**: `claim_nature`省略時は`factual`。旧形式の辞書からの`Claim.from_dict`も`factual`になる。
+
+- **UT-SCHEMA-Z1-001**
+  - **目的**: `claim_extract`スキーマが`claim_nature`を検証する。
+  - **期待結果**: 未知の値は`INVALID_OUTPUT`（`invalid enum for field: claim_nature`）。省略・既知値は受理する。
+
+- **UT-CLASS-Z1-001**
+  - **目的**: `not_applicable`はimportanceに関わらずStage1をwithholdしない。
+  - **期待結果**: `opinion`/`normative`/`hedge`/`structural`由来の`critical`+`not_applicable`はwithholdしない。`factual`+`unverified`の`critical`は従来どおりwithholdする。
+
+- **UT-ORCH-Z1-001**
+  - **目的**: verifyが`unverified`を返した非事実Claimを、Orchestratorが決定的に`not_applicable`へ正規化する。
+  - **期待結果**: `opinion`/`normative`/`hedge`/`structural`+`unverified`は`not_applicable`になり、Runがwithholdされず公開される。`contradicted`/`conflicting`は正規化されない（安全側判定を維持）。`claim_nature`はverify mergeを跨いで保持される。
+
+- **UT-EVID-Z1-001**
+  - **目的**: `WebEvidenceProvider.collect_with_metrics`が非事実Claimを検索対象から除外する。
+  - **期待結果**: `opinion`/`normative`/`hedge`/`structural`はcritical/majorでも検索されない。`claim_nature`省略時は`factual`として従来どおり選定される。
+
+- **UT-ORCH-Z1-002 / UT-CLI-Z1-001**
+  - **目的**: `evidence_collect.metrics`が`provider_type`（fake/manual/cli_search）と`real_search_performed`を報告する。
+  - **期待結果**: Fake/Manualは`real_search_performed=false`固定。cli_searchは検索実行時のみ`true`（0件ヒットでも`true`）。CLIはEvidence Provider選択に応じて正しいlabelをOrchestratorへ渡す。
+
+- **UT-CLI-Z1-002**
+  - **目的**: `--adapter-mode real`かつEvidence Provider省略時のstderr警告。
+  - **期待結果**: 実Adapter使用時のみ警告を表示。`--json`時、fakeアダプタのみの場合、`--evidence-provider cli-search`指定時は表示しない。
+
+- **UT-CLI-Z1-003 / UT-TRACE-Z1-001**
+  - **目的**: `--trace`/`--trace-output`が明示指定時だけPhase生出力を公開し、redactionを適用する。
+  - **期待結果**: 通常実行のstdout/stderrに生応答が出ない。`--trace`はstderrへ、`--trace-output`はファイルへ出力する。どちらも`data/`配下のStorage Contractに影響しない（`--no-store`と併用可）。API風の文字列・ホームディレクトリらしきパスは`[REDACTED]`に置換される。
+
 ## 8. ケース件数
 
 | レベル | 件数 |
 |---|---:|
-| UT | 105 |
+| UT | 113 |
 | CT | 9 |
 | IT | 29 |
 | E2E | 7 |
 | ST | 4 |
-| **合計** | **154** |
+| **合計** | **162** |

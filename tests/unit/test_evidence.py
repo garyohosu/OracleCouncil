@@ -304,6 +304,37 @@ class TestWebEvidenceProviderCollect:
         assert collected.metrics["fetch_success_count"] == collected.metrics["evidence_count"]
         assert collected.metrics["claims_with_evidence_count"] <= collected.metrics["target_claim_count"]
 
+    def test_collect_with_metrics_skips_non_factual_claims_even_when_critical(self):
+        """X-9: a critical/major claim tagged opinion/normative/hedge/
+        structural is not fact-checkable, so it must not consume search/
+        fetch budget - only the factual claim should be searched."""
+        searcher = RecordingSearchProvider({"factual query": [result("https://example.com/ok", 1)]})
+        fetcher = RecordingCollectFetcher(failures=set())
+        collected = WebEvidenceProvider(fetcher, searcher).collect_with_metrics(
+            [
+                {"claim_id": "c-fact", "importance": "critical", "text": "factual query", "claim_nature": "factual"},
+                {"claim_id": "c-opinion", "importance": "critical", "text": "opinion query", "claim_nature": "opinion"},
+                {"claim_id": "c-normative", "importance": "major", "text": "normative query", "claim_nature": "normative"},
+                {"claim_id": "c-hedge", "importance": "major", "text": "hedge query", "claim_nature": "hedge"},
+                {"claim_id": "c-structural", "importance": "critical", "text": "structural query", "claim_nature": "structural"},
+            ]
+        )
+        assert collected.metrics["target_claim_count"] == 1
+        assert collected.metrics["search_count"] == 1
+        assert [item["claim_id"] for item in collected.evidence] == ["c-fact"]
+
+    def test_collect_with_metrics_treats_missing_claim_nature_as_factual(self):
+        """Backward compatibility: claims from before claim_nature existed
+        (or from an adapter that omits it) must be selected exactly as
+        before this field was added."""
+        searcher = RecordingSearchProvider({"q": [result("https://example.com/ok", 1)]})
+        fetcher = RecordingCollectFetcher(failures=set())
+        collected = WebEvidenceProvider(fetcher, searcher).collect_with_metrics(
+            [{"claim_id": "c1", "importance": "critical", "text": "q"}]
+        )
+        assert collected.metrics["target_claim_count"] == 1
+        assert collected.metrics["search_count"] == 1
+
     def test_collect_with_metrics_search_error_carries_partial_evidence_and_metrics(self):
         searcher = SequencedSearchProvider(
             [

@@ -684,6 +684,81 @@ def test_json_phase_metrics_summary_excludes_unsafe_values(capsys):
     assert "secret prompt" not in rendered
 
 
+def test_json_phase_metrics_summary_includes_provider_type_and_real_search_performed(capsys):
+    """X-9: provider_type/real_search_performed must actually reach the CLI
+    JSON output, not just RunResult - phase_metrics_summary's allowlist
+    previously only passed through non-negative ints and dicts, silently
+    dropping these string/bool fields (found while running the live E2E for
+    this fix)."""
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        oracle_exit_code=0,
+        phases=(
+            PhaseRecord(
+                phase_id="phase-1",
+                run_id="run-test",
+                phase="evidence_collect",
+                minimum_success_count=1,
+                status=PhaseStatus.SUCCEEDED,
+                success_count=1,
+                metrics={
+                    "search_count": 0,
+                    "provider_type": "fake",
+                    "real_search_performed": False,
+                },
+            ),
+        ),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["phases"][0]["metrics"]["provider_type"] == "fake"
+    assert data["phases"][0]["metrics"]["real_search_performed"] is False
+
+
+def test_json_phase_metrics_summary_rejects_unknown_provider_type_value(capsys):
+    result = RunResult(
+        run_id="run-test",
+        status=RunStatus.COMPLETED,
+        result_classification=ResultClassification.VERIFIED,
+        final_answer="answer",
+        call_count=0,
+        oracle_exit_code=0,
+        phases=(
+            PhaseRecord(
+                phase_id="phase-1",
+                run_id="run-test",
+                phase="evidence_collect",
+                minimum_success_count=1,
+                status=PhaseStatus.SUCCEEDED,
+                success_count=1,
+                metrics={"provider_type": "attacker-supplied-string", "real_search_performed": "not-a-bool"},
+            ),
+        ),
+    )
+
+    output_run_result(result, use_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["phases"][0]["metrics"] == {}
+
+
+def test_cli_ask_real_evidence_collect_metrics_include_provider_type(temp_config, capsys, tmp_path):
+    """End-to-end through the real Orchestrator (Fake adapters), not a
+    hand-built RunResult, so a future refactor of either side alone cannot
+    silently break this again."""
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "q", "--json"])
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    evidence_phase = next(p for p in data["phases"] if p["phase"] == "evidence_collect")
+    assert evidence_phase["metrics"]["provider_type"] == "fake"
+    assert evidence_phase["metrics"]["real_search_performed"] is False
+
+
 def test_json_includes_only_safe_error_summary(capsys):
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     result = RunResult(
@@ -957,3 +1032,137 @@ def test_cli_ask_clarify_trigger_source_removed():
 
     source = inspect.getsource(cli_module)
     assert '"clarify_trigger" in args.question' not in source
+
+
+# X-9: Evidence Provider transparency, and --trace / --trace-output.
+
+
+class _StubRealAdapter:
+    """Stands in for ClaudeAdapter/CodexAdapter so a --adapter-mode real test
+    never spawns a real CLI process. Orchestrator itself is also replaced by
+    CaptureOrchestrator, so execute() is never called - only probe()."""
+
+    def __init__(self, agent_id, model=None):
+        self.agent_id = agent_id
+
+    def probe(self):
+        from oracle_council.models import ProbeResult
+        return ProbeResult("OK")
+
+
+def test_cli_ask_evidence_provider_label_fake_by_default(temp_config, capsys):
+    with capture_provider():
+        assert main(["ask", "q", "--json", "--no-store"]) == 0
+    capsys.readouterr()
+    assert CaptureOrchestrator.instances[0].kwargs["evidence_provider_label"] == "fake"
+
+
+def test_cli_ask_evidence_provider_label_manual_for_evidence_file(temp_config, capsys, tmp_path):
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps([{"evidence_id": "ev"}]), encoding="utf-8")
+    with capture_provider():
+        assert main(["ask", "q", "--json", "--no-store", "--evidence-file", str(evidence_path)]) == 0
+    capsys.readouterr()
+    assert CaptureOrchestrator.instances[0].kwargs["evidence_provider_label"] == "manual"
+
+
+def test_cli_ask_evidence_provider_label_cli_search(temp_config, capsys):
+    with patch("oracle_council.cli.SafeHttpFetcher"), patch("oracle_council.cli.CliSearchProvider"), \
+         capture_provider():
+        assert main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"]) == 0
+    capsys.readouterr()
+    assert CaptureOrchestrator.instances[0].kwargs["evidence_provider_label"] == "cli_search"
+
+
+def test_cli_ask_fake_evidence_warning_shown_for_real_adapter_default_provider(temp_config, capsys):
+    with patch("oracle_council.cli.ClaudeAdapter", _StubRealAdapter), \
+         patch("oracle_council.cli.CodexAdapter", _StubRealAdapter), \
+         capture_provider():
+        exit_code = main(["ask", "q", "--no-store", "--adapter-mode", "real"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Fake Evidence Provider" in captured.err
+    assert "cli-search" in captured.err
+
+
+def test_cli_ask_fake_evidence_warning_absent_in_json_mode(temp_config, capsys):
+    with patch("oracle_council.cli.ClaudeAdapter", _StubRealAdapter), \
+         patch("oracle_council.cli.CodexAdapter", _StubRealAdapter), \
+         capture_provider():
+        exit_code = main(["ask", "q", "--json", "--no-store", "--adapter-mode", "real"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Fake Evidence Provider" not in captured.err
+    json.loads(captured.out)  # stdout must still be pure JSON
+
+
+def test_cli_ask_fake_evidence_warning_absent_for_fake_adapters(temp_config, capsys):
+    with capture_provider():
+        exit_code = main(["ask", "q", "--no-store", "--adapter-mode", "fake"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Fake Evidence Provider" not in captured.err
+
+
+def test_cli_ask_fake_evidence_warning_absent_when_cli_search_selected(temp_config, capsys):
+    with patch("oracle_council.cli.ClaudeAdapter", _StubRealAdapter), \
+         patch("oracle_council.cli.CodexAdapter", _StubRealAdapter), \
+         patch("oracle_council.cli.SafeHttpFetcher"), patch("oracle_council.cli.CliSearchProvider"), \
+         capture_provider():
+        exit_code = main(
+            ["ask", "q", "--no-store", "--adapter-mode", "real", "--evidence-provider", "cli-search"]
+        )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Fake Evidence Provider" not in captured.err
+
+
+def test_cli_ask_no_trace_flag_never_shows_raw_agent_output(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "q"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Mock respond from" not in captured.err
+    assert "Mock respond from" not in captured.out
+
+
+def test_cli_ask_trace_prints_redacted_phase_output_to_stderr(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "q", "--trace", "--no-store"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "[Trace]" in captured.err
+    assert "Mock respond from" in captured.err
+    trace_section = captured.err[captured.err.index("[Trace]"):]
+    entries = json.loads(trace_section.split("\n", 1)[1])
+    assert entries[0]["phase"] == "clarify" or entries[0]["phase"] == "respond"
+    assert {"phase", "agent_id", "attempt", "status", "process_exit_code", "output"} <= entries[0].keys()
+
+
+def test_cli_ask_trace_output_writes_file_and_storage_stays_untouched(temp_config, capsys, tmp_path):
+    trace_path = tmp_path / "trace.json"
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "q", "--trace-output", str(trace_path), "--no-store"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # --trace was not also passed, so nothing is echoed to stderr beyond the
+    # confirmation line - no raw content leaks there either.
+    assert "Mock respond from" not in captured.err
+    entries = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert any("Mock respond from" in json.dumps(entry["output"]) for entry in entries)
+    # --no-store means no run directory is ever created under tmp_path.
+    run_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
+    assert run_dirs == []
+
+
+def test_cli_ask_trace_output_independent_of_store_content(temp_config, capsys, tmp_path):
+    """--trace-output must never be gated by --store-content: it is a
+    separate, explicit export path from the Storage Contract (SPEC §15.1),
+    not a relaxation of it."""
+    trace_path = tmp_path / "trace.json"
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "q", "--trace-output", str(trace_path), "--no-store"])
+    assert exit_code == 0
+    capsys.readouterr()
+    entries = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert len(entries) > 0

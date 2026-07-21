@@ -261,6 +261,17 @@ class WebEvidenceProvider:
                 claim
                 for claim in claims
                 if _importance_value(claim.get("importance")) in ("critical", "major")
+                # X-9: claim_nature is set by claim_extract before evidence
+                # collection runs (claim_extract precedes evidence_collect in
+                # the phase sequence). Opinions/value-judgments/hedges/
+                # structural remarks are not fact-checkable (SPEC
+                # not_applicable definition), so spending a real web search
+                # on them would burn search/fetch budget without ever being
+                # able to confirm or refute anything. Missing claim_nature
+                # (older data, or an adapter that omits it) defaults to
+                # "factual" and is selected exactly as before this field
+                # existed.
+                and _importance_value(claim.get("claim_nature", "factual")) not in _NON_FACTUAL_NATURES
             ),
             key=lambda claim: (
                 0 if _importance_value(claim.get("importance")) == "critical" else 1,
@@ -322,6 +333,9 @@ class WebEvidenceProvider:
                 metrics["claims_with_evidence_count"] += 1
         metrics["evidence_count"] = len(evidence)
         return EvidenceCollectionResult(evidence=tuple(evidence), metrics=metrics)
+
+
+_NON_FACTUAL_NATURES = ("opinion", "normative", "hedge", "structural")
 
 
 def _importance_value(value) -> str:

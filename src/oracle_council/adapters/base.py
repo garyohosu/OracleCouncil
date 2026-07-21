@@ -102,6 +102,16 @@ _CLAIM_STATUS_VALUES = {
     "verified", "supported", "contradicted", "conflicting", "unverified", "not_applicable",
 }
 _CLAIM_ROLE_VALUES = {"user_premise", "proposed_answer", "contextual"}
+# X-9: SPEC §10.5 already defines ClaimStatus.NOT_APPLICABLE as "opinion,
+# proposal, creative content - outside fact-verification scope", but nothing
+# upstream of verify ever told an Agent that distinction existed, so opinion/
+# normative/hedge claims were routinely marked "unverified" like any failed
+# factual claim (found via a live 4-agent run: a claim paraphrasing "this is
+# a matter of personal values" was left unsupported and blocked publication
+# twice). claim_nature is optional and defaults to "factual" so claim_extract
+# output that omits it keeps its exact prior behavior.
+_CLAIM_NATURE_VALUES = {"factual", "reasoning", "opinion", "normative", "hedge", "structural"}
+_NON_FACTUAL_CLAIM_NATURES = {"opinion", "normative", "hedge", "structural"}
 
 _PHASE_CONTEXT_KEYS = {
     "respond": ("question",),
@@ -139,6 +149,48 @@ _CLAIM_EXTRACT_RELEVANCE_GUIDANCE = (
     "question, mark its importance as \"minor\", not \"major\" or "
     "\"critical\", so it cannot by itself cause the whole answer to be "
     "withheld."
+)
+
+_CLAIM_NATURE_GUIDANCE = (
+    "For each extracted claim, set claim_nature to classify what kind of "
+    "statement it is, separately from importance and claim_role: "
+    "\"factual\" for a checkable claim about the world (dates, quantities, "
+    "events, external facts); \"reasoning\" for a logical inference drawn "
+    "from other claims or premises; \"opinion\" for a subjective judgment or "
+    "preference; \"normative\" for a value judgment, recommendation, or "
+    "statement about what someone should do, decide, or is free to decide "
+    "for themselves; \"hedge\" for a statement about uncertainty, "
+    "inconclusiveness, or that a question cannot presently be settled; "
+    "\"structural\" for scaffolding about how the answer is organized rather "
+    "than a substantive claim. Base this on what the statement asserts, not "
+    "on its wording - paraphrases of the same kind of statement must receive "
+    "the same claim_nature. When in doubt between factual and another "
+    "category, prefer factual only if the claim could in principle be "
+    "confirmed or refuted by external evidence."
+)
+
+_VERIFY_CLAIM_NATURE_GUIDANCE = (
+    "Each claim above may carry a claim_nature field. Claims with "
+    "claim_nature \"opinion\", \"normative\", \"hedge\", or \"structural\" "
+    "are, per definition, opinions, proposals, or non-factual framing "
+    "outside the scope of fact verification (SPEC: not_applicable = "
+    "opinion, proposal, or creative content that fact verification does not "
+    "apply to) - mark their status as \"not_applicable\", not \"unverified\", "
+    "unless the same claim also asserts a distinct, checkable factual "
+    "sub-component, in which case verify that sub-component on its own "
+    "merits. Do not mark a normative or hedging claim \"unverified\" merely "
+    "because it is not the kind of statement evidence can confirm."
+)
+
+_AUDIT_CLAIM_NATURE_GUIDANCE = (
+    "A claim with status \"not_applicable\" is explicitly out of scope for "
+    "fact verification (an opinion, proposal, hedge, or structural remark), "
+    "per SPEC definition. Do not raise an issue, and do not withhold "
+    "approval, solely because such a claim lacks supporting evidence or "
+    "because it remains in the final answer unverified as a value judgment - "
+    "that is expected and correct for that kind of statement. Only raise an "
+    "issue about a not_applicable claim if it is being presented as if it "
+    "were a verified fact."
 )
 
 _FALSE_PREMISE_GUIDANCE = (
@@ -231,6 +283,11 @@ def build_phase_input(request: AgentRequest) -> str:
         parts.append(_FALSE_PREMISE_GUIDANCE)
     if request.phase == "claim_extract":
         parts.append(_CLAIM_EXTRACT_RELEVANCE_GUIDANCE)
+        parts.append(_CLAIM_NATURE_GUIDANCE)
+    if request.phase == "verify":
+        parts.append(_VERIFY_CLAIM_NATURE_GUIDANCE)
+    if request.phase in {"criticize", "audit"}:
+        parts.append(_AUDIT_CLAIM_NATURE_GUIDANCE)
     if request.phase == "synthesize":
         parts.append(_ORACLE_VERDICT_GUIDANCE_SYNTHESIZE)
         if context.get("audit_issues"):
@@ -276,6 +333,11 @@ def _validate_claims(claims: Any) -> None:
             raise _invalid_output(
                 f"invalid claim role: {item['claim_role']!r}",
                 "invalid enum for field: claim_role",
+            )
+        if "claim_nature" in item and item["claim_nature"] not in _CLAIM_NATURE_VALUES:
+            raise _invalid_output(
+                f"invalid claim nature: {item['claim_nature']!r}",
+                "invalid enum for field: claim_nature",
             )
 
 

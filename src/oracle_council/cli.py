@@ -35,6 +35,7 @@ from .storage import (
     StorageCorruptionError,
     StorageNotFoundError,
 )
+from .trace import TraceRecorder
 
 
 def utc_now() -> datetime:
@@ -271,7 +272,14 @@ _PHASE_METRIC_KEYS = {
     "claims_with_evidence_count",
     "search_error_codes",
     "fetch_error_codes",
+    "provider_type",
+    "real_search_performed",
 }
+# X-9: which of the two new keys above are string/bool rather than the
+# existing int-counter/dict-of-codes shapes every other metric uses.
+_PHASE_METRIC_STRING_KEYS = {"provider_type"}
+_PHASE_METRIC_STRING_VALUES = {"fake", "manual", "cli_search"}
+_PHASE_METRIC_BOOL_KEYS = {"real_search_performed"}
 
 
 def evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -298,7 +306,13 @@ def phase_metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     for key, value in metrics.items():
         if key not in _PHASE_METRIC_KEYS:
             continue
-        if type(value) is int and value >= 0:
+        if key in _PHASE_METRIC_STRING_KEYS:
+            if value in _PHASE_METRIC_STRING_VALUES:
+                summary[key] = value
+        elif key in _PHASE_METRIC_BOOL_KEYS:
+            if type(value) is bool:
+                summary[key] = value
+        elif type(value) is int and value >= 0:
             summary[key] = value
         elif isinstance(value, dict):
             summary[key] = {
@@ -433,6 +447,23 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
     return result.oracle_exit_code
 
 
+def _emit_trace(recorder: TraceRecorder, show_stderr: bool, output_path: str | None) -> None:
+    """X-9: --trace / --trace-output. Entirely separate from the Storage
+    Contract - never touches JSONLStorageBackend, --store-content, or
+    --no-store, and is a pure in-memory capture (see trace.py). Runs from a
+    `finally` block so a mid-run failure still surfaces whatever phases did
+    complete, which is often the case that most needs debugging."""
+    entries = recorder.to_list()
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as stream:
+            json.dump(entries, stream, ensure_ascii=False, indent=2)
+        if show_stderr:
+            sys.stderr.write(f"[Trace] {len(entries)} 件のPhase出力を {output_path} へ書き込みました\n")
+    elif show_stderr:
+        sys.stderr.write(f"[Trace] {len(entries)} 件のPhase出力（redaction適用済み）:\n")
+        sys.stderr.write(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
+
+
 def cmd_ask(args) -> int:
     # Simulators for input-driven triggers
     if "strict_trigger" in args.question or "high_risk" in args.question:
@@ -480,6 +511,7 @@ def cmd_ask(args) -> int:
         return exit_stop("configuration_error", 3, str(e), args.json)
 
     agents = []
+    any_real_adapter = False
     for entry in config_data.get("agents", []):
         if entry.get("enabled", True):
             agent_id = entry["id"]
@@ -495,12 +527,16 @@ def cmd_ask(args) -> int:
                 )
             if use_real and entry.get("adapter") == "claude":
                 adapter = ClaudeAdapter(agent_id, entry.get("model"))
+                any_real_adapter = True
             elif use_real and entry.get("adapter") == "codex":
                 adapter = CodexAdapter(agent_id, entry.get("model"))
+                any_real_adapter = True
             elif use_real and entry.get("adapter") == "grok":
                 adapter = GrokAdapter(agent_id, entry.get("model"))
+                any_real_adapter = True
             elif use_real and entry.get("adapter") == "agy":
                 adapter = AgyAdapter(agent_id, entry.get("model"))
+                any_real_adapter = True
             else:
                 adapter = FakeAgentAdapter(
                     agent_id=agent_id,
@@ -547,7 +583,9 @@ def cmd_ask(args) -> int:
 
     # Evidence provider selection. The historical behavior is preserved:
     # no option -> FakeEvidenceProvider, --evidence-file -> ManualEvidenceProvider.
-    # cli-search is an explicit experimental path only.
+    # cli-search is an explicit experimental path only. evidence_provider_label
+    # (X-9) is not a new selection rule - it just names which branch below was
+    # taken, so evidence_collect metrics can say which one ran.
     if args.evidence_file:
         try:
             with open(args.evidence_file, "r", encoding="utf-8") as stream:
@@ -562,13 +600,31 @@ def cmd_ask(args) -> int:
             return exit_stop(
                 "configuration_error", 3, "evidence file must be a JSON object or array", args.json
             )
+        evidence_provider_label = "manual"
     elif args.evidence_provider == "cli-search":
         evidence_provider = WebEvidenceProvider(
             fetcher=SafeHttpFetcher(),
             searcher=CliSearchProvider(),
         )
+        evidence_provider_label = "cli_search"
     else:
         evidence_provider = FakeEvidenceProvider([{"evidence_id": "ev-1"}])
+        evidence_provider_label = "fake"
+
+    # X-9: this is visibility only, not a behavior/default change (kept for
+    # backward compatibility - see hikitsugi.md X-5). A real-adapter run that
+    # silently falls back to the no-op fixture evidence provider previously
+    # gave no signal that critical/major factual claims would almost always
+    # end up unverified for lack of any real evidence to check against.
+    if evidence_provider_label == "fake" and any_real_adapter and not args.json:
+        sys.stderr.write(
+            "[Evidence] 既定のFake Evidence Providerを使用します（実Web検索は行いません）。"
+            "事実確認が必要なcritical/major claimは根拠不足でunverifiedになりやすく、"
+            "回答が保留(withheld)になる場合があります。実Web検索を使うには "
+            "--evidence-provider cli-search を指定してください。\n"
+        )
+
+    trace_recorder = TraceRecorder() if (args.trace or args.trace_output) else None
 
     orchestrator = Orchestrator(
         agents=available_agents,
@@ -576,6 +632,8 @@ def cmd_ask(args) -> int:
         budget=TokenBudget(input_limit=10**6, output_limit=10**6),
         storage=storage,
         store_content=args.store_content,
+        evidence_provider_label=evidence_provider_label,
+        trace_recorder=trace_recorder,
     )
 
     if not args.json:
@@ -608,6 +666,9 @@ def cmd_ask(args) -> int:
         return exit_stop(e.status, e.exit_code, str(e), args.json)
     except Exception as e:
         return exit_stop("internal_error", 1, str(e), args.json)
+    finally:
+        if trace_recorder is not None:
+            _emit_trace(trace_recorder, args.trace, args.trace_output)
 
 
 def cmd_agents_status(args) -> int:
@@ -811,6 +872,20 @@ def main(args: list[str] | None = None) -> int:
             "Evidence provider to use: fake, or experimental cli-search "
             "(uses Claude Code WebSearch)"
         ),
+    )
+    ask_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=(
+            "Print each phase's per-agent raw output (redacted) to stderr. "
+            "Never affects --json stdout, --store-content, or --no-store."
+        ),
+    )
+    ask_parser.add_argument(
+        "--trace-output",
+        default=None,
+        metavar="PATH",
+        help="Write per-phase raw output (redacted) as JSON to PATH instead of stderr",
     )
 
     # agents

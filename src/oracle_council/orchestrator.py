@@ -25,7 +25,10 @@ from .models import (
     AuditIssueStatus,
     BudgetRequest,
     Claim,
+    ClaimNature,
+    ClaimStatus,
     EvidenceCollectionResult,
+    NON_FACTUAL_CLAIM_NATURES,
     PhaseRecord,
     PhaseStatus,
     ResultClassification,
@@ -40,6 +43,7 @@ from .models import (
 )
 from .storage import StorageBackend, StorageWriteError
 from .phase_schema import get_phase_schema
+from .trace import TraceEntry, TraceRecorder
 import threading
 
 class ExecutionRegistry:
@@ -121,6 +125,8 @@ class Orchestrator:
         storage: StorageBackend | None = None,
         store_content: bool = False,
         snapshots: Sequence[AgentProbeSnapshot] = (),
+        evidence_provider_label: str = "fake",
+        trace_recorder: "TraceRecorder | None" = None,
     ) -> None:
         self._agents = tuple(agents)
         self._evidence_provider = evidence_provider
@@ -130,6 +136,16 @@ class Orchestrator:
         self._snapshots = tuple(snapshots)
         self._registry = ExecutionRegistry()
         self._cancelled_runs: set[str] = set()
+        # X-9: which EvidenceProvider was configured (fake/manual/cli_search),
+        # surfaced in evidence_collect metrics so "the collection process
+        # succeeded" is never mistaken for "a real web search happened"
+        # (SPEC §15.7 keeps those two axes separate; this is a third,
+        # previously-missing axis: provider identity).
+        self._evidence_provider_label = evidence_provider_label
+        # X-9: opt-in only (--trace). None (the default) means zero overhead
+        # and zero behavior change - no raw Agent output is ever captured,
+        # matching every existing caller/test that does not pass this.
+        self._trace_recorder = trace_recorder
 
     def cancel(self, run_id: str) -> None:
         active = self._registry.get_active_executions(run_id)
@@ -640,6 +656,17 @@ class Orchestrator:
                     process_exit_code=getattr(result, "process_exit_code", None),
                 )
             )
+            if self._trace_recorder is not None:
+                self._trace_recorder.record(TraceEntry(
+                    phase=phase,
+                    agent_id=agent.agent_id,
+                    attempt=len(self._trace_recorder.entries) + 1,
+                    status="succeeded",
+                    process_exit_code=getattr(result, "process_exit_code", None),
+                    started_at=started_at,
+                    finished_at=utc_now(),
+                    output=result.output,
+                ))
             return result
         except AgentFailure as failure:
             # The call may have consumed provider resources: commit on the
@@ -656,6 +683,17 @@ class Orchestrator:
                     raw_diagnostic=str(failure) if self._store_content else None,
                 )
             )
+            if self._trace_recorder is not None:
+                self._trace_recorder.record(TraceEntry(
+                    phase=phase,
+                    agent_id=agent.agent_id,
+                    attempt=len(self._trace_recorder.entries) + 1,
+                    status="failed",
+                    process_exit_code=getattr(failure, "process_exit_code", None),
+                    started_at=started_at,
+                    finished_at=utc_now(),
+                    output={"error_code": failure.error_code},
+                ))
             raise
         except Exception:
             if started:
@@ -694,7 +732,8 @@ class Orchestrator:
             state.claims = tuple(Claim.from_dict(c) for c in output.get("claims", []))
             self._collect_evidence(run_id, state)
         elif phase == "verify":
-            state.claims = _merge_verified_claims(state.claims, output.get("claims", []))
+            merged = _merge_verified_claims(state.claims, output.get("claims", []))
+            state.claims = _normalize_non_factual_claims(merged)
         elif phase == "criticize":
             state.critique = output.get("critique", "")
         elif phase == "compare":
@@ -844,6 +883,8 @@ class Orchestrator:
                 detailed = False
         except SearchError as error:
             metrics = _metrics_from_search_error(error)
+            metrics["provider_type"] = self._evidence_provider_label
+            metrics["real_search_performed"] = metrics["search_count"] > 0
             partial = getattr(error, "partial_evidence", ())
             state.evidence = [deepcopy(item) for item in partial]
             record.status = PhaseStatus.FAILED
@@ -856,6 +897,15 @@ class Orchestrator:
 
         state.evidence = [dict(item) for item in result.evidence]
         metrics = _normalized_evidence_metrics(result.metrics, len(state.evidence))
+        # X-9: provider_type/real_search_performed are a third axis alongside
+        # Phase.status (process succeeded/failed) and EvidenceOutcome (what
+        # the evidence looked like) - "the fixture provider returned its one
+        # fixed entry" and "a real search ran and found nothing" must not
+        # collapse into the same signal. detailed=False means the provider
+        # has no collect_with_metrics (FakeEvidenceProvider/
+        # ManualEvidenceProvider): no network search ever happens there.
+        metrics["provider_type"] = self._evidence_provider_label
+        metrics["real_search_performed"] = bool(detailed and metrics["search_count"] > 0)
         record.status = PhaseStatus.SUCCEEDED
         record.success_count = 1
         record.error_code = None
@@ -924,6 +974,10 @@ def _merge_verified_claims(existing: tuple[Claim, ...], verified: list[dict]) ->
                     "status": raw.get("status", claim.status.value),
                     "text": raw.get("text") if raw.get("text") else claim.text,
                     "claim_role": raw.get("claim_role", claim.claim_role.value),
+                    # X-9: verify.json never re-sends claim_nature (only
+                    # claim_extract sets it), so it always carries forward
+                    # from the original claim, same as text/claim_role above.
+                    "claim_nature": raw.get("claim_nature", claim.claim_nature.value),
                 }
             )
         )
@@ -931,6 +985,34 @@ def _merge_verified_claims(existing: tuple[Claim, ...], verified: list[dict]) ->
         if index not in consumed and isinstance(raw, dict):
             merged.append(Claim.from_dict(raw))
     return tuple(merged)
+
+
+def _normalize_non_factual_claims(claims: tuple[Claim, ...]) -> tuple[Claim, ...]:
+    """X-9 deterministic backstop for SPEC §10.5's not_applicable definition
+    ("opinion, proposal, creative content - outside fact-verification
+    scope"). The verify prompt already asks the Agent to use not_applicable
+    for non-factual claim_nature claims; this only catches the case where an
+    Agent still returns "unverified" for one anyway, so Stage 1 (is_withheld)
+    and Stage 2 (classify) never block or downgrade an answer over a claim
+    that was never fact-checkable in the first place. Deliberately narrow:
+    only UNVERIFIED is remapped - CONTRADICTED/CONFLICTING for a non-factual
+    claim signals the Agent found something more specific to flag, and that
+    is left to the existing classification rules unchanged."""
+    normalized = []
+    for claim in claims:
+        if claim.claim_nature in NON_FACTUAL_CLAIM_NATURES and claim.status is ClaimStatus.UNVERIFIED:
+            claim = Claim.from_dict(
+                {
+                    "claim_id": claim.claim_id,
+                    "importance": claim.importance.value,
+                    "status": ClaimStatus.NOT_APPLICABLE.value,
+                    "text": claim.text,
+                    "claim_role": claim.claim_role.value,
+                    "claim_nature": claim.claim_nature.value,
+                }
+            )
+        normalized.append(claim)
+    return tuple(normalized)
 
 
 def _evidence_metrics(evidence_count: int = 0) -> dict[str, Any]:

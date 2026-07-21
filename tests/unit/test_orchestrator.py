@@ -231,6 +231,12 @@ def test_evidence_collect_search_error_keeps_partial_evidence_and_metrics():
         "claims_with_evidence_count": 1,
         "search_error_codes": {"SEARCH_QUOTA_EXCEEDED": 1},
         "fetch_error_codes": {},
+        # X-9: provider_type defaults to "fake" here because build() does not
+        # pass an explicit evidence_provider_label (this custom provider
+        # simulates a real-search failure, but the label always reflects
+        # what the caller declared, not the provider's own class).
+        "provider_type": "fake",
+        "real_search_performed": True,
     }
 
 
@@ -1370,3 +1376,181 @@ def test_clarify_budget_settled_after_stop_error():
     with pytest.raises(ClarificationStopError):
         orchestrator.run_verify(_AMBIGUOUS_QUESTION)
     budget.assert_settled()  # must not raise
+
+
+# X-9: claim_nature normalization backstop and evidence-provider metrics.
+# Reproduces the real 4-agent live-run failure mode (2026-07-20, "Does God
+# exist?"): claim_extract tags a value-judgment claim, but verify still
+# returns "unverified" for it (as it did in the real run) instead of
+# following the new not_applicable guidance - Orchestrator must catch that
+# deterministically rather than relying on Agent prompt compliance alone.
+
+
+def _claim_extract_output(nature, importance="critical"):
+    return {
+        "claims": [
+            {
+                "claim_id": "c1",
+                "importance": importance,
+                "status": "unverified",
+                "claim_role": "proposed_answer",
+                "claim_nature": nature,
+                "text": "This is a matter of personal values.",
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize("nature", ["opinion", "normative", "hedge", "structural"])
+def test_non_factual_critical_claim_left_unverified_by_verify_is_normalized_and_published(nature):
+    script_a = [
+        {"answer": "A"},
+        _claim_extract_output(nature),
+        {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},  # verify (non-compliant)
+        {"critique": "ok"},
+        {"answer": "final answer"},
+    ]
+    script_b = [{"answer": "B"}, {"status": "approved", "issues": []}]
+    orchestrator, _, _ = build_raw(script_a, script_b)
+
+    result = orchestrator.run_verify("What should I do with my life?")
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.exit_code == EXIT_OK
+    assert result.final_answer == "final answer"
+    assert result.claims[0].status.value == "not_applicable"
+    assert result.claims[0].claim_nature.value == nature
+
+
+def test_factual_critical_claim_left_unverified_by_verify_still_withholds():
+    """Control case: the same shape, but claim_nature is (the default)
+    factual - the backstop must not touch it, and the existing safety gate
+    must still withhold exactly as before this change."""
+    script_a = [
+        {"answer": "A"},
+        _claim_extract_output("factual"),
+        {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},
+        {"critique": "ok"},
+        {"answer": "final answer"},
+    ]
+    script_b = [{"answer": "B"}, {"status": "approved", "issues": []}]
+    orchestrator, _, _ = build_raw(script_a, script_b)
+
+    result = orchestrator.run_verify("What is the height of Mt. Fuji?")
+
+    assert result.exit_code == EXIT_WITHHELD
+    assert result.claims[0].status.value == "unverified"
+
+
+def test_non_factual_claim_marked_contradicted_by_verify_is_not_normalized():
+    """The backstop is deliberately narrow: only UNVERIFIED is remapped.
+    CONTRADICTED for a non-factual claim means the Agent found something
+    more specific to flag, and existing classification rules (major/critical
+    contradicted -> withheld) must still apply unchanged."""
+    script_a = [
+        {"answer": "A"},
+        _claim_extract_output("opinion"),
+        {"claims": [{"claim_id": "c1", "importance": "critical", "status": "contradicted"}]},
+        {"critique": "ok"},
+        {"answer": "final answer"},
+    ]
+    script_b = [{"answer": "B"}, {"status": "approved", "issues": []}]
+    orchestrator, _, _ = build_raw(script_a, script_b)
+
+    result = orchestrator.run_verify("What should I do with my life?")
+
+    assert result.exit_code == EXIT_WITHHELD
+    assert result.claims[0].status.value == "contradicted"
+
+
+def test_claim_nature_survives_verify_merge_unchanged():
+    orchestrator, _, _ = build_raw(
+        [
+            {"answer": "A"},
+            _claim_extract_output("normative", importance="minor"),
+            {"claims": [{"claim_id": "c1", "importance": "minor", "status": "verified"}]},
+            {"critique": "ok"},
+            {"answer": "final answer"},
+        ],
+        [{"answer": "B"}, {"status": "approved", "issues": []}],
+    )
+    result = orchestrator.run_verify("q")
+    assert result.claims[0].claim_nature.value == "normative"
+
+
+def test_evidence_collect_metrics_report_provider_type_and_no_real_search():
+    orchestrator, _, _ = build_raw(
+        [{"answer": "A"}, claims_output("unverified"), {"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}, {"critique": "ok"}, {"answer": "final"}],
+        [{"answer": "B"}, {"status": "approved", "issues": []}],
+        evidence_provider=FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+    )
+    result = orchestrator.run_verify("q")
+    metrics = phase_by_name(result)["evidence_collect"].metrics
+    assert metrics["provider_type"] == "fake"
+    assert metrics["real_search_performed"] is False
+    assert metrics["search_count"] == 0
+    assert metrics["fetch_attempt_count"] == 0
+
+
+def test_evidence_collect_metrics_label_reflects_constructor_kwarg():
+    adapter_a = ScriptedAgentAdapter(
+        [{"answer": "A"}, claims_output("unverified"), {"claims": [{"claim_id": "claim-1", "importance": "major", "status": "verified"}]}, {"critique": "ok"}, {"answer": "final"}]
+    )
+    adapter_b = ScriptedAgentAdapter([{"answer": "B"}, {"status": "approved", "issues": []}])
+    orchestrator = Orchestrator(
+        [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+        evidence_provider_label="manual",
+    )
+    result = orchestrator.run_verify("q")
+    metrics = phase_by_name(result)["evidence_collect"].metrics
+    assert metrics["provider_type"] == "manual"
+    assert metrics["real_search_performed"] is False
+
+
+class _ScriptedRealSearchEvidenceProvider:
+    """Minimal detailed (collect_with_metrics) provider standing in for
+    WebEvidenceProvider, to prove real_search_performed reflects an actual
+    search attempt distinctly from the no-op fixture path."""
+
+    def collect_with_metrics(self, claims):
+        return EvidenceCollectionResult(
+            evidence=(),
+            metrics={
+                "search_count": 1,
+                "candidate_count": 0,
+                "fetch_attempt_count": 0,
+                "fetch_success_count": 0,
+                "fetch_failure_count": 0,
+                "evidence_count": 0,
+                "target_claim_count": 1,
+                "claims_with_evidence_count": 0,
+                "search_error_codes": {},
+                "fetch_error_codes": {},
+            },
+        )
+
+
+def test_evidence_collect_zero_results_after_real_search_is_distinct_from_no_search():
+    adapter_a = ScriptedAgentAdapter(
+        [{"answer": "A"}, claims_output("unverified"), {"claims": [{"claim_id": "claim-1", "importance": "major", "status": "unverified"}]}, {"critique": "ok"}, {"answer": "final"}]
+    )
+    adapter_b = ScriptedAgentAdapter([{"answer": "B"}, {"status": "approved", "issues": []}])
+    orchestrator = Orchestrator(
+        [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
+        _ScriptedRealSearchEvidenceProvider(),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+        evidence_provider_label="cli_search",
+    )
+    result = orchestrator.run_verify("q")
+    metrics = phase_by_name(result)["evidence_collect"].metrics
+    # A real search ran (search_count=1) even though it found nothing
+    # (candidate_count=0, evidence_count=0) - this must read differently
+    # from the fixture-provider case above, where search_count stays 0.
+    assert metrics["provider_type"] == "cli_search"
+    assert metrics["real_search_performed"] is True
+    assert metrics["search_count"] == 1
+    assert metrics["evidence_count"] == 0
