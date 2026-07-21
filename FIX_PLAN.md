@@ -57,7 +57,7 @@
 |---|---|---|
 | M-5 / S-5 | ExecutionPlanを実行正本化、Run内availability、retry/substitution、`substitute_for`、イベント、Responder独立性、Synth/Audit look-ahead、2/3 Agent境界Fake、12回境界を実装・検証 | `src/oracle_council/assignment.py`、`orchestrator.py`、`models.py`、`cli.py`、unit tests |
 
-実Claude/Codex、live評価、q03 DNSは未着手（L-5は0-8、S-8は0-9、S-9は0-10、S-10は0-11で完了）。
+実Claude/Codex、live評価、q03 DNS、S-9/S-10は未着手（L-5は0-8、S-8は0-9で完了）。
 
 ## 0-9. X-8.19でS-8仕様確定・通常実装・Fake/transport/CLIテスト完了
 
@@ -65,20 +65,71 @@
 |---|---|---|
 | S-8 | 子CLI processのOS終了コードを`process_exit_code`（`AgentResult`／`AgentFailure`／`AgentExecutionRecord`）、Oracle Council全体の外部終了コードを`oracle_exit_code`（`RunResult`／`RunMetadataRecord`／CLI JSONトップレベル）へ分離。取得不能・Fake Agentはnull、process 0後のparse/schema失敗は`INVALID_OUTPUT`かつprocess 0。旧トップレベル`exit_code`はschema 1.x互換エイリアスとして`oracle_exit_code`と常に同値。`executions[]`は`process_exit_code`のみ出力。R-1の0/1/2/3/4/130対応表は不変 | QandA S-8、SPEC v0.3.10 §8.5/§13.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/models.py`・`orchestrator.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`、`tests/unit/test_exit_code_separation.py` |
 
-実CLI、live評価、q03 DNS failure-boundary、L-3は引き続き未着手。
+実CLI、live評価、q03 DNS failure-boundary、S-9/S-10、L-3は引き続き未着手。
 
-## 0-10. X-8.21でS-9仕様確定・通常実装・Fake/CLIテスト完了
+## 0-10. X-8.20でq03 DNS failure-boundaryをFake再現・通常実装・テストで解消済み
 
-| # | 内容 | 反映箇所 |
-|---|---|---|
-| S-9 | Configured Adapter数（0..*）、Eligible Agent数、Selected Participants数（2..4）、Executions数を分離。選定正本をbuild_execution_planに集約し、5件以上の場合は設定順の先頭4件を選択。ExecutionPlan.participants、RunResult.participants、run_createdイベント、CLI JSON、RunMetadataRecordのparticipants定義をselected participantsに統一。executionsからparticipantsの逆算を廃止。 | QandA S-9、SPEC v0.3.11 §6.4/§14/§15.8、CLASS、TESTCASE、`src/oracle_council/assignment.py`・`orchestrator.py`・`cli.py`・`models.py`、`tests/unit/test_assignment.py`・`test_cli.py` |
-
-## 0-11. X-8.22でS-10/R-4仕様確定・通常実装・Fake/CLIテスト完了
+X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の漏出経路をFakeで再現・確定し、最小のネットワーク境界修正で通常実装・テスト完了した。実live q03再確認は未実施。T-3（DNS rebinding対策・resolver pinning）、S-9/S-10は本項の対象外で未解決のまま。
 
 | # | 内容 | 反映箇所 |
 |---|---|---|
-| S-10 | プローブ結果とcapabilitiesの正本二重化を解消し、1回のRunについて各Agentのprobe結果とcapabilitiesを不変のsnapshotとして扱う。ask、status、validateでAdapter生成経路を統一し、execute()による不必要な再probeを廃止（キャッシュを利用）。Run開始時snapshotと実行途中のAgentFailureは区別。S-9仕様を壊さない。 | QandA S-10、SPEC v0.3.11 §8.5/§15.8、CLASS、TESTCASE、SEQUENCE、`src/oracle_council/models.py`・`cli.py`・`adapters/claude.py`・`adapters/codex.py`・`orchestrator.py`、`tests/unit/test_s10_probe_snapshot.py` |
-| R-4 | CLI実行時における進捗ステータスおよびエラーの標準エラー出力（stderr）への隔離とJSON出力のstdout分離。詳細ログの`--log-file`指定による保存対応。 | SPEC §15.2、CLIインタフェース実装、`tests/integration/test_cli_output.py` |
+| q03 DNS failure-boundary | `SafeHttpFetcher._validate_url()`のSSRF事前チェックが`self._resolver(hostname)`をtry/exceptの外で呼んでおり、`socket.gaierror`が`fetch()`外へ生のまま漏れ、`WebEvidenceProvider`/`Orchestrator`のいずれの型付きハンドラにも捕捉されず、CLIの汎用`except Exception`まで到達していた。resolver呼び出しを`try/except socket.gaierror`で囲み、既存の一般的network failure code `FETCH_FAILED`へ変換するよう修正した（新規public codeは追加していない）。`URLError(socket.gaierror(...))`側は既存の`except (URLError, TimeoutError, OSError)`で従来から正しく変換されており、その契約を回帰テストで明示的に固定した | `src/oracle_council/evidence.py`（`SafeHttpFetcher._validate_url`）、`tests/unit/test_evidence.py`、`tests/unit/test_cli.py` |
+
+## 0-11. X-8.21でS-9仕様確定・通常実装・Fake/integrationテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-9 | configured adapters (0..*) と selected participants (2..4) をモデル上で分離。build_execution_plan 構築時に priority（role_priority最大値、設定順タイブレーク）に基づいて先頭最大4件の selected participants を選定し、各フェーズの割り当て計算対象をその参加者のみに制限。run_created イベント、RunMetadataRecord、CLI JSONトップレベルで participants を selected participants へ統一し、executions からの逆算を廃止。 | QandA S-9, SPEC v0.3.11 §6.2/§6.3/§15.8, CLASS.md, TESTCASE.md, `src/oracle_council/models.py`・`orchestrator.py`・`cli.py`・`assignment.py`、`tests/unit/test_assignment.py`・`test_orchestrator.py` |
+
+## 0-12. S-10仕様確定・通常実装・Fake/単体テスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-10 | `probe()`と`capabilities()`の二重化を解消。`AgentAdapter`の`capabilities()`メソッドを廃止し、`probe()`が`ProbeResult`オブジェクトを返すように統一。`ProbeResult`は`status`（OKなどの文字列）と`capabilities`（`AgentCapabilities`データクラス、失敗時はNone）を保持し、プローブと同時に能力スナップショットをアトミックに取得して「正本」として扱うように修正した。 | QandA S-10, SPEC v0.3.11 §8.5, CLASS.md, TESTCASE.md, `src/oracle_council/models.py`・`adapters/claude.py`・`adapters/codex.py`・`cli.py`、`tests/unit/test_adapter_capabilities.py` |
+
+## 0-13. X-8.22でT-3（DNS Pinning）仕様確定・通常実装・Fakeテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| T-3 | `SafeHttpFetcher` にてDNS解決後の安全なIP接続先をピン留めするDNS Pinningを実装。以降のHTTP接続でそのピン留めされたIPへの接続を強制しつつ、HostヘッダーおよびHTTPS/TLS証明書検証では元のホスト名を使用するようにした。CIでDNS Rebinding対策の有効性を検証するFakeテストを追加。 | QandA T-3, SPEC §16.2, CLASS.md, TESTCASE.md, `src/oracle_council/evidence.py`, `tests/unit/test_evidence.py` |
+
+未解決: 実live q03再評価。
+
+## 0-14. X-8.23でL-3（構造化出力失敗時の回復）仕様確定・通常実装・Fakeテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| L-3 | テキスト上の決定的なクレンジング（Markdownコードフェンスの除去、前後の不要な説明テキストのトリミング）のみをAdapter共通処理 `extract_json_object` として共通化して実行し、それ以上のスキーマ違反等の修復やAIへの再試行・再送は行わずに直ちに `INVALID_OUTPUT` とするよう整理。 | QandA L-3, SPEC §8.5, `src/oracle_council/adapters/base.py`・`claude.py`・`codex.py`, `tests/unit/test_adapter_schema.py`・`test_claude_envelope.py` |
+
+## 0-15. S-6 / T-2 仕様確定・通常実装・Fakeテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-6 / T-2 | Orchestratorにスレッドセーフな `ExecutionRegistry` を設け、実行中の `execution_id` と `AgentAdapter` の関係を管理。キャンセル時に並行して `AgentAdapter.cancel(execution_id)` を伝播。アダプターは `subprocess.Popen` の `terminate()` を呼び、5秒後に `kill()` する「5秒kill」を実装。キャンセル時は Run/Phase/Execution を `cancelled` 状態にし、oracle_exit_code `130` で終了。 | QandA S-6/T-2, SPEC §8.4/§13.4/§15.7/§16.1, `src/oracle_council/orchestrator.py`・`adapters/claude.py`・`adapters/codex.py`, `tests/unit/test_cancellation.py` |
+
+## 0-16. J-3 (quickモードの実行グラフ) 仕様確定・通常実装・Fakeテスト完了
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| J-3 | quickモードにおける実行グラフ（respond * 2 -> compare -> synthesize）を定義。監査・検証・証拠収集フェーズの省略、auditor分離制約のスキップ、常にResultClassification.UNVERIFIEDでの exit 0 終了をサポート。出力JSONに `external_verification: false` を含める。 | QandA J-3, SPEC v0.3.12 §6.3/§12.1, CLASS.md, TESTCASE.md, `src/oracle_council/assignment.py`・`orchestrator.py`・`cli.py`・`phase_schema.py`・`schemas/compare.json`, unit/integration/CLI tests |
+
+## 0-17. S-4 (ClarificationEngineからのAgent呼び出し) 仕様確定・通常実装・テスト完了（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| S-4 | `ClarificationEngine`を`inspect(question, context)`（決定的既定値・テンプレート規則・critical ambiguity検出）と`evaluateAgentOutput(question, context, output)`（clarify schema検証・決定規則適用）の2段階APIに分離。critical ambiguity（6種類に限定）が残る場合だけOrchestratorがclarifyのrole_priority最高の適格Agentを決定的に選び、`clarify`フェーズのAgentRequestを非対話モードで最大1回実行。SPEC §7.2の6 status（premise_issue含む）をclarify schemaへ実装。Agent呼び出し失敗は`auth_required`または新設`clarification_unavailable`（ともにexit 3）、停止statusは`needs_clarification`/`premise_issue`/`unsupported`/`safety_blocked`（exit 2、いずれもRun非生成）。通常経路は`call_count`が7のまま変わらず、Clarifier使用時だけ8になる。CLI進捗表示`[1/7]`/`[1/8]`は`ClarificationEngine.inspect()`の結果から動的に計算し、死んだコードだった`clarify_trigger`マジック文字列分岐は削除した。 | QandA S-4/S-4.1/S-4.2/S-4.3/S-4.4, SPEC §7.5/§13.4, CLASS.md, TESTCASE.md §2.3, `src/oracle_council/clarification.py`（新規）・`schemas/clarify.json`（新規）・`phase_schema.py`・`models.py`・`assignment.py`・`orchestrator.py`・`cli.py`, `tests/unit/test_clarification.py`（新規）・`test_orchestrator.py`・`test_cli.py`・`test_assignment.py`・`test_adapter_capabilities.py` |
+
+## 0-18. Grok・agy Adapter追加、4AI評議会（Claude/Codex/Grok/agy）実現（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Y-1/Y-2/Y-3 | `GrokAdapter`（Claude型: `--output-format json`封筒`envelope["text"]`展開）と`AgyAdapter`（Codex型: 封筒なし直接パース）を追加し、既存`AgentAdapter` Contract・`classify_cli_error`・キャンセル対応subprocess差し替えパターンをClaude/Codexと共通化。`config/agents.yaml`をclaude-code/codex-cli/grok-cli/agy-cliの4参加者へ拡張し、role_priorityを4体がそれぞれ異なるフェーズで最高優先度を持つよう設計（既存のS-9 `ranked[:4]`参加者上限とちょうど一致）。`cli.py`のAgent構築ループへgrok/agy分岐を追加。Fake/Scripted統合テストで4体全てが実際に選出・実行されることを確認。実CLI（本機にインストール済みのgrok・agy）へのライブprobe/execute smoke testも追加し、既存Claude/Codex用liveテストに潜んでいた`ProbeResult`比較バグ（`status != "OK"`が常に真となりexecute本体へ到達しないdead code）も同時に発見・修正し、Claude/Codex/Grok/agyの4 CLI全てで実際にprobe/executeが成功することをライブ確認した。 | QandA Y-1/Y-2/Y-3, SPEC §3/§8.1/§8.5/§20.2, CLASS.md, TESTCASE.md §2.4・CT-AA-LIVE-02, `src/oracle_council/adapters/grok.py`（新規）・`adapters/agy.py`（新規）・`adapters/__init__.py`・`cli.py`, `config/agents.yaml`, `tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（新規）・`tests/contract/test_adapters.py` |
+
+## 0-19. 「神託」構造の追加とE2E実行で判明した2件のOracle Council側不具合を修正（2026-07-18）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Y-4 | Claude/Codex/Grok/agyの4実CLIで「神は存在しますか？」を検証し、証拠状態(`conflicting`等)とは独立した利用者向け最終回答の構造(神託→理由→採用しなかった見解→不確実性の4要素)をsynthesize/auditのプロンプト指示のみで追加(SPEC §2.2.1、モデル/スキーマ変更なし)。実行時に判明した2件の不具合、(1) AI自身の回答姿勢についての無関係なmeta-claimがStage 1で早期withholdを引き起こす、(2) 修正サイクルのre-synthesizeがauditの指摘内容を一切受け取っていない、を修正。`--store-content`時にwithheldになった草稿・audit指摘も監査証跡として保存するようにした。 | QandA Y-4, SPEC §2.2.1, `src/oracle_council/adapters/base.py`・`orchestrator.py`・`models.py`, `tests/unit/test_classification.py`・`test_claude_envelope.py`・`test_orchestrator.py` |
 
 ## 0. v0.3.1で解消済み
 
@@ -114,15 +165,14 @@
 
 | ID | 項目 | 概要 | 依存するテスト設計領域 |
 |---|---|---|---|
-| **J-3** | `quick`の実行グラフ | フェーズ一覧・呼び出し数・出力の確定 | `quick`結合テスト |
-| **S-4** | ClarificationEngineからのAgent呼び出し | Clarifier Agentの呼び出し経路とデータフロー確定 | 質問整理結合テスト |
-| **S-6** | Runキャンセル時のExecutionRegistry | 実行中executionIdの所有権とキャンセル管理 | Ctrl+C・process treeテスト |
-| **T-2** | cancel合格基準 | 非同期伝播、冪等性、5秒kill、残留process 0件 | Ctrl+C・process treeテスト |
-| **T-3** | DNS Rebinding試験境界 | resolver/pinned transportの依存注入 | SafeHttpFetcher Security/Contract Test |
 
-L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。S-9は解消済み（0-10参照）。S-10は解消済み（0-11参照）。
+現在このセクションに残っているブロッカーはない。J-3は解消済み（0-16参照）。L-5は解消済み（0-8参照）。S-8は解消済み（0-9参照）。S-4は解消済み（0-17参照）。
 
 O-6は解消済み（0-5参照）。
+
+S-10は解消済み（0-12参照）。
+
+T-3は解消済み（0-13参照）。
 
 ---
 
@@ -133,8 +183,8 @@ O-6は解消済み（0-5参照）。
 | ID | 項目 | 決めるPhase | 依存するテスト設計領域 |
 |---|---|---|---|
 | **J-4** | Clarifier 2ラウンドと上限8回 | Phase 1 (質問整理) | 質問整理結合テスト |
-| **L-3** | 構造化出力失敗時の回復 | Phase 2 (Adapter実装) | Adapter例外・復帰テスト |
 | **O-2** | 認証情報マスキングの境界 | Phase 2 (Adapter実装) | secret redactionテスト |
+| **R-4** | `probe()`の実行方式とカウント | Phase 2 (Adapter実装) | Probe・カウント検証テスト |
 | **N-3** | 障害注入テストの契約 | Phase 2〜3 | ネットワーク・遅延障害テスト |
 | **K-2** | Web取得で扱える資料範囲 | Phase 3 (Evidence) | WebEvidenceProvider Contract Test |
 | **K-4** | Claim分割とEvidence多対多 | Phase 3 (Evidence) | Evidence共有・マッピングテスト |
@@ -163,7 +213,6 @@ O-6は解消済み（0-5参照）。
 | 未決ID | 先に確定する内容 | 解除されるテスト領域 |
 |---|---|---|
 | T-2 | cancel伝播期限・冪等性・残留判定 | Ctrl+C、process tree、cancel競合テスト |
-| T-3 | Fake resolver/pinned transport境界 | DNS Rebinding、redirect再検証ST/CT |
 
 R-1、M-4、S-1、U-1（v0.3.3）、S-2、T-5（v0.3.4）、V-1〜V-3（v0.3.5）、M-3、S-3、S-7、T-1、T-4（v0.3.6）の行は確定により削除した（解除済み領域は§0-1〜§0-4を参照）。
 

@@ -57,34 +57,6 @@ class ClaimRole(StrEnum):
 
 
 @dataclass(frozen=True)
-class AgentProbeSnapshot:
-    agent_id: str
-    status: str
-    capabilities: dict[str, Any]
-    probed_at: datetime
-    error_code: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "status": self.status,
-            "capabilities": self.capabilities,
-            "probed_at": self.probed_at.isoformat(),
-            "error_code": self.error_code,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AgentProbeSnapshot:
-        return cls(
-            agent_id=data["agent_id"],
-            status=data["status"],
-            capabilities=data["capabilities"],
-            probed_at=datetime.fromisoformat(data["probed_at"]),
-            error_code=data.get("error_code"),
-        )
-
-
-@dataclass(frozen=True)
 class Usage:
     input_tokens: int
     output_tokens: int
@@ -183,10 +155,13 @@ class AgentExecutionStatus(StrEnum):
 
 
 class PhaseStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
     SUCCEEDED = "succeeded"
     DEGRADED = "degraded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class AgentFailure(RuntimeError):
@@ -216,6 +191,7 @@ _PHASE_NAMES = {
     "criticize",
     "synthesize",
     "audit",
+    "clarify",
 }
 _SCHEMA_FIELD_NAMES = {
     "answer",
@@ -230,6 +206,11 @@ _SCHEMA_FIELD_NAMES = {
     "issue_id",
     "issue_type",
     "severity",
+    "refined_question",
+    "assumptions",
+    "questions",
+    "options",
+    "note",
 }
 _JSON_TYPE_NAMES = {"array", "object", "string", "number", "boolean", "null"}
 _SIMPLE_PUBLIC_SUMMARIES = {
@@ -451,12 +432,18 @@ class RunMetadataRecord:
     # at run termination. Child process codes are never aggregated here.
     oracle_exit_code: int
     participants: tuple[str, ...] = ()
+    # W-11/W-12: the real, final audit status (e.g. "changes_required" for a
+    # withheld run), not the "approved" placeholder cli.py used to hardcode -
+    # this makes "why was this withheld" reconstructible from the persisted
+    # metadata snapshot alone.
+    audit_status: str | None = None
     agent_snapshots: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["created_at"] = self.created_at.isoformat()
         value["error_codes"] = list(self.error_codes)
+        value["participants"] = list(self.participants)
         value["agent_snapshots"] = list(self.agent_snapshots)
         return value
 
@@ -471,6 +458,7 @@ class RunResult:
     # S-8: the Oracle Council CLI's own exit code (SPEC §13.4). The child
     # process codes live on each AgentExecutionRecord.process_exit_code.
     oracle_exit_code: int
+    mode: str = "verify"
     claims: tuple[Claim, ...] = ()
     audit_issues: tuple[AuditIssue, ...] = ()
     phases: tuple[PhaseRecord, ...] = ()
@@ -478,7 +466,15 @@ class RunResult:
     metadata: RunMetadataRecord | None = None
     evidence: tuple[dict[str, Any], ...] = ()
     participants: tuple[str, ...] = ()
-    agent_snapshots: tuple[AgentProbeSnapshot, ...] = ()
+    # W-11: the CLI's --json "question"/"answer" blocks previously hardcoded
+    # the SPEC Sec14 illustrative example text ("元の質問" etc.) instead of the
+    # real values; these fields carry the real per-Run data through to cli.py.
+    original_question: str | None = None
+    refined_question: str | None = None
+    clarification_status: str = "ready"
+    clarification_assumptions: tuple[str, ...] = ()
+    audit_status: str | None = None
+    agent_snapshots: tuple["AgentProbeSnapshot", ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -486,3 +482,45 @@ class RunResult:
         field of record is oracle_exit_code. New code must not use this."""
         return self.oracle_exit_code
 
+    @property
+    def external_verification(self) -> bool:
+        return self.mode != "quick"
+
+
+@dataclass(frozen=True)
+class AgentCapabilities:
+    adapter_family: str
+    adapter_version: str
+    cli_version: str
+    supported_phases: tuple[str, ...]
+    supports_read_only: bool = True
+    supports_no_tools: bool = True
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    status: str
+    capabilities: AgentCapabilities | None = None
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.status == other
+        return super().__eq__(other)
+
+
+@dataclass(frozen=True)
+class AgentProbeSnapshot:
+    agent_id: str
+    status: str
+    capabilities: dict[str, Any]
+    probed_at: datetime
+    error_code: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "status": self.status,
+            "capabilities": dict(self.capabilities),
+            "probed_at": self.probed_at.isoformat(),
+            "error_code": self.error_code,
+        }

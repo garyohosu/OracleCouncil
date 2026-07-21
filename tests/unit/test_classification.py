@@ -27,6 +27,15 @@ def test_stage1_withholds(importance, status):
     assert classify([claim(importance, status)]) is ResultClassification.WITHHELD
 
 
+def test_minor_contradicted_claim_alone_does_not_withhold():
+    """W-12: claim_extract is now guided to mark tangential/procedural
+    claims (e.g. meta-commentary about how an AI is answering, not about
+    the world) as "minor" rather than "major"/"critical" precisely so that,
+    even if one slips through and verify marks it contradicted, it alone
+    cannot trigger a Stage 1 withhold - only major/critical claims can."""
+    assert is_withheld([claim("minor", "contradicted")]) is False
+
+
 # Stage 2: decision table, first matching row wins
 @pytest.mark.parametrize(
     "claims,expected",

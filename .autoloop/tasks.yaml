@@ -1,0 +1,44 @@
+version: 1
+tasks:
+- id: S-10
+  title: probe and capabilities snapshot
+  status: completed
+  prompt: 'QandA.mdのS-10を解決してください。
+
+
+    probe結果とcapabilitiesの正本二重化を解消し、
+
+    1回のRunについて各Agentのprobe結果とcapabilitiesを
+
+    不変のsnapshotとして扱ってください。
+
+
+    ask、agents status、agents validateでAdapter生成経路を統一し、
+
+    Adapter.execute()による不必要な再probeを廃止してください。
+
+
+    Run開始時snapshotと、実行途中のAgentFailureは区別してください。
+
+    S-9のselected participants 2..4仕様を壊さないでください。
+
+
+    QandA.md、SPEC.md、CLASS.md、SEQUENCE.md、TESTCASE.md、
+
+    FIX_PLAN.md、hikitsugi.md、instructions/result.mdを
+
+    実装と整合させてください。
+
+
+    Fake・unit・integrationテストだけを使用してください。
+
+    実Claude、実Codex、Web、実HTTP、liveテストは使用しないでください。
+
+    S-10以外の課題へ進まないでください。
+
+    '
+  max_cycles: 3
+  attempts: 1
+  last_cycle: 5
+  last_summary: probeおよびcapabilitiesの正本二重化を解消し、Run開始時スナップショットとして扱い各アダプターでのキャッシュと経路統一を完了・ドキュメント整合
+  last_commit_sha: a103e9b9483061993700ae27dee4532207f2692d

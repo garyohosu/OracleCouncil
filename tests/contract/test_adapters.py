@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from oracle_council.adapters import ClaudeAdapter, CodexAdapter
+from oracle_council.adapters import AgyAdapter, ClaudeAdapter, CodexAdapter, GrokAdapter
 from oracle_council.adapters.base import validate_phase_output
 from oracle_council.cli import FakeAgentAdapter
 from oracle_council.models import AgentFailure, AgentRequest, AgentResult
@@ -63,15 +63,15 @@ class TestValidatePhaseOutputClaimEnums:
 
 def verify_adapter_contract(adapter):
     # probe()
-    status = adapter.probe()
-    assert isinstance(status, str)
+    probe_res = adapter.probe()
+    assert isinstance(probe_res.status, str)
 
-    # capabilities()
-    caps = adapter.capabilities()
-    assert isinstance(caps, dict)
-    assert "supported_models" in caps
-    assert caps.get("supports_read_only") is True
-    assert caps.get("supports_no_tools") is True
+    # capabilities
+    caps = probe_res.capabilities
+    assert caps is not None
+    assert isinstance(caps.adapter_family, str)
+    assert caps.supports_read_only is True
+    assert caps.supports_no_tools is True
 
 
 class TestAdapterTimeoutDefaults:
@@ -90,6 +90,12 @@ class TestAdapterTimeoutDefaults:
         assert ClaudeAdapter("claude-test", timeout_s=300).timeout_s == 300
         assert CodexAdapter("codex-test", timeout_s=300).timeout_s == 300
 
+    def test_grok_adapter_defaults_to_verify_mode_timeout(self):
+        assert GrokAdapter("grok-test").timeout_s == 180
+
+    def test_agy_adapter_defaults_to_verify_mode_timeout(self):
+        assert AgyAdapter("agy-test").timeout_s == 180
+
 
 def test_fake_adapter_contract():
     adapter = FakeAgentAdapter("claude", "OK")
@@ -105,14 +111,14 @@ def test_fake_adapter_contract():
 def test_claude_adapter_live_probe():
     adapter = ClaudeAdapter("claude-test")
     status = adapter.probe()
-    assert status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
+    assert status.status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
 
 
 @pytest.mark.live
 def test_codex_adapter_live_probe():
     adapter = CodexAdapter("codex-test")
     status = adapter.probe()
-    assert status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
+    assert status.status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
 
 
 @pytest.mark.live
@@ -121,7 +127,7 @@ def test_claude_adapter_live_execute():
     shows exactly what is usable right now."""
     adapter = ClaudeAdapter("claude-test")
     status = adapter.probe()
-    if status != "OK":
+    if status.status != "OK":
         pytest.skip(f"Claude Code unavailable at probe: {status}")
 
     req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
@@ -139,7 +145,7 @@ def test_claude_adapter_live_execute():
 def test_codex_adapter_live_execute():
     adapter = CodexAdapter("codex-test")
     status = adapter.probe()
-    if status != "OK":
+    if status.status != "OK":
         pytest.skip(f"Codex CLI unavailable at probe: {status}")
 
     req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
@@ -151,3 +157,58 @@ def test_codex_adapter_live_execute():
         raise
     assert isinstance(res, AgentResult)
     assert "answer" in res.output
+
+@pytest.mark.live
+def test_grok_adapter_live_probe():
+    adapter = GrokAdapter("grok-test")
+    status = adapter.probe()
+    assert status.status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
+
+
+@pytest.mark.live
+def test_agy_adapter_live_probe():
+    adapter = AgyAdapter("agy-test")
+    status = adapter.probe()
+    assert status.status in ("OK", "QUOTA_EXCEEDED", "COMMAND_NOT_FOUND", "TIMEOUT")
+
+
+@pytest.mark.live
+def test_grok_adapter_live_execute():
+    """Skips (not fails) while Grok is quota-limited/unauthenticated, so the
+    suite result shows exactly what is usable right now (2026-07-18 live
+    smoke test confirmed OK on this machine)."""
+    adapter = GrokAdapter("grok-test")
+    status = adapter.probe()
+    if status.status != "OK":
+        pytest.skip(f"Grok CLI unavailable at probe: {status}")
+
+    req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
+    try:
+        res = adapter.execute(req)
+    except AgentFailure as e:
+        if e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "RATE_LIMITED"):
+            pytest.skip(f"Grok CLI unusable right now: {e.error_code}")
+        raise
+    assert isinstance(res, AgentResult)
+    assert isinstance(res.output, dict)
+
+
+@pytest.mark.live
+def test_agy_adapter_live_execute():
+    """Skips (not fails) while agy is quota-limited/unauthenticated, so the
+    suite result shows exactly what is usable right now (2026-07-18 live
+    smoke test confirmed OK on this machine)."""
+    adapter = AgyAdapter("agy-test")
+    status = adapter.probe()
+    if status.status != "OK":
+        pytest.skip(f"agy CLI unavailable at probe: {status}")
+
+    req = AgentRequest("run-1", "exec-1", "respond", {"question": "Say hello"})
+    try:
+        res = adapter.execute(req)
+    except AgentFailure as e:
+        if e.error_code in ("QUOTA_EXCEEDED", "AUTH_REQUIRED", "RATE_LIMITED"):
+            pytest.skip(f"agy CLI unusable right now: {e.error_code}")
+        raise
+    assert isinstance(res, AgentResult)
+    assert isinstance(res.output, dict)

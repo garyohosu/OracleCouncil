@@ -8,6 +8,13 @@
 # "fake-*" while a real adapter actually answered (found reviewing a real
 # metrics run: the old "fake-claude"/"fake-codex" ids leaked into
 # --json's `participants` field even with ORACLE_COUNCIL_USE_REAL=1).
+#
+# Role priorities are set so all 4 registered participants take a distinct
+# leading role somewhere in the plan (claude-code: respond/synthesize,
+# codex-cli: respond/verify/audit, grok-cli: claim_extract/clarify,
+# agy-cli: criticize) rather than 2 agents winning every phase by default
+# (0) tie-break ordering - see assignment.py's build_execution_plan, which
+# caps participants at 4 (ranked[:4]), exactly matching a 4-AI council.
 agents:
   - id: claude-code
     adapter: claude
@@ -25,3 +32,19 @@ agents:
       respond: 90
       verify: 100
       audit: 100
+  - id: grok-cli
+    adapter: grok
+    implementation: mock
+    enabled: true
+    role_priority:
+      respond: 80
+      claim_extract: 100
+      clarify: 100
+  - id: agy-cli
+    adapter: agy
+    implementation: mock
+    enabled: true
+    role_priority:
+      respond: 70
+      criticize: 100
+      clarify: 90

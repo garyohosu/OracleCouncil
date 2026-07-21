@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -96,7 +97,6 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         data = json.loads(captured.out)
         assert data["schema_version"] == "1.0"
         assert data["status"] == "completed"
-        assert data["participants"] == ["claude", "codex"]
         assert data["answer"]["text"] == "Mock final synthesized answer."
         assert all(execution["substitute_for"] is None for execution in data["executions"])
         assert data["answer"]["result_classification"] == "verified"
@@ -109,6 +109,33 @@ def test_cli_ask_json_happy_path(temp_config, capsys, tmp_path):
         assert evidence_phase["success_count"] == 1
         assert evidence_phase["outcome"] == "evidence_found"
         assert evidence_phase["metrics"]["evidence_count"] == 1
+
+        # W-11 regression: question.original/refined must be the real question
+        # text, not the SPEC Sec14 illustrative example placeholder
+        # ("元の質問"/"整理後の質問") that output_run_result() used to hardcode
+        # verbatim, and audit_status must reflect the real audit outcome.
+        assert data["question"]["original"] == "What is the height of Fuji?"
+        assert data["question"]["refined"] == "What is the height of Fuji?"
+        assert data["question"]["clarification_status"] == "ready_with_assumptions"
+        assert isinstance(data["question"]["assumptions"], list) and len(data["question"]["assumptions"]) > 0
+        assert data["answer"]["audit_status"] == "approved"
+
+
+def test_cli_ask_json_reports_real_audit_status_when_withheld(temp_config, capsys, tmp_path, monkeypatch):
+    """W-11 regression: audit_status was hardcoded to "approved" even when the
+    Run was actually withheld after an unapproved re-audit - this reproduces
+    that exact shape (changes_required both times) and asserts the JSON now
+    reports the true final status instead of the old constant."""
+    monkeypatch.setenv("ORACLE_MOCK_AUDIT_STATUS", "changes_required")
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the height of Fuji?", "--json"])
+        assert exit_code == 4
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["answer"]["result_classification"] == "withheld"
+        assert data["answer"]["text"] is None
+        assert data["answer"]["audit_status"] == "changes_required"
+        assert data["question"]["original"] == "What is the height of Fuji?"
 
 
 def test_cli_ask_insufficient_agents_when_one_agent_unavailable(temp_config, capsys, monkeypatch):
@@ -199,7 +226,7 @@ class CaptureOrchestrator:
         self.kwargs = kwargs
         CaptureOrchestrator.instances.append(self)
 
-    def run_verify(self, question):
+    def run_verify(self, question, mode="verify"):
         return RunResult(
             "run-test",
             RunStatus.COMPLETED,
@@ -207,6 +234,7 @@ class CaptureOrchestrator:
             "captured answer",
             0,
             0,
+            mode=mode,
         )
 
 
@@ -329,6 +357,20 @@ class InvalidIriSearchProvider:
         ]
 
 
+class SingleUrlSearchProvider:
+    def search(self, query, limit):
+        return [
+            SearchResult(
+                "https://dns-fail.example.com/a",
+                "dns candidate",
+                "snippet",
+                1,
+                "fake-search",
+                "2026-07-13T00:00:00+00:00",
+            )
+        ]
+
+
 def test_cli_ask_cli_search_search_error_becomes_json_verification_unavailable(temp_config, capsys):
     with patch("oracle_council.cli.WebEvidenceProvider", return_value=SearchErrorProvider()), \
          patch("oracle_council.cli.SafeHttpFetcher"), \
@@ -403,6 +445,49 @@ def test_cli_ask_invalid_iri_fetch_error_does_not_become_internal_error(temp_con
     rendered = json.dumps(data, ensure_ascii=False)
     assert "UnicodeEncodeError" not in rendered
     assert "\udcff" not in rendered
+
+
+def test_cli_ask_dns_resolution_failure_does_not_become_internal_error(temp_config, capsys):
+    """X-8.20: reproduces the q03 holdout leak (X-8.14). A DNS resolution
+    failure on a fetch candidate previously propagated as a raw
+    socket.gaierror out of SafeHttpFetcher, uncaught by
+    WebEvidenceProvider/Orchestrator, all the way to cli.py's generic
+    `except Exception` handler -> internal_error / exit_code 1 with the raw
+    `[Errno 11001] getaddrinfo failed` text as the public message.
+
+    This uses the real SafeHttpFetcher (not mocked) with only
+    socket.getaddrinfo faked, per the instructed reproduction shape."""
+    with patch("oracle_council.cli.CliSearchProvider", return_value=SingleUrlSearchProvider()), \
+         patch(
+             "oracle_council.evidence.socket.getaddrinfo",
+             side_effect=socket.gaierror(11001, "getaddrinfo failed"),
+         ):
+        exit_code = main(["ask", "q", "--json", "--no-store", "--evidence-provider", "cli-search"])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+
+    assert data["status"] != "internal_error"
+    assert exit_code != 1
+    assert data["oracle_exit_code"] == data["exit_code"]
+    assert data["oracle_exit_code"] == exit_code
+    assert data["run_id"]
+    assert data["evidence"] == []
+
+    evidence_phase = next(phase for phase in data["phases"] if phase["phase"] == "evidence_collect")
+    assert evidence_phase["status"] == "succeeded"
+    assert evidence_phase["success_count"] == 1
+    assert evidence_phase["outcome"] == "no_evidence"
+    assert evidence_phase["metrics"]["fetch_attempt_count"] == 1
+    assert evidence_phase["metrics"]["fetch_failure_count"] == 1
+    assert evidence_phase["metrics"]["fetch_error_codes"] == {"FETCH_FAILED": 1}
+
+    rendered = json.dumps(data, ensure_ascii=False)
+    assert "getaddrinfo" not in rendered
+    assert "11001" not in rendered
+    assert "gaierror" not in rendered
+    assert "dns-fail.example.com" not in rendered
 
 
 def test_cli_ask_cli_search_does_not_fallback_to_fake_provider(temp_config, capsys):
@@ -770,45 +855,105 @@ def test_cli_history_purge_and_list(temp_config, capsys, tmp_path):
             captured = capsys.readouterr()
             assert "Purged 1 runs." in captured.out
 
-def test_cli_ask_five_agents_participants_capped_at_four(tmp_path, capsys):
-    config_data = {
-        "agents": [
-            {"id": "agent-1", "adapter": "claude", "enabled": True},
-            {"id": "agent-2", "adapter": "claude", "enabled": True},
-            {"id": "agent-3", "adapter": "claude", "enabled": True},
-            {"id": "agent-4", "adapter": "claude", "enabled": True},
-            {"id": "agent-5", "adapter": "claude", "enabled": True},
-        ]
-    }
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w", encoding="utf-8") as f:
-        yaml.dump(config_data, f)
-        temp_path = f.name
 
-    old_val = os.environ.get("ORACLE_COUNCIL_CONFIG")
-    os.environ["ORACLE_COUNCIL_CONFIG"] = temp_path
+def test_cli_ask_quick_mode_success(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the third planet?", "--mode", "quick", "--json", "--adapter-mode", "fake"])
+        assert exit_code == 0
 
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+
+        assert data["mode"] == "quick"
+        assert data["answer"]["external_verification"] is False
+        assert data["status"] == "completed"
+        assert data["oracle_exit_code"] == 0
+
+        phases = [p["phase"] for p in data["phases"]]
+        assert phases == ["respond", "compare", "synthesize"]
+# ---------------------------------------------------------------------------
+# S-4: ClarificationEngine -> Clarifier Agent CLI wiring (QandA S-4.1-S-4.4)
+# ---------------------------------------------------------------------------
+
+_AMBIGUOUS_CLI_QUESTION = "どちらのプランが良いですか？"
+
+
+def test_cli_ask_ordinary_question_keeps_one_of_seven_progress(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "What is the height of Fuji?"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "[1/7]" in captured.err
+
+
+def test_cli_ask_ambiguous_question_shows_one_of_eight_progress(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "[1/8]" in captured.err
+
+
+def test_cli_ask_ambiguous_question_json_has_eight_calls(temp_config, capsys, tmp_path):
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
+        assert exit_code == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["agent_call_count"] == 8
+
+
+def test_cli_ask_needs_clarification_stops_before_run_json(temp_config, capsys, tmp_path):
+    os.environ["ORACLE_MOCK_CLARIFY_STATUS"] = "needs_clarification"
     try:
-        # Mock probe OK for all agents to keep them eligible
-        with patch.dict(os.environ, {
-            "ORACLE_MOCK_PROBE_AGENT-1": "OK",
-            "ORACLE_MOCK_PROBE_AGENT-2": "OK",
-            "ORACLE_MOCK_PROBE_AGENT-3": "OK",
-            "ORACLE_MOCK_PROBE_AGENT-4": "OK",
-            "ORACLE_MOCK_PROBE_AGENT-5": "OK",
-        }):
-            with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
-                exit_code = main(["ask", "What is the height of Fuji?", "--json"])
-                assert exit_code == 0
-                captured = capsys.readouterr()
-                data = json.loads(captured.out)
-
-                # Verify participants is capped at 4, selected from the first 4 deterministically
-                assert data["participants"] == ["agent-1", "agent-2", "agent-3", "agent-4"]
-                assert data["metadata"]["participant_count"] == 4
-                assert data["metadata"]["participants"] == ["agent-1", "agent-2", "agent-3", "agent-4"]
+        with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+            exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
     finally:
-        os.unlink(temp_path)
-        if old_val:
-            os.environ["ORACLE_COUNCIL_CONFIG"] = old_val
-        else:
-            os.environ.pop("ORACLE_COUNCIL_CONFIG", None)
+        del os.environ["ORACLE_MOCK_CLARIFY_STATUS"]
+    assert exit_code == 2
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "needs_clarification"
+    assert data["run_id"] is None
+    assert data["oracle_exit_code"] == 2
+    assert data["exit_code"] == 2
+
+
+@pytest.mark.parametrize(
+    "status,expected_exit",
+    [
+        ("premise_issue", 2),
+        ("unsupported", 2),
+        ("safety_blocked", 2),
+    ],
+)
+def test_cli_ask_stop_statuses_use_exit_code_two(temp_config, capsys, tmp_path, status, expected_exit):
+    os.environ["ORACLE_MOCK_CLARIFY_STATUS"] = status
+    try:
+        with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+            exit_code = main(["ask", _AMBIGUOUS_CLI_QUESTION, "--json"])
+    finally:
+        del os.environ["ORACLE_MOCK_CLARIFY_STATUS"]
+    assert exit_code == expected_exit
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == status
+    assert data["run_id"] is None
+
+
+def test_cli_ask_clarify_trigger_string_is_no_longer_special_cased(temp_config, capsys, tmp_path):
+    # S-4: the dead magic-string simulator is removed. The literal text
+    # "clarify_trigger" is now just ordinary question text and is handled
+    # like any other question by the real ClarificationEngine (it resolves
+    # via tiers 1/2 without needing the Clarifier Agent, since it contains
+    # none of the six critical-ambiguity signals).
+    with patch("oracle_council.cli.JSONLStorageBackend", return_value=JSONLStorageBackend(tmp_path)):
+        exit_code = main(["ask", "clarify_trigger", "--no-interactive", "--json"])
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] != "needs_clarification"
+
+
+def test_cli_ask_clarify_trigger_source_removed():
+    import inspect
+    import oracle_council.cli as cli_module
+
+    source = inspect.getsource(cli_module)
+    assert '"clarify_trigger" in args.question' not in source

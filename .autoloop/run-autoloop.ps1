@@ -1,7 +1,5 @@
 param(
-    [switch]$Once,
-    [switch]$Status,
-    [switch]$InitTasks
+    [switch]$Once
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,14 +36,6 @@ $arguments = @(
 
 if ($Once) {
     $arguments += "--once"
-}
-
-if ($Status) {
-    $arguments += "--status"
-}
-
-if ($InitTasks) {
-    $arguments += "--init-tasks"
 }
 
 & py @arguments

@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import itertools
+import json
 
 import pytest
 
 from oracle_council.assignment import InsufficientAgentsError, RegisteredAgent
+from oracle_council.clarification import ClarificationStopError
 from oracle_council.budget import TokenBudget
 from oracle_council.fakes import FakeEvidenceProvider, ScriptedAgentAdapter
 from oracle_council.models import AgentFailure, EvidenceCollectionResult, PhaseStatus, ResultClassification, RunStatus, SearchError
@@ -570,6 +572,145 @@ def test_reaudit_rejection_withholds_instead_of_failing():
     assert by_id == {"i1": "open", "i2": "resolved"}  # only the re-reported issue stays open
 
 
+def test_revision_synthesize_receives_prior_audit_issues():
+    """W-12: before this fix, a revised synthesize call received the exact
+    same context as the first attempt - no information about what the
+    audit rejected or why - so revision was effectively a blind re-roll.
+    This is the confirmed root cause of a real 4-agent run needing two
+    rejected drafts on "Does God exist?" before giving up and withholding."""
+    orchestrator, adapter_a, adapter_b = build(
+        audits=[
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+            {"status": "approved"},
+        ],
+    )
+
+    orchestrator.run_verify("q")
+
+    synth_requests = [r for r in adapter_a.requests if r.phase == "synthesize"]
+    assert len(synth_requests) == 2
+    assert synth_requests[0].payload["audit_issues"] == []
+    assert synth_requests[1].payload["audit_issues"][0]["issue_id"] == "i1"
+
+
+def test_withheld_run_stores_synthesize_drafts_and_audit_issues_when_store_content():
+    """W-12: --store-content must persist synthesize drafts and audit
+    results/issues even when the run ends up withheld, so "audit rejected
+    it but nobody can see what was rejected" is not a silent gap - found via
+    a real 4-agent run where a rejected draft was completely unrecoverable
+    after the fact."""
+    storage = InMemoryStorageBackend()
+    adapter_a = ScriptedAgentAdapter(
+        [
+            {"answer": "A"},
+            claims_output("unverified", "major"),
+            claims_output("verified", "major"),
+            {"critique": "ok"},
+            {"answer": "draft-1"},
+            {"answer": "draft-2"},
+        ]
+    )
+    adapter_b = ScriptedAgentAdapter(
+        [
+            {"answer": "B"},
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+            {
+                "status": "changes_required",
+                "issues": [
+                    {
+                        "issue_id": "i1",
+                        "issue_type": "missing_verdict",
+                        "severity": "major",
+                        "claim_id": "final_answer",
+                    }
+                ],
+            },
+        ]
+    )
+    orchestrator = Orchestrator(
+        [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)],
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+        store_content=True,
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.final_answer is None  # rejected drafts never become the public answer
+
+    events = storage.load(result.run_id).events
+    synth_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "synthesize"
+    ]
+    audit_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "audit"
+    ]
+    assert [e.payload["draft_answer"] for e in synth_events] == ["draft-1", "draft-2"]
+    assert all(e.payload["disclosure"] == "internal_audit_trail_only" for e in synth_events)
+    assert [e.payload["audit_result_status"] for e in audit_events] == [
+        "changes_required", "changes_required",
+    ]
+    assert audit_events[0].payload["audit_issues"][0]["issue_id"] == "i1"
+    assert all(e.payload["disclosure"] == "internal_audit_trail_only" for e in audit_events)
+
+    run_completed = next(e for e in events if e.event_type == "run_completed")
+    assert run_completed.payload["metadata"]["audit_status"] == "changes_required"
+    # the withheld reason is reconstructible from the persisted metadata
+    # alone, and the rejected draft text never leaks into it
+    assert "draft-1" not in json.dumps(run_completed.payload)
+    assert "draft-2" not in json.dumps(run_completed.payload)
+
+
+def test_withheld_run_without_store_content_does_not_persist_drafts():
+    storage = InMemoryStorageBackend()
+    orchestrator, _, _ = build(
+        audits=[
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}]},
+            {"status": "changes_required", "issues": [{"issue_id": "i1"}]},
+        ],
+        storage=storage,
+    )
+
+    result = orchestrator.run_verify("q")
+
+    assert result.result_classification is ResultClassification.WITHHELD
+    events = storage.load(result.run_id).events
+    synth_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "synthesize"
+    ]
+    audit_events = [
+        e for e in events
+        if e.event_type == "agent_execution_succeeded" and e.payload.get("phase") == "audit"
+    ]
+    assert all("draft_answer" not in e.payload for e in synth_events)
+    assert all("audit_issues" not in e.payload for e in audit_events)
+
+
 def test_initial_blocked_withholds_without_revision():
     storage = InMemoryStorageBackend()
     orchestrator, adapter_a, adapter_b = build(
@@ -875,3 +1016,357 @@ def test_substitution_event_contains_metadata_only():
     assert set(selected[0].payload) == {
         "phase", "slot_index", "failed_execution_id", "original_agent_id", "substitute_agent_id"
     }
+
+
+def test_s9_participant_integration_with_five_agents():
+    storage = InMemoryStorageBackend()
+    adapters = [
+        ScriptedAgentAdapter([]),
+        ScriptedAgentAdapter([
+            {"answer": "B-respond"},
+            {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},
+        ]),
+        ScriptedAgentAdapter([
+            {"answer": "C-respond"},
+        ]),
+        ScriptedAgentAdapter([
+            {"claims": [{"claim_id": "c1", "importance": "critical", "status": "unverified"}]},
+        ]),
+        ScriptedAgentAdapter([]),
+    ]
+    agents = [
+        RegisteredAgent("agent-a", adapters[0], {"respond": 0}),
+        RegisteredAgent("agent-b", adapters[1], {"synthesize": 90}),
+        RegisteredAgent("agent-c", adapters[2], {"audit": 80}),
+        RegisteredAgent("agent-d", adapters[3], {"verify": 70}),
+        RegisteredAgent("agent-e", adapters[4], {"criticize": 100}),
+    ]
+    orchestrator = Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    )
+
+    result = orchestrator.run_verify("test question")
+    assert result.status is RunStatus.COMPLETED
+    assert result.result_classification is ResultClassification.WITHHELD
+    assert result.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+    assert result.metadata.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+
+    events = storage.load(result.run_id).events
+    assert events[0].event_type == "run_created"
+    assert events[0].payload["participants"] == ["agent-b", "agent-c", "agent-d", "agent-e"]
+
+    # agent-e is not executed, but participants remain the full selected council
+    assert len(adapters[4].requests) == 0
+    assert not any(e.agent_id == "agent-e" for e in result.executions)
+    assert result.participants == ("agent-b", "agent-c", "agent-d", "agent-e")
+
+
+def test_four_ai_council_all_participate():
+    # Mirrors config/agents.yaml's role_priority split across
+    # claude-code/codex-cli/grok-cli/agy-cli: each of the 4 registered
+    # participants wins exactly the phase(s) that config assigns it, so
+    # this proves all 4 configured AI types can be selected and speak in
+    # one verify-mode council, not just the historical 2-agent case.
+    adapter_claude = ScriptedAgentAdapter([
+        {"answer": "claude-respond"},
+        {"answer": "claude-final"},
+    ])
+    adapter_codex = ScriptedAgentAdapter([
+        {"answer": "codex-respond"},
+        claims_output("verified", "major"),
+        {"status": "approved"},
+    ])
+    adapter_grok = ScriptedAgentAdapter([
+        claims_output("unverified", "major"),
+    ])
+    adapter_agy = ScriptedAgentAdapter([
+        {"critique": "agy-critique"},
+    ])
+    agents = [
+        RegisteredAgent("claude-code", adapter_claude, {"respond": 100, "synthesize": 100, "audit": 90}),
+        RegisteredAgent("codex-cli", adapter_codex, {"respond": 90, "verify": 100, "audit": 100}),
+        RegisteredAgent("grok-cli", adapter_grok, {"respond": 80, "claim_extract": 100, "clarify": 100}),
+        RegisteredAgent("agy-cli", adapter_agy, {"respond": 70, "criticize": 100, "clarify": 90}),
+    ]
+    orchestrator = Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        InMemoryStorageBackend(),
+    )
+
+    result = orchestrator.run_verify("What is the boiling point of water at sea level?")
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.result_classification is ResultClassification.VERIFIED
+    assert result.participants == ("claude-code", "codex-cli", "grok-cli", "agy-cli")
+
+    # every one of the 4 configured AI types actually executed at least one
+    # phase - not just selected as a participant on paper
+    phases_by_agent = {
+        "claude-code": [r.phase for r in adapter_claude.requests],
+        "codex-cli": [r.phase for r in adapter_codex.requests],
+        "grok-cli": [r.phase for r in adapter_grok.requests],
+        "agy-cli": [r.phase for r in adapter_agy.requests],
+    }
+    assert phases_by_agent["claude-code"] == ["respond", "synthesize"]
+    assert phases_by_agent["codex-cli"] == ["respond", "verify", "audit"]
+    assert phases_by_agent["grok-cli"] == ["claim_extract"]
+    assert phases_by_agent["agy-cli"] == ["criticize"]
+
+
+def test_quick_mode_flow_success():
+    # In quick mode:
+    # 1. respond #1 (agent-a) -> {"answer": "A"}
+    # 2. respond #2 (agent-b) -> {"answer": "B"}
+    # 3. compare (agent-a) -> {"comparison": "compared"}
+    # 4. synthesize (agent-a) -> {"answer": "quick-final"}
+    script_a = [
+        {"answer": "A"},
+        {"comparison": "compared"},
+        {"answer": "quick-final"},
+    ]
+    script_b = [
+        {"answer": "B"},
+    ]
+    orchestrator, adapter_a, adapter_b = build_raw(script_a, script_b)
+    result = orchestrator.run_verify("test question", mode="quick")
+    assert result.status == RunStatus.COMPLETED
+    assert result.result_classification == ResultClassification.UNVERIFIED
+    assert result.final_answer == "quick-final"
+    assert result.oracle_exit_code == 0
+    assert result.mode == "quick"
+    assert result.external_verification is False
+
+    phases = [p.phase for p in result.phases]
+    assert phases == ["respond", "compare", "synthesize"]
+    for p in result.phases:
+        assert p.status == PhaseStatus.SUCCEEDED
+# ---------------------------------------------------------------------------
+# S-4: ClarificationEngine -> Clarifier Agent wiring (QandA S-4.1-S-4.4)
+# ---------------------------------------------------------------------------
+
+_AMBIGUOUS_QUESTION = "どちらのプランが良いですか？"
+
+_READY_CLARIFY_OUTPUT = {
+    "status": "ready",
+    "refined_question": _AMBIGUOUS_QUESTION,
+    "assumptions": [],
+    "questions": [],
+}
+
+_NORMAL_FLOW_SCRIPT_A = [
+    {"answer": "A"},
+    {"claims": [{"claim_id": "c1", "importance": "major", "status": "unverified"}]},
+    {"claims": [{"claim_id": "c1", "importance": "major", "status": "verified"}]},
+    {"critique": "ok"},
+    {"answer": "final"},
+]
+_NORMAL_FLOW_SCRIPT_B = [{"answer": "B"}, {"status": "approved"}]
+
+
+def test_clarify_not_invoked_for_template_matching_question_call_count_seven():
+    orchestrator, adapter_a, adapter_b = build_raw(_NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B)
+    result = orchestrator.run_verify("この記事を要約してください")
+    assert result.call_count == 7
+    assert "clarify" not in [p.phase for p in result.phases]
+    assert [r.phase for r in adapter_a.requests][0] != "clarify"
+
+
+def test_clarify_invoked_for_critical_ambiguity_call_count_eight():
+    orchestrator, adapter_a, adapter_b = build_raw(
+        [_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B
+    )
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert result.call_count == 8
+    assert [r.phase for r in adapter_a.requests][0] == "clarify"
+    assert [p.phase for p in result.phases][0] == "clarify"
+    assert result.status is RunStatus.COMPLETED
+    assert result.oracle_exit_code == EXIT_OK
+
+
+def test_clarify_agent_selected_by_role_priority():
+    adapter_a = ScriptedAgentAdapter(_NORMAL_FLOW_SCRIPT_A)
+    adapter_b = ScriptedAgentAdapter([_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_B)
+    agents = [
+        RegisteredAgent("agent-a", adapter_a, role_priority={"clarify": 10}),
+        RegisteredAgent("agent-b", adapter_b, role_priority={"clarify": 100}),
+    ]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert [r.phase for r in adapter_a.requests][0] != "clarify"
+    assert [r.phase for r in adapter_b.requests][0] == "clarify"
+
+
+def test_clarify_agent_request_contains_the_question():
+    orchestrator, adapter_a, adapter_b = build_raw(
+        [_READY_CLARIFY_OUTPUT] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B
+    )
+    orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    clarify_request = adapter_a.requests[0]
+    assert clarify_request.phase == "clarify"
+    assert clarify_request.payload["question"] == _AMBIGUOUS_QUESTION
+
+
+def test_clarify_ready_with_assumptions_proceeds_to_normal_run():
+    output = dict(_READY_CLARIFY_OUTPUT)
+    output.update(status="ready_with_assumptions", assumptions=["region: Tokyo"])
+    orchestrator, adapter_a, adapter_b = build_raw([output] + _NORMAL_FLOW_SCRIPT_A, _NORMAL_FLOW_SCRIPT_B)
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert result.status is RunStatus.COMPLETED
+    assert result.final_answer == "final"
+
+
+def _stop_status_output(status, note="stop"):
+    return {
+        "status": status,
+        "refined_question": _AMBIGUOUS_QUESTION,
+        "assumptions": [],
+        "questions": [],
+        "note": note,
+    }
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["needs_clarification", "premise_issue", "unsupported", "safety_blocked"],
+)
+def test_clarify_stop_status_raises_clarification_stop_error_no_run_persisted(status):
+    storage = InMemoryStorageBackend()
+    adapter_a = ScriptedAgentAdapter([_stop_status_output(status)])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        storage,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == status
+    assert exc_info.value.exit_code == 2
+    assert storage._events == {}
+
+
+def test_clarify_critical_question_upgrades_to_needs_clarification_stop():
+    output = {
+        "status": "ready_with_assumptions",
+        "refined_question": _AMBIGUOUS_QUESTION,
+        "assumptions": [],
+        "questions": [{"text": "target?", "importance": "critical"}],
+    }
+    adapter_a = ScriptedAgentAdapter([output])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "needs_clarification"
+
+
+def test_clarify_agent_failure_raises_clarification_unavailable():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("EXECUTION_ERROR", "boom")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_agent_timeout_raises_clarification_unavailable():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("TIMEOUT", "timed out")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_agent_invalid_output_raises_clarification_unavailable():
+    # Simulates the adapter's own schema validation failure (empty response,
+    # malformed JSON, or a schema mismatch all surface as INVALID_OUTPUT
+    # before Orchestrator ever sees a dict) - the existing failure
+    # classification, unchanged for this new phase.
+    adapter_a = ScriptedAgentAdapter([AgentFailure("INVALID_OUTPUT", "missing field: status")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "clarification_unavailable"
+
+
+def test_clarify_auth_required_maps_to_auth_required_status():
+    adapter_a = ScriptedAgentAdapter([AgentFailure("AUTH_REQUIRED", "login required")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    orchestrator = orchestrator_module.Orchestrator(
+        agents,
+        FakeEvidenceProvider([{"evidence_id": "ev-1"}]),
+        TokenBudget(input_limit=10**6, output_limit=10**6),
+        None,
+    )
+    with pytest.raises(ClarificationStopError) as exc_info:
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    assert exc_info.value.status == "auth_required"
+    assert exc_info.value.exit_code == 3
+
+
+def test_clarify_skipped_entirely_in_quick_mode():
+    # J-3's quick-mode call graph (respond*2 -> compare -> synthesize) must
+    # stay untouched; quick mode has no clarify slot in its ExecutionPlan.
+    script_a = [{"answer": "A"}, {"comparison": "compared"}, {"answer": "quick-final"}]
+    script_b = [{"answer": "B"}]
+    orchestrator, adapter_a, adapter_b = build_raw(script_a, script_b)
+    result = orchestrator.run_verify(_AMBIGUOUS_QUESTION, mode="quick")
+    assert result.status is RunStatus.COMPLETED
+    assert [p.phase for p in result.phases] == ["respond", "compare", "synthesize"]
+
+
+def test_clarify_budget_settled_after_stop_error():
+    # The clarify pre-flight now runs inside run_verify's try/finally, so
+    # assert_settled() must still run (and not raise) even when clarify
+    # stops before a Run is created.
+    adapter_a = ScriptedAgentAdapter([_stop_status_output("needs_clarification")])
+    adapter_b = ScriptedAgentAdapter([])
+    agents = [RegisteredAgent("agent-a", adapter_a), RegisteredAgent("agent-b", adapter_b)]
+    budget = TokenBudget(input_limit=10**6, output_limit=10**6)
+    orchestrator = orchestrator_module.Orchestrator(
+        agents, FakeEvidenceProvider([{"evidence_id": "ev-1"}]), budget, None
+    )
+    with pytest.raises(ClarificationStopError):
+        orchestrator.run_verify(_AMBIGUOUS_QUESTION)
+    budget.assert_settled()  # must not raise

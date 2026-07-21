@@ -3,7 +3,7 @@ import subprocess
 
 from oracle_council.adapters.claude import ClaudeAdapter
 from oracle_council.adapters.codex import CodexAdapter
-from oracle_council.models import AgentRequest
+from oracle_council.models import AgentRequest, ProbeResult
 
 
 def completed(stdout: str):
@@ -18,7 +18,7 @@ def test_claude_adapter_accepts_japanese_question_with_mocked_subprocess(monkeyp
         return completed(json.dumps({"result": json.dumps({"answer": "ok"})}))
 
     adapter = ClaudeAdapter("claude-code")
-    monkeypatch.setattr(adapter, "probe", lambda: "OK")
+    monkeypatch.setattr(adapter, "probe", lambda: ProbeResult("OK"))
     monkeypatch.setattr("oracle_council.adapters.claude.subprocess.run", fake_run)
 
     result = adapter.execute(
@@ -42,7 +42,7 @@ def test_codex_adapter_accepts_japanese_question_with_mocked_subprocess(monkeypa
         return completed(json.dumps({"answer": "ok"}))
 
     adapter = CodexAdapter("codex-cli")
-    monkeypatch.setattr(adapter, "probe", lambda: "OK")
+    monkeypatch.setattr(adapter, "probe", lambda: ProbeResult("OK"))
     monkeypatch.setattr("oracle_council.adapters.codex.subprocess.run", fake_run)
 
     result = adapter.execute(

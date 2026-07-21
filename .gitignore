@@ -15,4 +15,3 @@ metrics*.jsonl
 spike_claude_websearch_result.json
 .autoloop/local.json
 .runtime/
-.autoloop/tasks.yaml

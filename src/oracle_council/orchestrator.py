@@ -13,12 +13,14 @@ from .assignment import (
     build_execution_plan,
 )
 from .budget import BudgetExceededError, TokenBudget
+from .clarification import STOP_STATUSES, ClarificationEngine, ClarificationStopError
 from .classification import classify, is_withheld
 from .models import (
     AgentExecutionRecord,
     AgentExecutionStatus,
     AgentFailure,
     AgentRequest,
+    AgentProbeSnapshot,
     AuditIssue,
     AuditIssueStatus,
     BudgetRequest,
@@ -38,6 +40,28 @@ from .models import (
 )
 from .storage import StorageBackend, StorageWriteError
 from .phase_schema import get_phase_schema
+import threading
+
+class ExecutionRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._registry: dict[str, tuple[str, Any]] = {}
+
+    def register(self, run_id: str, execution_id: str, adapter: Any) -> None:
+        with self._lock:
+            self._registry[execution_id] = (run_id, adapter)
+
+    def unregister(self, execution_id: str) -> None:
+        with self._lock:
+            self._registry.pop(execution_id, None)
+
+    def get_active_executions(self, run_id: str) -> list[tuple[str, Any]]:
+        with self._lock:
+            return [
+                (exec_id, adapter)
+                for exec_id, (rid, adapter) in self._registry.items()
+                if rid == run_id
+            ]
 
 # oracleExitCode (SPEC §13.4). Only the codes reachable from the phase-0
 # flow are mapped here; the remaining input/environment stops and cancel
@@ -47,6 +71,7 @@ EXIT_FAILED = 1
 EXIT_INSUFFICIENT_AGENTS = 3
 EXIT_VERIFICATION_UNAVAILABLE = 3
 EXIT_WITHHELD = 4
+EXIT_CANCELLED = 130
 
 _VERIFY_PHASES = ("respond", "respond", "claim_extract", "verify")
 _PUBLISH_PHASES = ("criticize", "synthesize", "audit")
@@ -71,12 +96,15 @@ _MINIMUM_SUCCESS = {
     "criticize": 1,
     "synthesize": 1,
     "audit": 1,
+    "compare": 1,
 }
 
 
 def _execution_status(error_code: str) -> AgentExecutionStatus:
     if error_code == "TIMEOUT":
         return AgentExecutionStatus.TIMED_OUT
+    if error_code == "CANCELLED":
+        return AgentExecutionStatus.CANCELLED
     if error_code in _UNAVAILABLE_ERROR_CODES:
         return AgentExecutionStatus.UNAVAILABLE
     return AgentExecutionStatus.FAILED
@@ -88,59 +116,83 @@ class Orchestrator:
     def __init__(
         self,
         agents: Sequence[RegisteredAgent],
-        evidence_provider: Any,
+        evidence_provider,
         budget: TokenBudget,
-        storage: Any = None,
+        storage: StorageBackend | None = None,
         store_content: bool = False,
-        snapshots: Sequence[Any] = (),
+        snapshots: Sequence[AgentProbeSnapshot] = (),
     ) -> None:
-        self._agents = agents
+        self._agents = tuple(agents)
         self._evidence_provider = evidence_provider
         self._budget = budget
         self._storage = storage
         self._store_content = store_content
-        if not snapshots and agents:
-            from .models import AgentProbeSnapshot, utc_now
-            temp_snapshots = []
-            for agent in agents:
-                try:
-                    status = agent.adapter.probe()
-                except AttributeError:
-                    status = "OK"
-                try:
-                    caps = agent.adapter.capabilities()
-                except AttributeError:
-                    caps = {"supported_models": ["mock-model"]}
-                temp_snapshots.append(
-                    AgentProbeSnapshot(
-                        agent_id=agent.agent_id,
-                        status=status,
-                        capabilities=caps,
-                        probed_at=utc_now()
-                    )
-                )
-            self._snapshots = tuple(temp_snapshots)
-        else:
-            self._snapshots = tuple(snapshots)
+        self._snapshots = tuple(snapshots)
+        self._registry = ExecutionRegistry()
+        self._cancelled_runs: set[str] = set()
 
-    def run_verify(self, question: str) -> RunResult:
+    def cancel(self, run_id: str) -> None:
+        active = self._registry.get_active_executions(run_id)
+        threads = []
+        for exec_id, adapter in active:
+            t = threading.Thread(target=adapter.cancel, args=(exec_id,))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+    def run_verify(self, question: str, mode: str = "verify") -> RunResult:
         # Pre-flight (V-1): assignment failures such as insufficient_agents
         # stop before a Run exists, so nothing is persisted and the error
         # propagates to the CLI layer with its own status and exit code.
         run_id = str(uuid4())
-        plan = build_execution_plan(run_id, self._agents, self._snapshots)
+        plan = build_execution_plan(run_id, self._agents, mode=mode)
         sequence = count(1)
         state = _RunState(question, plan)
         try:
+            # S-4: clarification runs before run_created, same as the
+            # assignment pre-flight above - a stop status (needs_clarification
+            # etc.) must never leave a Run behind. quick mode has no clarify
+            # slot in its ExecutionPlan (J-3) and is skipped here entirely.
+            clarify_execution = (
+                self._run_clarification(run_id, plan, state, sequence)
+                if mode != "quick"
+                else None
+            )
             self._append(
                 run_id,
                 "run_created",
-                {
-                    "mode": "verify",
-                    "participants": list(plan.participants),
-                    "agent_snapshots": [s.to_dict() for s in self._snapshots],
-                },
+                {"mode": mode, "participants": list(plan.participants)},
             )
+            if clarify_execution is not None:
+                self._append(
+                    run_id,
+                    "agent_execution_succeeded",
+                    {
+                        "phase": "clarify",
+                        "execution_id": clarify_execution.execution_id,
+                        "agent_id": clarify_execution.agent_id,
+                        "process_exit_code": clarify_execution.process_exit_code,
+                    },
+                )
+            if mode == "quick":
+                respond_index = 0
+                for phase in ("respond", "respond", "compare", "synthesize"):
+                    slot_index = respond_index if phase == "respond" else 0
+                    if phase == "respond":
+                        respond_index += 1
+                    failure = self._execute_phase(run_id, phase, slot_index, sequence, state)
+                    if failure is not None:
+                        return failure
+                return self._finish(
+                    run_id,
+                    RunStatus.COMPLETED,
+                    ResultClassification.UNVERIFIED,
+                    state.final_answer,
+                    state,
+                    EXIT_OK,
+                )
+
             respond_index = 0
             for phase in _VERIFY_PHASES:
                 slot_index = respond_index if phase == "respond" else 0
@@ -222,15 +274,98 @@ class Orchestrator:
                 call_count=state.calls,
                 oracle_exit_code=EXIT_FAILED,
                 evidence=_evidence_snapshot(state),
-                participants=plan.participants,
+                original_question=state.question,
+                refined_question=state.refined_question,
+                clarification_status=state.clarification_status,
+                clarification_assumptions=tuple(state.clarification_assumptions),
+                audit_status=state.audit_status,
             )
         finally:
             self._budget.assert_settled()
+
+    def _run_clarification(
+        self, run_id: str, plan: ExecutionPlan, state: "_RunState", sequence
+    ) -> AgentExecutionRecord | None:
+        """S-4: deterministic pre-check (tiers 1/2), then the Clarifier
+        Agent only for a critical ambiguity (QandA S-4.3). Returns the
+        execution record to fold into the Run once it is created, or None
+        when tiers 1/2 resolved the question without an agent call.
+        Raises ClarificationStopError (no Run created) for every stop
+        status, matching InsufficientAgentsError's pre-flight contract.
+        """
+        engine = ClarificationEngine()
+        precheck = engine.inspect(state.question)
+        if not precheck.agent_required:
+            state.clarification_assumptions = precheck.assumptions
+            state.clarification_status = precheck.status
+            if precheck.result is not None:
+                state.refined_question = precheck.result.refined_question
+            return None
+
+        assignment = plan.assignment_for("clarify", 0)
+        agents_by_id = {agent.agent_id: agent for agent in self._agents}
+        candidates = [
+            agents_by_id[agent_id]
+            for agent_id in assignment.candidate_agent_ids
+            if state.agent_status(agent_id) == "available"
+        ]
+        if not candidates:
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                "利用可能なClarifier Agentがありません",
+                exit_code=3,
+            )
+        agent = candidates[0]
+        execution_id = f"exec-{next(sequence)}"
+        try:
+            result = self._attempt(run_id, "clarify", agent, execution_id, None, None, state)
+        except BudgetExceededError:
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                "Clarifier Agent呼び出しの予算を確保できません",
+                exit_code=3,
+            ) from None
+        except AgentFailure as failure:
+            if failure.error_code == "AUTH_REQUIRED":
+                raise ClarificationStopError(
+                    "auth_required", "Clarifier Agentの認証が必要です", exit_code=3
+                ) from failure
+            raise ClarificationStopError(
+                "clarification_unavailable",
+                f"Clarifier Agentを実行できませんでした: {failure.error_code}",
+                exit_code=3,
+            ) from failure
+
+        evaluated = engine.evaluate_agent_output(state.question, None, result.output)
+        if evaluated.status in STOP_STATUSES:
+            raise ClarificationStopError(
+                evaluated.status,
+                evaluated.note or "追加の質問回答が必要です",
+                exit_code=2,
+            )
+
+        state.clarification_assumptions = evaluated.assumptions
+        state.clarification_status = evaluated.status
+        state.refined_question = evaluated.refined_question
+        record = state.phase(run_id, "clarify")
+        record.status = PhaseStatus.SUCCEEDED
+        record.success_count = 1
+        record.finished_at = utc_now()
+        return state.executions[-1]
 
     def _execute_phase(
         self, run_id: str, phase: str, slot_index: int, sequence, state: _RunState
     ) -> RunResult | None:
         """Execute one logical slot using the immutable plan candidate order."""
+        if run_id in self._cancelled_runs:
+            record = state.phase(run_id, phase)
+            record.status = PhaseStatus.CANCELLED
+            record.error_code = "PHASE_CANCELLED"
+            record.error_summary = _summary(phase, "PHASE_CANCELLED")
+            record.finished_at = utc_now()
+            return self._finish(
+                run_id, RunStatus.CANCELLED, ResultClassification.UNVERIFIED, None, state, EXIT_CANCELLED
+            )
         record = state.phase(run_id, phase)
         assignment = state.plan.assignment_for(phase, slot_index)
         agents_by_id = {agent.agent_id: agent for agent in self._agents}
@@ -276,6 +411,14 @@ class Orchestrator:
                         **({"substitute_for": substitute_for} if substitute_for else {}),
                     },
                 )
+                if failure.error_code == "CANCELLED":
+                    record.status = PhaseStatus.CANCELLED
+                    record.error_code = "PHASE_CANCELLED"
+                    record.error_summary = _summary(phase, "PHASE_CANCELLED")
+                    record.finished_at = utc_now()
+                    return self._finish(
+                        run_id, RunStatus.CANCELLED, ResultClassification.UNVERIFIED, None, state, EXIT_CANCELLED
+                    )
                 failed_slot_agents.add(agent.agent_id)
                 if failure.error_code in _UNAVAILABLE_ERROR_CODES:
                     state.mark_run_unavailable(agent.agent_id, failure.error_code)
@@ -372,6 +515,7 @@ class Orchestrator:
                     "process_exit_code": getattr(result, "process_exit_code", None),
                     **({"retry_of": retry_of} if retry_of else {}),
                     **({"substitute_for": substitute_for} if substitute_for else {}),
+                    **self._audit_trail_content(phase, result.output),
                 },
             )
             if phase == "respond":
@@ -381,6 +525,29 @@ class Orchestrator:
             elif phase == "audit":
                 state.current_auditor_agent_id = agent.agent_id
             return None
+
+    def _audit_trail_content(self, phase: str, output: dict) -> dict:
+        """W-12: when --store-content is set, persist synthesize drafts and
+        audit results/issues to the event log even when the run ends up
+        withheld, so "audit rejected it but nobody can see what was
+        rejected" is not a silent gap. Every key here is explicitly tagged
+        "disclosure": "internal_audit_trail_only" so it is never mistaken
+        for the published user-facing final answer, which stays gated by
+        the normal publish/withhold decision and is never exposed here."""
+        if not self._store_content:
+            return {}
+        if phase == "synthesize":
+            return {
+                "draft_answer": output.get("answer"),
+                "disclosure": "internal_audit_trail_only",
+            }
+        if phase == "audit":
+            return {
+                "audit_result_status": output.get("status"),
+                "audit_issues": output.get("issues", []),
+                "disclosure": "internal_audit_trail_only",
+            }
+        return {}
 
     def _select_initial_agent(self, phase, slot_index, assignment, state, agents_by_id):
         candidates = [
@@ -396,7 +563,7 @@ class Orchestrator:
             candidates.sort(key=lambda item: item.agent_id != state.current_synthesizer_agent_id)
         if phase == "audit" and state.current_auditor_agent_id:
             candidates.sort(key=lambda item: item.agent_id != state.current_auditor_agent_id)
-        if phase == "synthesize":
+        if phase == "synthesize" and state.plan.mode != "quick":
             candidates = [
                 a for a in candidates
                 if any(
@@ -426,7 +593,7 @@ class Orchestrator:
             ]
         if phase == "audit" and state.current_synthesizer_agent_id:
             candidates = [a for a in candidates if a.agent_id != state.current_synthesizer_agent_id]
-        if phase == "synthesize":
+        if phase == "synthesize" and state.plan.mode != "quick":
             audit_ids = state.plan.assignment_for("audit").candidate_agent_ids
             candidates = [
                 a for a in candidates
@@ -439,6 +606,8 @@ class Orchestrator:
         return candidates[0] if candidates else None
 
     def _attempt(self, run_id, phase, agent, execution_id, retry_of, substitute_for, state: _RunState):
+        if run_id in self._cancelled_runs:
+            raise AgentFailure("CANCELLED", "run cancelled")
         # Retry and substitution are separate executions and reservations (S-7).
         reservation = self._budget.reserve(BudgetRequest(run_id, execution_id, phase, 100, 20))
         started_at = utc_now()
@@ -452,8 +621,16 @@ class Orchestrator:
                 "evidence": state.evidence,
                 "critique": state.critique,
                 "final_answer": state.final_answer,
+                # W-12: empty on the first synthesize call, populated with
+                # the prior audit's issues on a revision - see
+                # adapters/base.py's _PHASE_CONTEXT_KEYS["synthesize"].
+                "audit_issues": state.last_audit_issues,
             }
-            result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload, get_phase_schema(phase)))
+            self._registry.register(run_id, execution_id, agent.adapter)
+            try:
+                result = agent.adapter.execute(AgentRequest(run_id, execution_id, phase, payload, get_phase_schema(phase)))
+            finally:
+                self._registry.unregister(execution_id)
             state.calls += 1
             self._budget.commit(reservation.reservation_id, result.usage)
             state.executions.append(
@@ -520,6 +697,8 @@ class Orchestrator:
             state.claims = _merge_verified_claims(state.claims, output.get("claims", []))
         elif phase == "criticize":
             state.critique = output.get("critique", "")
+        elif phase == "compare":
+            state.critique = output.get("comparison", output.get("critique", ""))
         elif phase == "synthesize":
             state.final_answer = output["answer"]
         elif phase == "audit":
@@ -595,7 +774,7 @@ class Orchestrator:
         metadata = RunMetadataRecord(
             run_id=run_id,
             created_at=state.created_at,
-            mode="verify",
+            mode=state.plan.mode,
             status=status,
             result_classification=classification,
             consensus_status="not_applicable",
@@ -607,6 +786,7 @@ class Orchestrator:
             content_saved=self._store_content,
             oracle_exit_code=oracle_exit_code,
             participants=state.plan.participants,
+            audit_status=state.audit_status,
             agent_snapshots=tuple(s.to_dict() for s in self._snapshots),
         )
         result = RunResult(
@@ -616,6 +796,7 @@ class Orchestrator:
             final_answer=answer,
             call_count=state.calls,
             oracle_exit_code=oracle_exit_code,
+            mode=state.plan.mode,
             claims=state.claims,
             audit_issues=tuple(state.issues),
             phases=tuple(state.phases.values()),
@@ -623,6 +804,11 @@ class Orchestrator:
             metadata=metadata,
             evidence=_evidence_snapshot(state),
             participants=state.plan.participants,
+            original_question=state.question,
+            refined_question=state.refined_question,
+            clarification_status=state.clarification_status,
+            clarification_assumptions=tuple(state.clarification_assumptions),
+            audit_status=state.audit_status,
             agent_snapshots=self._snapshots,
         )
         self._append(
@@ -834,6 +1020,9 @@ class _RunState:
         self.current_auditor_agent_id: str | None = None
         self.phases: dict[str, PhaseRecord] = {}
         self.executions: list[AgentExecutionRecord] = []
+        self.clarification_assumptions: list[str] = []
+        self.refined_question = question
+        self.clarification_status = "ready"
 
     def phase(self, run_id: str, name: str) -> PhaseRecord:
         if name not in self.phases:

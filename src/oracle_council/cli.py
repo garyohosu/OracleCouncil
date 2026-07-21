@@ -15,18 +15,21 @@ from .budget import TokenBudget
 from .evidence import ManualEvidenceProvider, SafeHttpFetcher, WebEvidenceProvider
 from .fakes import FakeEvidenceProvider
 from .models import (
+    AgentCapabilities,
     AgentFailure,
     AgentRequest,
     AgentResult,
+    AgentProbeSnapshot,
+    ProbeResult,
     RunResult,
     RunStatus,
     SearchError,
     Usage,
     safe_error_summary,
-    AgentProbeSnapshot,
 )
+from .clarification import ClarificationEngine, ClarificationStopError
 from .orchestrator import Orchestrator
-from .adapters import CliSearchProvider, ClaudeAdapter, CodexAdapter
+from .adapters import AgyAdapter, CliSearchProvider, ClaudeAdapter, CodexAdapter, GrokAdapter
 from .storage import (
     JSONLStorageBackend,
     StorageCorruptionError,
@@ -52,31 +55,48 @@ class FakeAgentAdapter:
         self.agent_id = agent_id
         self.mock_status = mock_status
         self._capabilities = capabilities or {"supported_models": ["mock-model"]}
-        self._probe_cache: str | None = None
+        self._probe_cache: ProbeResult | None = None
 
-    def probe(self) -> str:
+    def probe(self) -> ProbeResult:
         if self._probe_cache is not None:
             return self._probe_cache
         env_status = os.environ.get(f"ORACLE_MOCK_PROBE_{self.agent_id.upper()}")
-        if env_status:
-            result = env_status
-        else:
-            result = self.mock_status
-        self._probe_cache = result
-        return result
-
-    def capabilities(self) -> dict[str, Any]:
-        caps = dict(self._capabilities)
-        caps.setdefault("supports_read_only", True)
-        caps.setdefault("supports_no_tools", True)
-        return caps
+        status = env_status or self.mock_status
+        if status != "OK":
+            self._probe_cache = ProbeResult(status)
+            return self._probe_cache
+        caps = AgentCapabilities(
+            adapter_family=self._capabilities.get("adapter_family", "fake-family"),
+            adapter_version=self._capabilities.get("adapter_version", "1.0"),
+            cli_version=self._capabilities.get("cli_version", "1.0"),
+            supported_phases=tuple(self._capabilities.get("supported_phases", (
+                "clarify", "respond", "claim_extract", "verify", "criticize", "synthesize", "audit"
+            ))),
+            supports_read_only=self._capabilities.get("supports_read_only", True),
+            supports_no_tools=self._capabilities.get("supports_no_tools", True),
+        )
+        self._probe_cache = ProbeResult("OK", caps)
+        return self._probe_cache
 
     def execute(self, request: AgentRequest) -> AgentResult:
-        status = self.probe()
-        if status != "OK":
-            raise AgentFailure(status, f"Agent {self.agent_id} unavailable with status: {status}")
+        probe_res = self.probe()
+        if probe_res.status != "OK":
+            raise AgentFailure(probe_res.status, f"Agent {self.agent_id} unavailable with status: {probe_res.status}")
 
         phase = request.phase
+        if phase == "clarify":
+            question = request.payload.get("question", "")
+            status_val = os.environ.get("ORACLE_MOCK_CLARIFY_STATUS", "ready")
+            return AgentResult(
+                {
+                    "status": status_val,
+                    "refined_question": question,
+                    "assumptions": [],
+                    "questions": [],
+                    "note": "mock clarification note" if status_val != "ready" else "",
+                },
+                Usage(100, 20),
+            )
         if phase == "respond":
             return AgentResult({"answer": f"Mock respond from {self.agent_id}"}, Usage(100, 20))
         elif phase == "claim_extract":
@@ -150,74 +170,60 @@ def load_config() -> dict[str, Any]:
                 raise ConfigurationError("Invalid config format: missing 'agents'")
             return data
     except Exception as e:
-        raise ConfigurationError(f"Failed to load config: {e}")
+            raise ConfigurationError(f"Failed to load config: {e}")
 
 
 def create_adapter(entry: dict[str, Any], adapter_mode: str) -> Any:
     agent_id = entry["id"]
     implementation = entry.get("implementation", "mock")
-    if adapter_mode == "real":
-        use_real = True
-    elif adapter_mode == "fake":
-        use_real = False
-    else:
-        use_real = (
-            os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1"
-            or implementation == "real"
-        )
+    use_real = adapter_mode == "real" or (
+        adapter_mode != "fake"
+        and (os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1" or implementation == "real")
+    )
     if use_real and entry.get("adapter") == "claude":
         return ClaudeAdapter(agent_id, entry.get("model"))
-    elif use_real and entry.get("adapter") == "codex":
+    if use_real and entry.get("adapter") == "codex":
         return CodexAdapter(agent_id, entry.get("model"))
-    else:
-        return FakeAgentAdapter(
-            agent_id=agent_id,
-            mock_status=entry.get("mock_status", "OK"),
-            capabilities=entry.get("capabilities"),
-        )
+    if use_real and entry.get("adapter") == "grok":
+        return GrokAdapter(agent_id, entry.get("model"))
+    if use_real and entry.get("adapter") == "agy":
+        return AgyAdapter(agent_id, entry.get("model"))
+    return FakeAgentAdapter(agent_id, entry.get("mock_status", "OK"), entry.get("capabilities"))
 
 
-def probe_agents(
-    config_agents: list[dict[str, Any]],
-    adapter_mode: str
-) -> tuple[list[RegisteredAgent], list[AgentProbeSnapshot]]:
+def _capabilities_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, AgentCapabilities):
+        return {
+            "adapter_family": value.adapter_family,
+            "adapter_version": value.adapter_version,
+            "cli_version": value.cli_version,
+            "supported_phases": list(value.supported_phases),
+            "supports_read_only": value.supports_read_only,
+            "supports_no_tools": value.supports_no_tools,
+        }
+    return dict(value or {})
+
+
+def probe_agents(config_agents: list[dict[str, Any]], adapter_mode: str):
     agents = []
     snapshots = []
     for entry in config_agents:
         if not entry.get("enabled", True):
             continue
-        agent_id = entry["id"]
         adapter = create_adapter(entry, adapter_mode)
         try:
-            status = adapter.probe()
+            probe = adapter.probe()
+            status = probe.status if isinstance(probe, ProbeResult) else probe
+            capabilities = _capabilities_dict(getattr(probe, "capabilities", None))
         except Exception:
             status = "EXECUTION_ERROR"
-        try:
-            caps = adapter.capabilities()
-        except Exception:
-            caps = {"supported_models": ["error-fallback"]}
-
-        config_caps = entry.get("capabilities")
-        if config_caps and isinstance(config_caps, dict):
-            merged_caps = dict(caps)
-            merged_caps.update(config_caps)
-            caps = merged_caps
-
-        snapshot = AgentProbeSnapshot(
-            agent_id=agent_id,
-            status=status,
-            capabilities=caps,
-            probed_at=utc_now(),
-            error_code=status if status != "OK" else None
-        )
-        snapshots.append(snapshot)
-        agents.append(
-            RegisteredAgent(
-                agent_id=agent_id,
-                adapter=adapter,
-                role_priority=entry.get("role_priority", {}),
-            )
-        )
+            capabilities = {}
+        capabilities.update(entry.get("capabilities") or {})
+        snapshots.append(AgentProbeSnapshot(
+            agent_id=entry["id"], status=status, capabilities=capabilities,
+            probed_at=utc_now(), error_code=status if status != "OK" else None,
+        ))
+        agents.append(RegisteredAgent(entry["id"], adapter, entry.get("role_priority", {})))
     return agents, snapshots
 
 
@@ -362,20 +368,20 @@ def output_run_result(result: RunResult, use_json: bool) -> int:
             # Compatibility alias (S-8): schema 1.x keeps the old top-level
             # name; it is always identical to oracle_exit_code.
             "exit_code": result.oracle_exit_code,
-            "mode": "verify",
+            "mode": result.mode,
             "question": {
-                "original": "元の質問",
-                "refined": "整理後の質問",
-                "clarification_status": "ready",
-                "assumptions": [],
+                "original": result.original_question,
+                "refined": result.refined_question,
+                "clarification_status": result.clarification_status,
+                "assumptions": list(result.clarification_assumptions),
             },
             "participants": list(result.participants),
             "answer": {
                 "text": result.final_answer,
                 "result_classification": result.result_classification.value,
                 "consensus_status": "not_applicable",
-                "audit_status": "approved",
-                "external_verification": True,
+                "audit_status": result.audit_status,
+                "external_verification": result.external_verification,
             },
             "claims": [
                 {
@@ -450,13 +456,6 @@ def cmd_ask(args) -> int:
                     )
                 args.mode = "strict"
 
-    if "clarify_trigger" in args.question:
-        if args.no_interactive:
-            return exit_stop("needs_clarification", 2, "追加の質問回答が必要です", args.json)
-        else:
-            sys.stderr.write("追加質問: 用途は何ですか？: ")
-            sys.stdin.readline().strip()
-
     if "unsupported_trigger" in args.question:
         return exit_stop("unsupported", 2, "サポートされていない質問です", args.json)
 
@@ -480,7 +479,41 @@ def cmd_ask(args) -> int:
     except ConfigurationError as e:
         return exit_stop("configuration_error", 3, str(e), args.json)
 
-    agents, snapshots = probe_agents(config_data.get("agents", []), args.adapter_mode)
+    agents = []
+    for entry in config_data.get("agents", []):
+        if entry.get("enabled", True):
+            agent_id = entry["id"]
+            implementation = entry.get("implementation", "mock")
+            if args.adapter_mode == "real":
+                use_real = True
+            elif args.adapter_mode == "fake":
+                use_real = False
+            else:
+                use_real = (
+                    os.environ.get("ORACLE_COUNCIL_USE_REAL") == "1"
+                    or implementation == "real"
+                )
+            if use_real and entry.get("adapter") == "claude":
+                adapter = ClaudeAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "codex":
+                adapter = CodexAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "grok":
+                adapter = GrokAdapter(agent_id, entry.get("model"))
+            elif use_real and entry.get("adapter") == "agy":
+                adapter = AgyAdapter(agent_id, entry.get("model"))
+            else:
+                adapter = FakeAgentAdapter(
+                    agent_id=agent_id,
+                    mock_status=entry.get("mock_status", "OK"),
+                    capabilities=entry.get("capabilities"),
+                )
+            agents.append(
+                RegisteredAgent(
+                    agent_id=entry["id"],
+                    adapter=adapter,
+                    role_priority=entry.get("role_priority", {}),
+                )
+            )
 
     # Pre-flight availability (§6.4, V-1): agents whose probe fails are absent
     # for this run. Quota exhaustion is NOT probe-detectable (a version probe
@@ -489,12 +522,15 @@ def cmd_ask(args) -> int:
     available_agents = []
     unavailable = []
     for agent in agents:
-        snap = next(s for s in snapshots if s.agent_id == agent.agent_id)
-        if snap.status == "OK":
+        try:
+            probe_res = agent.adapter.probe()
+            probe_status = probe_res.status
+        except Exception:
+            probe_status = "EXECUTION_ERROR"
+        if probe_status == "OK":
             available_agents.append(agent)
         else:
-            unavailable.append(f"{agent.agent_id}={snap.status}")
-
+            unavailable.append(f"{agent.agent_id}={probe_status}")
     if len(available_agents) < 2:
         detail = ", ".join(unavailable) if unavailable else "agents configured: 0"
         return exit_stop(
@@ -503,10 +539,6 @@ def cmd_ask(args) -> int:
             f"参加可能なAgentが2未満です（利用不能: {detail}）",
             args.json,
         )
-
-    # S-9: configured adapters and Run participants are separate concepts.
-    # Keep the first four available entries deterministically.
-    # The actual selection happens inside build_execution_plan, keeping available_agents as eligible agents here.
 
     if args.no_store:
         storage = None
@@ -544,15 +576,24 @@ def cmd_ask(args) -> int:
         budget=TokenBudget(input_limit=10**6, output_limit=10**6),
         storage=storage,
         store_content=args.store_content,
-        snapshots=snapshots,
     )
 
     if not args.json:
         sys.stderr.write("Starting Oracle Council...\n")
-        sys.stderr.write("[1/7] 質問を整理しています\n")
+        if args.mode == "quick":
+            sys.stderr.write("[1/4] 2 Agentが独立回答中...\n")
+        else:
+            # S-4.4: the total is computed from the same deterministic
+            # pre-check Orchestrator itself runs, not a hardcoded guess -
+            # it only becomes 8 when a critical ambiguity actually requires
+            # the Clarifier Agent (QandA S-4.3); otherwise it stays 7,
+            # unchanged from before S-4 existed.
+            precheck = ClarificationEngine().inspect(args.question)
+            total_calls = 8 if precheck.agent_required else 7
+            sys.stderr.write(f"[1/{total_calls}] 質問を整理しています\n")
 
     try:
-        result = orchestrator.run_verify(args.question)
+        result = orchestrator.run_verify(args.question, mode=args.mode)
         return output_run_result(result, args.json)
     except SearchError as e:
         return exit_stop(
@@ -563,6 +604,8 @@ def cmd_ask(args) -> int:
         )
     except InsufficientAgentsError as e:
         return exit_stop("insufficient_agents", 3, str(e), args.json)
+    except ClarificationStopError as e:
+        return exit_stop(e.status, e.exit_code, str(e), args.json)
     except Exception as e:
         return exit_stop("internal_error", 1, str(e), args.json)
 
@@ -574,13 +617,25 @@ def cmd_agents_status(args) -> int:
         sys.stderr.write(f"Configuration error: {e}\n")
         return 3
 
-    adapter_mode = getattr(args, "adapter_mode", "config")
-    agents, snapshots = probe_agents(config_data.get("agents", []), adapter_mode)
+    for entry in config_data.get("agents", []):
+        agent_id = entry["id"]
+        enabled = entry.get("enabled", True)
+        if not enabled:
+            continue
 
-    for snap in snapshots:
-        print(f"Agent ID: {snap.agent_id}")
-        print(f"  Status: {snap.status}")
-        print(f"  Capabilities: {snap.capabilities}")
+        adapter = FakeAgentAdapter(
+            agent_id=agent_id,
+            mock_status=entry.get("mock_status", "OK"),
+            capabilities=entry.get("capabilities"),
+        )
+
+        probe_res = adapter.probe()
+        status = probe_res.status
+        caps = probe_res.capabilities
+
+        print(f"Agent ID: {agent_id}")
+        print(f"  Status: {status}")
+        print(f"  Capabilities: {caps}")
     return 0
 
 
@@ -604,18 +659,16 @@ def cmd_agents_validate(args) -> int:
             errors.append(f"Duplicate agent ID: {agent_id}")
         agent_ids.add(agent_id)
 
-    if errors:
-        for err in errors:
-            sys.stderr.write(f"Validation error: {err}\n")
-        return 3
-
-    adapter_mode = getattr(args, "adapter_mode", "config")
-    agents, snapshots = probe_agents(config_data.get("agents", []), adapter_mode)
-
-    for snap in snapshots:
-        enabled_count += 1
-        if snap.status != "OK":
-            errors.append(f"Agent {snap.agent_id} probe failed: {snap.status}")
+        if entry.get("enabled", True):
+            enabled_count += 1
+            adapter = FakeAgentAdapter(
+                agent_id=agent_id,
+                mock_status=entry.get("mock_status", "OK"),
+            )
+            probe_res = adapter.probe()
+            status = probe_res.status
+            if status != "OK":
+                errors.append(f"Agent {agent_id} probe failed: {status}")
 
     if enabled_count < 2:
         errors.append("Fewer than 2 enabled agents configured.")
@@ -708,6 +761,13 @@ def cmd_history_purge(args) -> int:
 
 
 def main(args: list[str] | None = None) -> int:
+    # W-11: on Windows, stdout/stderr default to the system codepage (e.g.
+    # cp932) instead of UTF-8 once redirected to a file/pipe, silently
+    # corrupting every non-ASCII character in --json output. reconfigure()
+    # is a no-op where streams are already UTF-8 (most non-Windows setups).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     if args is None:
         args = sys.argv[1:]
 

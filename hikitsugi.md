@@ -420,32 +420,252 @@ CLI JSONはトップレベル`oracle_exit_code`を正式フィールドとし、
 
 `assignment.py`の`InsufficientAgentsError.exit_code = 3`はOracle側の値でありcli.pyからも読まれていないが、今回の許可変更範囲外のため未変更。実Claude、実Codex、WebSearch、実HTTP、live評価、q01〜q08は実行していない。ドキュメントはQandA（S-8回答確定）、SPEC v0.3.10（§8.5/§13.4/§14/§15.8）、CLASS（processExitCode/oracleExitCode、曖昧なexitCode除去）、TESTCASE（S-8 BLOCKED解除3箇所）、FIX_PLAN（0-9追加、§2からL-5/S-8行を解消済みへ）を更新。未解決はq03 DNS failure-boundary、S-9/S-10、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
 
-## X-8.21 S-9 participants定義統一（2026-07-15）
+## X-8.20 q03 DNS failure-boundaryの修正（2026-07-14）
 
-S-9仕様を確定し通常実装した（QandA回答確定、SPEC v0.3.11）。
-Configured Adapter数（0..*）、Eligible Agent数（利用可能エージェント）、Selected Participants数（RunのCouncil構成員：2..4）、Executions数（実際のアクション実行）を明確に分離した。
-選定ロジックの正本を `build_execution_plan` (内部で `select_run_participants` を呼び出し) の1箇所に集約。これにより、設定ファイルから読み込まれた全Adapterの中からprobeに成功した利用可能（Eligible）エージェントが渡された際、決定的に先頭最大4件を選択する。CLIレイヤー（`cli.py`）で事前に `select_run_participants` を適用して切り捨ててしまう二重管理を廃止した。
+実行前HEADは`f13b043`（X-8.19コミット`f13b043`到達、`cd8422e`/`8bbc076`祖先確認済み、`git status --short`完全に空、`origin/main`一致）。実Claude/Codex、WebSearch、実HTTP、live評価、q03再実行は行っていない。
 
-ExecutionPlanの `configured_agent_ids` を `participants` に正式rename。
-RunResult、run_createdイベント、CLI JSONトップレベル、RunMetadataRecordの `participants` 定義をselected participants（選定された最大4名のエージェントIDリスト）に統一し、実行されなかった（skip/failure）エージェントがあっても初期に選定されたparticipantsを維持するようにした。また、executions（実際に実行されたもの）から逆算してparticipantsを決める既存のCLI JSONロジックを廃止。
+**q03漏出の正確な原因箇所**: `SafeHttpFetcher.fetch()`のリダイレクトループは各hopの先頭で`self._validate_url(current)`を呼ぶが、この呼び出しは`fetch()`内のどのtry/exceptブロックの外にもあった。`_validate_url()`はSSRF事前チェックのため`self._resolver(parsed.hostname)`（既定は`socket.getaddrinfo`）を直接呼んでおり、DNS解決に失敗すると`socket.gaierror`がそのまま`_validate_url()`→`fetch()`外へ漏れていた。この生例外は`WebEvidenceProvider.fetch()`（個別fetch、無catch）、`WebEvidenceProvider.collect_with_metrics()`（`except EvidenceFetchError`のみ）、`Orchestrator._collect_evidence()`／`_apply_output()`／`_execute_phase()`（いずれも`except SearchError`のみ）のどの型付きハンドラにも一致せず、`run_verify()`全体を素通りしてCLIの`except Exception as e: return exit_stop("internal_error", 1, str(e), args.json)`まで到達し、`message`に`str(socket.gaierror(...))`＝`"[Errno 11001] getaddrinfo failed"`が生のまま出ていた。これがX-8.14 q03の直接原因であることをFakeで確定した。なお`opener.open()`側で発生する`URLError(socket.gaierror(...))`は、既存の`except (URLError, TimeoutError, OSError)`で従来から正しく`EvidenceFetchError("FETCH_FAILED", ...)`へ変換されており、この経路は漏出していなかった（回帰テストで契約を明示的に固定した）。
 
-テスト: `tests/unit/test_cli.py` に `test_cli_ask_five_agents_participants_capped_at_four` を追加。5件のエージェントが設定・利用可能な場合でも、`participants` と `metadata.participant_count` が最大4に制限され、先頭4件が決定的に選ばれること、およびCLI JSONとイベントログで整合していることを検証した。
-通常pytest `293 passed, 6 deselected` （baseline 292から+1）、`git diff --check` 成功。
+**再現した例外形**: `socket.gaierror(11001, "getaddrinfo failed")`（resolver直接失敗）と`urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed"))`（HTTP層に包まれた形）の両方をFakeで再現した。前者は修正前に生のまま`SafeHttpFetcher.fetch()`外へ漏れることを確認し、後者は修正前から既に正しく変換されていることを確認した。
 
-ドキュメント更新: QandA（S-9回答確定）、SPEC v0.3.11（§6.4/§14/§15.8）、CLASS（ExecutionPlan.configuredAgentIds -> participants、Run/RunMetadataRecordにparticipants追加）、TESTCASE（S-9 BLOCKED解消）、FIX_PLAN（0-10追加、S-9を未確定テーブルから解消済みへ）を更新。
-未解決: q03 DNS failure-boundary、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+**修正した境界**: `SafeHttpFetcher._validate_url()`内の`self._resolver(parsed.hostname)`呼び出しを`try/except socket.gaierror`で囲み、`EvidenceFetchError("FETCH_FAILED", "DNS resolution failed")`へ変換する1箇所だけを変更した。`WebEvidenceProvider`・`Orchestrator`・`cli.py`は無変更（型付きエラーを既存契約どおり処理するだけで済んだ）。CLIへの`except socket.gaierror`や広い`except OSError`の追加は行っていない。
 
-## X-8.22 S-10 probe and capabilities snapshot（2026-07-15）
+**採用した公開error codeと根拠**: 新規codeは追加せず、既存の`FETCH_FAILED`を使用した。理由は次の2点。(1) 同じ`SafeHttpFetcher.fetch()`内で`URLError`/`TimeoutError`/`OSError`（`socket.gaierror`のスーパークラスを含む）を捕捉する既存の`opener.open()`失敗パスが既に`FETCH_FAILED`を使っており、DNS解決失敗は同種の「一般的network/connectivity failure」であるため。(2) SPEC §10.8は非UTF-8デコード失敗など他の接続時例外も`FETCH_FAILED`に分類しており、DNS専用の別codeは定義されていない。指示書の「既存codeが一般的なnetwork failureを表している場合は、新しいcodeを増やさずそのcodeを使用する」に従った。
 
-S-10仕様を確定し、通常実装が完了していることを確認・ドキュメント整合した（QandA回答確定、SPEC v0.3.11）。
-各Adapter (ClaudeAdapter, CodexAdapter, FakeAgentAdapter) におけるプローブキャッシュ（_probe_cache）の実装により、同一のRun内で複数回probe()を呼び出しても、不要な外部CLIプロセス呼び出しが発生しないようにした。
-`cli.py` 内に `probe_agents()` 共通ヘルパーを導入し、`cmd_ask`, `cmd_agents_status`, `cmd_agents_validate` でのAdapter生成および事前プローブ取得経路を統一した。
-取得したプローブ結果と設定ファイルの `capabilities` をマージして `AgentProbeSnapshot` を生成し、`ExecutionPlan` や `Orchestrator` へ不変の状態で引き回す。
-スナップショットは `run_created` イベントの payload と `RunMetadataRecord` / `RunResult` に不変の状態で記録・永続化される。
-実行途中の `AgentFailure` は実行レコード（`AgentExecutionRecord`）で記録され、開始時の不変スナップショットとは明確に区別される。
-S-9の参加者2..4名の制限および選定ロジックを破壊していないことを確認した。
+**partial-evidence・metrics挙動**: `EvidenceFetchError`へ変換された後は、`WebEvidenceProvider.collect_with_metrics()`の既存per-candidate loopがそのまま処理する（変更不要）。1候補DNS失敗＋他候補成功で`fetch_attempt_count`加算・`fetch_failure_count`加算・`fetch_error_codes.FETCH_FAILED`加算・次候補へ継続・成功分のEvidenceを保持することをテストで確認した。全候補がDNS失敗の場合は既存のno-evidence契約（`evidence_collect`は`succeeded`・`success_count=1`・`outcome=no_evidence`）に従うことをCLI JSONレベルで確認した（新しいRun classificationは作成していない）。
 
-テスト: `tests/unit/test_s10_probe_snapshot.py` を検証。Claude/Codex/Fake各プローブキャッシュ、capabilitiesマージ規則、Orchestratorでの snapshot 永続化ライフサイクルを検証。通常pytest `299 passed, 6 deselected`、`git diff --check` 成功。
+**CLIでのFake結果**: `--evidence-provider cli-search`で`CliSearchProvider`をFakeに差し替え、`socket.getaddrinfo`だけを`gaierror(11001, "getaddrinfo failed")`側で常に失敗させるFake（`SafeHttpFetcher`自体は実クラスをそのまま使用、実HTTP・実DNSは発生しない）で確認した。結果は`status="completed"`・`exit_code=0`・`oracle_exit_code==exit_code`・`run_id`が有効値・`evidence=[]`・`evidence_collect`フェーズが`succeeded`/`success_count=1`/`outcome="no_evidence"`/`fetch_error_codes={"FETCH_FAILED":1}`で、`internal_error`にもgeneric `exit_code=1`にもならないことを確認した。
 
-ドキュメント更新: QandA.md (AUTO_DECIDED 2026-07-15)、SPEC.md (8.5 / 15.8)、CLASS.md (クラス図にAgentProbeSnapshot追加、関係性・完了追記)、SEQUENCE.md (CLI事前プローブ・R-4解決反映)、TESTCASE.md (S-10/R-4のBLOCKED解消)、FIX_PLAN.md (0-11追加、R-4/S-10を未確定テーブルから解消済みへ) を更新。
-未解決: q03 DNS failure-boundary、L-3、J-3、S-4、S-6、T-2、T-3、J-4。次作業は別の指示書で決める。
+**raw情報非公開確認**: 上記CLIテストの出力JSON全体を`json.dumps`でシリアライズし、`"getaddrinfo"`、`"11001"`、`"gaierror"`、テスト用hostname`"dns-fail.example.com"`のいずれも含まれないことをassertした。`EvidenceFetchError`側の`str()`にもこれらが含まれないことを別途unit testで確認済み。`oracle_exit_code`・互換`exit_code`・`process_exit_code`の分離は無変更で、この修正では触れていない。
+
+**変更ファイル**: `src/oracle_council/evidence.py`（`SafeHttpFetcher._validate_url`、resolver呼び出しの1箇所）、`tests/unit/test_evidence.py`（DNS単体3件追加）、`tests/unit/test_cli.py`（DNS CLI回帰1件追加）、`FIX_PLAN.md`（§0-10追加）、`hikitsugi.md`（本節）、`instructions/result.md`。`orchestrator.py`・`cli.py`・`models.py`は変更不要だった（既存の型付きエラー処理経路がそのまま機能したため）。
+
+**追加テスト**: `test_dns_resolution_failure_from_resolver_becomes_typed_fetch_error`（resolver直接失敗→`FETCH_FAILED`、raw情報非混入）、`test_dns_resolution_failure_wrapped_in_urlerror_becomes_typed_fetch_error`（`URLError(gaierror)`→既存契約の回帰固定）、`test_collect_with_metrics_continues_after_raw_dns_failure_and_records_typed_code`（WebEvidenceProvider: 1件DNS失敗＋1件成功でpartial evidence、metrics確認）、`test_cli_ask_dns_resolution_failure_does_not_become_internal_error`（CLI JSON全体でinternal_errorにならないこと、raw情報非混入、`oracle_exit_code==exit_code`）。
+
+**対象テスト・全テスト結果**: 修正前に4件のDNSテストのうち3件が失敗し漏出を再現した（`test_dns_resolution_failure_wrapped_in_urlerror_becomes_typed_fetch_error`のみ修正前から成功、既存契約の健全性を確認）。修正後は`tests/unit/test_evidence.py`と`tests/unit/test_cli.py`の対象テストが全件成功（72 passed）。全体`py -m pytest`は**296 passed, 6 deselected**（baseline 292から+4）、`git diff --check`成功、`git status --short`は変更ファイルのみ。
+
+**残っている課題**: T-3（DNS rebinding対策、resolver pinning、redirect hop個別再検証の専用境界）とS-10は本作業の対象外で未解決のまま。q03の実live再評価は未実施。
+
+**次の推奨作業**: S-10（probe/capabilities正本化）の設計確定および実装。
+
+## 0-11. S-9完了（X-8.21）時の引き継ぎ
+
+**実装内容**:
+- `Orchestrator` が保持する設定済みAdapter数（configured adapters, `self._agents`）を `0..*` とし、特定のRun参加者上限とは別概念として分離した。
+- `build_execution_plan` 内で、eligible agents を全体の決定的優先順位（`role_priority`値の最大値の降順、同順位なら元の設定順の昇順）でソートし、その先頭最大4件を `selected participants` として決定（`ExecutionPlan.participants` に保持）。
+- 各フェーズの `PhaseAssignment` 候補者（`rankings`）計算の対象を、選定された `selected participants` のリスト（元の設定順に並び戻したもの）に制限。これにより5件目以降のエージェントは一切実行されない。
+- `run_created` イベント、永続化される `RunMetadataRecord`、CLI JSONトップレベルの `participants` をすべて `ExecutionPlan` の `participants` (selected participants) に統一した。これにより、実行されたエージェントの集合から逆算する処理や、設定全件を出力する矛盾を解消した。
+
+**検証**:
+- unit test: `test_assignment.py` に5件以上の制限と優先順位の検証テスト等を追加。
+- integration test: `test_orchestrator.py` に 5件構成時の参加者選定（4件制限、優先順位、一部分のみの実行でも participants が固定されることの検証）を追加。
+- テスト結果: 全 pytest が **299 passed, 6 deselected** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: S-10（probe/capabilities正本化）の設計確定および実装。
+
+## 0-12. S-10完了時の引き継ぎ
+
+**実装内容**:
+- `AgentAdapter` から `capabilities()` メソッドを廃止し、`probe()` メソッドから `ProbeResult` オブジェクトを返すように一本化（ダックタイピング・および型アノテーションとして整理）。
+- `models.py` に `AgentCapabilities`（dataclass）と `ProbeResult`（dataclass）を新規定義。
+- `ClaudeAdapter`、`CodexAdapter`、`FakeAgentAdapter` それぞれの `probe()` を変更し、プローブ成功時に `ProbeResult(status="OK", capabilities=...)` を返し、失敗時は `ProbeResult(status="COMMAND_NOT_FOUND" など, capabilities=None)` を返すようにした。
+- `execute()` や CLI でエージェントをプローブ・検証するロジック（`cli.py` 内）を `ProbeResult.status` を見るように更新。エージェント一覧表示などの機能で `capabilities()` を直接呼び出す代わりにプローブ結果の `capabilities` プロパティを参照するように変更し、二重化と不整合のリスクを完全に解消した。
+
+**検証**:
+- unit test: `tests/unit/test_adapter_capabilities.py` を追加し、`FakeAgentAdapter`、`ClaudeAdapter`、`CodexAdapter` のプローブが `ProbeResult` と `AgentCapabilities` を正しく返すこと、および `capabilities()` メソッドが削除されている（AttributeError を投げる）ことを検証。
+- pytest: `tests/contract/test_adapters.py` や `tests/unit/test_adapter_unicode.py` などのモック定義や期待値アサーションを ProbeResult 構造へ適合するように修正。
+- テスト結果: 全 pytest が **302 passed, 6 deselected** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: L-3（構造化出力失敗時の回復）または T-3（DNS rebinding対策・resolver pinning、X-8.22で完了）。
+
+## 0-13. T-3 (DNS Pinning / DNS Rebinding 対策) 完了時の引き継ぎ
+
+**実装内容**:
+- `SafeHttpFetcher` における DNS Pinning を実装。
+- `_resolve_and_pin` メソッドを新設し、最初の検証用 DNS 解決（preflight）でグローバル IP アドレスを 1 つピン留めする（リストの最初の要素）。
+- `fetch` 処理の HTTP 接続時（リダイレクト時も含む）に、`build_opener` に対して `_PinnedHTTPHandler` と `_PinnedHTTPSHandler` を追加した opener を使用することで、DNS 解決をピン留めした IP に固定するようフック。
+- ソケット接続時にはピンされた IP アドレスが使用されるが、TLS SNI、証明書検証、および `Host` ヘッダーには元のホスト名が維持されるようにした。
+- `urllib.request.OpenerDirector` インスタンス以外（テスト時のモックなど）の場合は、元の `_opener` をそのまま使用するよう後方互換性を維持。
+
+**検証**:
+- unit test: `tests/unit/test_evidence.py` に `test_dns_pinning_prevents_rebinding` 単体テストを追加。
+- テスト内で DNS Rebinding の状況（事前解決と接続時の解決で IP が変わる）をモックで再現し、接続先が最初にピンされたグローバル IP に決定的に固定されることを検証。
+- テスト結果: 全 pytest が **303 passed, 6 deselected** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: S-6（Runキャンセル時のExecutionRegistry）の設計確定および実装。
+
+## 0-14. L-3 (構造化出力失敗時の回復) 完了時の引き継ぎ
+
+**実装内容**:
+- `ClaudeAdapter` と `CodexAdapter` におけるテキストからのJSON抽出ロジック（Markdownコードフェンスの除去、前後の説明文のトリミングなど）を、共通処理 `extract_json_object` として `src/oracle_council/adapters/base.py` へ共通化。
+- `ClaudeAdapter` および `CodexAdapter` 内のJSON抽出を共通化処理へ変更。
+- スキーマ違反等の回復（AIへの再依頼や自動修復のための再試行など）は行わずに、決定的なクレンジングのみを試みた上で直ちに `INVALID_OUTPUT` エラーを投げる方針を仕様として確定。
+
+**検証**:
+- unit test: `tests/unit/test_adapter_schema.py` に `test_extract_json_object_success` / `test_extract_json_object_failure` を追加し、共通抽出処理の動作とエラーケースを検証。
+- pytest: `tests/unit/test_claude_envelope.py` が `base.py` の `extract_json_object` を使用するようインポートと呼び出しを修正。
+- テスト結果: 全 pytest が **305 passed, 6 deselected** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: S-6（Runキャンセル時のExecutionRegistry）の設計確定および実装。
+
+## 0-16. S-6 (Runキャンセル時のExecutionRegistry) / T-2 (cancel合格基準) 完了時の引き継ぎ
+
+**実装内容**:
+- `Orchestrator` クラスに、実行中の `execution_id` とその `AgentAdapter` インスタンスとの対応をスレッドセーフに管理する `ExecutionRegistry` を実装 (`self._registry`)。
+- キャンセル要求 (`Orchestrator.cancel(run_id)`) が発生した際、該当する `run_id` のアクティブな execution をすべて特定し、各 `AgentAdapter.cancel(execution_id)` を並行してスレッドで呼び出して伝播。
+- 具象アダプター (`ClaudeAdapter`, `CodexAdapter`) において、テストコードにおける `subprocess.run` への monkeypatch モックを破壊しないよう、モジュールレベルで `subprocess.run` をフックして `_custom_run` を経由するよう実装。
+- 実際の外部呼び出し実行時には、スレッドローカルにアダプターインスタンスと `execution_id` を設定し、`_custom_run` 内部で `subprocess.Popen` を用いてプロセスを起動・追跡。
+- `cancel(execution_id)` が呼び出された場合は、対象の `Popen` オブジェクトに対して `terminate()` を行い、最大5秒間プロセスの終了を待機。終了しない場合は `kill()` を実行して強制終了する「5秒kill」ロジックを実装。
+- キャンセルされた実行は、スレッド側で `AgentFailure("CANCELLED", "execution cancelled")` の例外を送出させ、Orchestrator側でこれを検知した際に `PhaseStatus.CANCELLED` および `RunStatus.CANCELLED` へ状態遷移させ、終了コード `130` (EXIT_CANCELLED) を返して終端させる。
+- `models.py` の `PhaseStatus` enum に仕様・クラス図と合わせて `PENDING`, `RUNNING`, `CANCELLED` のメンバーを追加。
+
+**検証**:
+- unit test: `tests/unit/test_cancellation.py` を新規追加し、Orchestrator のキャンセル伝播および終了コードの検証、並びに ClaudeAdapter における subprocess の terminate/kill 動作が正常に行われることを検証。
+- pytest: 既存の exit_code_separation などのテスト内の `subprocess.run` への monkeypatch が期待通り動作し、回帰がないことを検証。
+- テスト結果: 全 pytest が **308 passed** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: S-4（ClarificationEngineからのAgent呼び出し）の設計確定および実装。
+
+## 0-17. J-3 (quickモードの実行グラフ) 完了時の引き継ぎ
+
+**実装内容**:
+- `assignment.py` に `quick` モード用アサインメント `_QUICK_PLAN_ASSIGNMENTS` を定義。`build_execution_plan` に `mode` 引数を追加し、`quick` モード時には監査 (`audit`) が不要なため、auditor と synthesizer の分離制約チェックをスキップする仕様を適用。
+- `models.py` の `RunResult` に `mode` と `external_verification` を追加。
+- `orchestrator.py` の `run_verify` に `mode` 引数を追加し、`quick` モード時の実行パス（`respond` * 2 -> `compare` -> `synthesize`）を実装。
+- `orchestrator.py` の `_select_initial_agent` / `_select_substitute` での `synthesize` 時の look-ahead auditor チェックを `quick` モード時はスキップするようにして、`KeyError: ('audit', 0)` を防止。
+- `phase_schema.py` の `_PHASES` に `compare` を追加し、`compare.json` スキーマを新規定義。
+- `cli.py` で `run_verify` に `mode` を渡し、出力 JSON の `mode` と `external_verification` に実際のモード情報を反映。また `quick` 時は `[1/4]` 進捗表示を適用。
+- `QandA.md` で J-3 を `AUTO_DECIDED` とし、`SPEC.md`, `CLASS.md`, `TESTCASE.md` の記述を更新。
+
+**検証**:
+- `tests/unit/test_assignment.py` に `test_quick_plan_contains_correct_slots` を追加し、プランのフェーズ構成と制約が期待通りであることを検証。
+- `tests/unit/test_orchestrator.py` に `test_quick_mode_flow_success` を追加し、`quick` モードの実行フロー（4呼び出し）、結果の UNVERIFIED 分類、および終了コード 0 を検証。
+- `tests/unit/test_cli.py` に `test_cli_ask_quick_mode_success` を追加し、`ask --mode quick` 実行時の JSON 出力が `external_verification: false` であり、フェーズリストが正しく生成されることを検証。
+- テスト結果: 全 pytest が **311 passed** で全件成功。
+- `git diff --check` 成功。
+
+**次の推奨作業**: S-4（ClarificationEngineからのAgent呼び出し）の設計確定および実装。
+
+## 0-18. 2026-07-16 S-4実装試行と撤回、AutoLoop並行稼働に関する注記
+
+**経緯**: AutoLoop（`.autoloop/`、agent=antigravity、`commit_enabled: false`/`push_enabled: false`設定）が2026-07-15にS-9を指示されたタスクとして実行したが、`allow_task_chaining: false`にも関わらず連鎖的にS-10・T-3・L-3・S-6/T-2・J-3まで実装が進み、さらにS-4（ClarificationEngineからのAgent呼び出し）へ着手した時点でAPI利用枠が尽きて失敗した（`instructions/instructions.md`のfront matter注記が正本）。この際、一時的に`src/oracle_council/clarification.py`・`src/oracle_council/schemas/clarify.json`が追加され、`cli.py`のClarificationStopError参照importが欠落した状態のまま中断し、`NameError`で`tests/unit/test_cli.py`ほか10件が失敗する状態を一時的に観測した（`fakes.py`の`supported_phases`に`clarify`が追加されたことによる`test_adapter_capabilities.py`の期待値不一致も含む）。
+
+**現状**: 未完成分は`instructions/instructions.md`に記載の通り既に削除・復旧済み。本セッションで確認した時点（2026-07-16夕方）では`py -m pytest`は**310 passed, 6 deselected**で全件成功しており、作業ツリーはS-4着手前の健全な状態に戻っている。S-4の設計自体は`QandA.md`でAUTO_DECIDED（2026-07-15、Orchestratorがclarify AgentRequestを実行しClarificationEngineが判定規則を適用する責務分担）済みだが、**コードとしては未実装**。FIX_PLAN.mdのS-4行の説明文が実装試行の残骸で意味不明な英文（"Clarifier Agent of the current run's flow and details."）に化けていたため、この節と合わせて本セッションで修正した。`instructions/instructions.md`のfront matterは`status: completed`のままで、次にAutoLoopを動かす前に人間が次タスク（S-4推奨）を選定し`status: pending`へ書き換える必要がある旨が既に記載されている。
+
+**AutoLoopとの並行稼働について**: 本セッション実行中、同一ディレクトリで別のclaudeプロセス（AutoLoopのコントローラ経由、session開始22:33:19）がファイルを編集中であることを検知した。ユーザー確認の結果、コミット前に`agy.exe`・`py.exe`（AutoLoopコントローラ）が起動していないことを確認し、現在は非稼働と判断してから本セッションの内容をコミットしている。**次回このrepoで作業する際は、`.autoloop/run-autoloop.ps1`または関連プロセスが動作中でないかを先に確認してから、ファイル編集・コミットを行うこと**（本セッションのように、テスト結果やファイル内容が数分〜数時間単位で書き換わっている最中に読み取ると、矛盾した情報を掴む可能性がある）。
+
+**次の推奨作業（2026-07-16夜、ユーザー指摘により修正）**: 今回最大の問題はS-4の未実装そのものではなく、**Claude CodeとAutoLoopが同一作業ツリーを同時編集できてしまったこと**（本セッション中に`cli.py`の内容がテスト実行の合間に変化する事象を実際に観測しており、一方の変更をもう一方が上書きしていないかは最終テスト成功だけでは否定できない）。したがって明日の着手順は次のとおりとする。S-4は最後。
+
+1. AutoLoop（`agy.exe`・AutoLoopコントローラの`py.exe`）が起動していないことを確認する
+2. 本コミット（`8e0df18`）の差分を短くレビューする
+3. AutoLoopに排他制御を追加する: 起動時に原子的な排他ロック（PID・開始時刻・対象リポジトリを記録）を作成し、既存ロックが有効なら二重起動を拒否、正常終了時に削除、異常終了した古いロックは明示操作でのみ解除する。ロックだけでは人間が起動したClaude Codeとの同時編集を完全には防げないため、最も安全な方式はAutoLoopを専用のGit worktreeまたは専用ブランチで動かすこと
+4. 最新のPlanner・複数Agent版AutoLoopをOracleCouncilへ反映する。`instructions/instructions.md`を人間が次タスクへ書き換える必要がある現状は、Planner自動生成がOracleCouncil側でまだ有効になっていないことを示している。Plannerが正しく導入されれば、S-4を人間が指示書へ書く必要はなくなる
+5. 上記が済んでからS-4を実行する（設計はAUTO_DECIDED済み。再実装時は`cli.py`でのimport漏れに注意し、`fakes.py`の`supported_phases`変更と整合するテスト更新を忘れないこと）
+
+## 0-19. S-4再着手調査（2026-07-17）: 実装前提の欠落を確認し実装せず停止
+
+**経緯**: AutoLoop側の排他ロック・single-task gate実装がcommit・push済み（`C:\PROJECT\autoloop` HEAD `21c9f7d`、origin/mainと一致）となったことを受け、§0-18で保留していたS-4（ClarificationEngineからのAgent呼び出し）へ再着手する準備としてOracleCouncilを調査した。
+
+**調査結果**: `git status`はクリーン、未追跡ファイルなし、HEADは`dfef617`でorigin/mainと一致。`src/oracle_council/clarification.py`・`schemas/clarify.json`は存在せず（§0-18で削除済みのまま）、`phase_schema.py`の`_PHASES`にも`clarify`はない。`cli.py`の`cmd_ask`には`if "clarify_trigger" in args.question:`という、実際のClarificationEngineやAgentを一切呼ばないマジック文字列シミュレータが残っているが、`grep -ri clarify tests/`は0件でテストからも参照されていない死んだコードだった（兄弟の`strict_trigger`等は`test_cli.py`で使用されている）。
+
+実装に着手する前に、S-4の前提となる仕様が複数未確定であることが判明したため、**実装は行わず**QandA.mdへ4件の未回答質問（S-4.1〜S-4.4）を追加し、この節へ記録するにとどめた。詳細はQandA.md S-4.1〜S-4.4を参照。要点:
+
+- `TESTCASE.md` UT-CE-01〜07は`ClarificationEngine.inspect(question)`が質問文から直接判定する設計を前提にしているが、`CLASS.md`のシグネチャ`inspect(question, context)`およびS-4のAUTO_DECIDED回答（Agent構造化出力を検証する設計）と矛盾している（S-4.1）
+- SPEC §7.5が定める3段階フォールバックのうち、第1段階「決定的既定値」・第2段階「テンプレート規則」にはタスクIDも具体的仕様も存在しない（S-4.2）
+- Clarifier Agentを実際に呼び出す条件（第1・第2段階で解決できなかった場合のみ、という大枠はSPECの文言から読めるが、判定主体・判定手順・戻り値は未定義）（S-4.3）。`tests/unit/test_orchestrator.py`に`assert result.call_count == 7`が最低4箇所あり、Clarifierを無条件で呼び出す実装はこれらを破壊する
+- Clarifier使用時にAI呼び出し総数が7→8へ変わる場合の、`cli.py`固定文字列`"[1/7] 質問を整理しています"`（進捗と非連動の静的文言）の扱いも未定義（S-4.4）
+
+**2026-07-16に撤回された実装試行の内容**（git履歴には残っていない。commit前に削除されたため。文書と記憶からの確認のみで、復元・cherry-pickはしていない）: `ClarificationEngine.inspect(question, context)`が`validate_phase_schema("clarify", context)`で`context`（Agent構造化出力）を検証し、`questions`内に`importance: critical`があれば`needs_clarification`へ格上げする実装だった。`clarify.json`の`status` enumは5値（ready/ready_with_assumptions/needs_clarification/unsupported/safety_blocked）で、SPEC §7.2が定める6値目の`premise_issue`が欠落していた。API利用枠切れで中断し、`cli.py`の`ClarificationStopError`未import等によりテスト10件が失敗する状態のまま撤回された。
+
+**今回変更していないもの**: ソースコード・テストは一切変更していない。既存のS-4・J-4のAUTO_DECIDED回答も変更していない。CLIへの新規フラグ追加、`clarify_trigger`の機能昇格、質問文の長さ・キーワードによる独自判定ロジックはいずれも実装していない。AutoLoopリポジトリ（`C:\PROJECT\autoloop`）は変更していない。worktree分離には着手していない。
+
+**次の推奨作業**: QandA.md S-4.1〜S-4.4（`ClarificationEngine.inspect()`の責務、SPEC §7.5第1・第2段階の具体化、Clarifier Agent呼び出し条件、CLI進捗表示の扱い）をユーザー判断で正式決定してから、S-4の実装に着手すること。この4点はいずれも実装者の推測で決めるべきではない設計判断であり、次回セッションが独断で決定しないよう本節に明記する。
+
+## 0-20. S-4実装完了（2026-07-18）: ClarificationEngineからClarifier Agent呼び出しの配線
+
+**経緯**: §0-19でユーザーへ提示した4つの未回答質問（S-4.1〜S-4.4）に対し、ユーザーから正式決定が示された。決定内容に従い、追加調査や質問での停止はせず、実装・テスト・文書更新まで一気に完了した。
+
+**実装内容**:
+- `src/oracle_council/clarification.py`（新規）: `ClarificationEngine`を`inspect(question, context=None)`（決定的既定値・テンプレート規則・critical ambiguity検出、Agent不要ならClarificationResultを、必要ならClarificationPreCheckを返す）と`evaluate_agent_output(question, context, output)`（clarify schema検証・SPEC Sec7.2/Sec7.5決定規則適用）の2段階APIに分離した。`ClarificationStopError`（status・exit_codeを保持）も同モジュールに定義。
+- `src/oracle_council/schemas/clarify.json`（新規）: SPEC Sec7.2の6 status（ready/ready_with_assumptions/needs_clarification/premise_issue/unsupported/safety_blocked）をすべて含む。2026-07-16の撤回実装で欠落していたpremise_issueも含む。
+- `src/oracle_council/phase_schema.py`・`models.py`: `clarify`をphase一覧・safe-summary許可リストへ追加。
+- `src/oracle_council/assignment.py`: `_PLAN_ASSIGNMENTS`（verify/strict）へ`("clarify", 0, 1, ())`スロットを追加（quickモードは対象外）。既存の`rank()`がrole_priority最高のAgent選定にそのまま使える。
+- `src/oracle_council/orchestrator.py`: `run_verify()`のrun_created発行前に`_run_clarification()`を実行。tier1/2で解決すればAgent呼び出しなしで既存フローへ完全に素通り（call_count・イベント順とも無変更）。critical ambiguityが残る場合だけ`_attempt()`（既存の予算・実行記録機構をそのまま再利用）でclarify Agentを1回呼び、favorable（ready/ready_with_assumptions）ならrun_created後にphase/execution/eventを遡って記録し通常フローへ、非favorableなら`ClarificationStopError`を送出しRunを一切生成しない（InsufficientAgentsErrorと同じ事前停止契約）。
+- `src/oracle_council/cli.py`: `ClarificationEngine().inspect()`を`run_verify()`呼び出し前に実行し、進捗表示`[1/7]`/`[1/8]`を動的に切り替え。死んだコードだった`clarify_trigger`マジック文字列分岐を削除。`except ClarificationStopError`を追加（`InsufficientAgentsError`と同様の事前停止処理）。`FakeAgentAdapter`にclarifyケースを追加（`ORACLE_MOCK_CLARIFY_STATUS`環境変数でCLIテストからstatusを制御可能）。
+
+**Agent呼び出し失敗の扱い**: `AUTH_REQUIRED`は`auth_required`（exit 3）、それ以外の`AgentFailure`（TIMEOUT、EXECUTION_ERROR、INVALID_OUTPUT等）はすべて新設`clarification_unavailable`（exit 3）とし、SPEC §13.4の既存6値のうちexit 3バケットへ割り当てた（新しいexit codeは増やしていない）。
+
+**critical ambiguity検出の実装範囲**: QandA S-4.3で確定した6カテゴリのうち、初期実装では「比較対象不明（どちら/どっち）」「指示対象不明（これ/それ/あれ で始まる文）」「指示矛盾（しかし...しないで等）」「取り返しのつきにくい操作の対象不明（これ/それ/あれ/全部/すべて を削除/送信/購入/公開/投稿/消去して）」の4パターンを保守的な正規表現で実装した。既存テスト問題文（`"q"`、`"富士山の標高は？"`、`"この薬の服用量は？"`等）はいずれも該当せずAgentを呼ばないことを確認済み。パターンの網羅性は今後の拡張余地として残る。
+
+**検証**: `py -m pytest` は**370 passed, 6 deselected**（既存310件は無傷、純増60件）。`git diff --check`成功。実Claude/Codex呼び出し、Web検索、実HTTPアクセスは一切行っていない。
+
+**文書更新**: `QandA.md`（S-4.1〜S-4.4を「確定」として記録）、`SPEC.md`（§7.5の3段階詳細化、§13.4 exit codeテーブルへpremise_issue/clarification_unavailable追加）、`CLASS.md`（`ClarificationEngine`のAPI分離、`ClarificationPreCheck`/`ClarificationResult`追加）、`TESTCASE.md`（§2.3を新API・6 status・IT-level 3件に合わせて更新、UT-CE-08/12のBLOCKEDタグをJ-4のみに整理）、`FIX_PLAN.md`（§0-17でS-4解消済みへ）、本ファイル。
+
+**残存課題**:
+- J-4（対話モードでの2ラウンド質問整理、`applyAnswers`の実装）は未着手のまま
+- critical ambiguity検出パターンは4種類の保守的な実装にとどまり、6カテゴリ全てを高精度に検出するものではない
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）
+
+**次の推奨作業**: J-4（Clarifier対話モードの2ラウンド実装）、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目（J-4以外に大きなブロッカーは現在なし）。
+
+## 0-21. Grok・agy Adapter追加、4AI評議会（Claude/Codex/Grok/agy）実現（2026-07-18）
+
+**経緯**: S-4完了（ecec8b6）後、ユーザーからOracleCouncilを本来の目標である4AI会議（Claude/Codex/Grok/agy）へ進める指示があった。参照実績として`C:\PROJECT\werewolf-game`（実際に複数回のゲームで4 CLI全てを呼び出した実装）の`scripts/agents.py`・`config/agents.json`・QandA.mdを調査し、確認済みの知見を再利用した。
+
+**実装内容**:
+- `src/oracle_council/adapters/grok.py`（新規）: `GrokAdapter`。`grok -p "<prompt>" --output-format json`を実行し、CLIメタデータ封筒`envelope["text"]`からフェーズJSONを抽出する（Claude型のパターン）。プロンプト埋め込みのJSON Schema hint、Claude/Codexと同じキャンセル対応`subprocess.run`差し替え、`classify_cli_error`/`validate_phase_output`等の共通ヘルパーを再利用。
+- `src/oracle_council/adapters/agy.py`（新規）: `AgyAdapter`。`agy --print "<prompt>"`を実行し、封筒なしの標準出力を直接パースする（Codex型のパターン）。agyにネイティブなschema制約フラグがないため、プロンプト埋め込みのschema hintで対応。
+- `src/oracle_council/adapters/__init__.py`: `AgyAdapter`・`GrokAdapter`をexportへ追加。
+- `src/oracle_council/cli.py`: Agent構築ループへ`entry.get("adapter") == "grok"`/`"agy"`の分岐を追加（既存のclaude/codex分岐と同型）。
+- `config/agents.yaml`: `grok-cli`・`agy-cli`を追加し4参加者体制に。既存2体（claude-code: respond/synthesize/audit、codex-cli: respond/verify/audit）に加え、grok-cli（claim_extract/clarify）とagy-cli（criticize/clarify）を、既存の勝者と重ならないフェーズの最高優先度に設定。`assignment.py`のS-9由来`ranked[:4]`参加者上限（既存実装、無改修）とちょうど4体で一致するため、4体全員が選出される。
+- `tests/unit/test_orchestrator.py::test_four_ai_council_all_participate`（新規）: Scripted Adapterで4体それぞれ役割を割り当て、`result.participants`が4体全て・各Adapterが期待どおりのフェーズ列で呼ばれることを決定的に検証。
+
+**実CLI live smoke test**:
+- `tests/contract/test_adapters.py`へ`test_grok_adapter_live_probe`/`test_grok_adapter_live_execute`/`test_agy_adapter_live_probe`/`test_agy_adapter_live_execute`（`@pytest.mark.live`、既定`-m "not live"`でdeselect）を追加。
+- 追加作業中に、これらのひな形にしたClaude/Codex用の既存liveテストにもあった実装バグを発見: `status = adapter.probe()`の後`assert status in (...)`/`if status != "OK":`は`status`が`ProbeResult`オブジェクトであり文字列と比較しているため、`assert`は実質検証されず、`if`は常に真でexecute本体へ到達しないdead codeだった。4 Adapter・8テスト全てで`status.status`を参照するよう修正。
+- 修正後、本機にインストール済みのClaude Code・Codex CLI・Grok・agyの4 CLI全てで`probe()`が`OK`、`respond`フェーズの`execute()`が実際に成功することを2026-07-18にライブ確認した（`pytest -m live`: 8 passed, 2 skipped — 別ファイル`tests/e2e/test_real_adapter_e2e.py`の`ORACLE_COUNCIL_LIVE`環境変数ゲート付きテスト2件、Claude/Codex専用で今回の変更対象外）。
+
+**検証**: `py -m pytest`は既定スイートで**373 passed, 10 deselected**（Task D着手前の370 passed, 6 deselectedから、4AI統合テスト+1、grok/agy live probe/execute各2×2=4個の新規live testで純増）。`pytest -m live`は**8 passed, 2 skipped**。`git diff --check`成功。APIキー・認証情報の読み出し・記録は一切行っていない（環境変数はサブプロセスへそのまま引き継ぐのみで、内容を読んだりログ・テスト・commitへ書き出したりしていない）。
+
+**文書更新**: `QandA.md`（Y-1/Y-2/Y-3を新規追加）、`SPEC.md`（§3 MVP目標、§8.1設定例、§8.5、§20.2をClaude/Codex/Grok/agyの4種類へ更新）、`CLASS.md`（`GrokCLIAdapter`/`AgyCLIAdapter`をクラス図へ追加）、`TESTCASE.md`（§2.4見出しを4 Adapter対応へ、CT-AA-LIVE-02を新規追加）、`FIX_PLAN.md`（§0-18で本作業を記録）、本ファイル。
+
+**残存課題（4AIによる実会議までに残るギャップ）**:
+- 本作業のFake統合テストとlive smoke testは「各Adapterが単独で正しく動く」ことと「4体が選出・実行される」ことまでを検証したが、4体同時参加でのRun全体（clarify→respond×2→claim_extract→verify→criticize→synthesize→audit、Evidence収集含む）を実CLI 4種同時実行で完走させる実機E2Eはまだ実施していない（コスト・実行時間の都合上、今回はrespondフェーズ単発の最小smoke testに留めた）。
+- J-4（対話モードでの2ラウンド質問整理）は引き続き未着手。
+- critical ambiguity検出パターンはS-4時点の4種類の保守的な実装のままで、grok/agy追加による変更はない。
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
+
+**次の推奨作業**: 実CLI 4種同時参加でのRun全体E2E（コスト許容範囲内で計画すること）、またはJ-4（Clarifier対話モードの2ラウンド実装）。
+
+## 0-22. 「神託」構造の追加とE2Eで判明した2件のOracle Council側不具合を修正（2026-07-18）
+
+**経緯**: 0-21でGrok/agy Adapterを追加した後、ユーザーからOracleCouncilの最終完成確認として、Claude/Codex/Grok/agyの4実CLIによる神託会議を「神は存在しますか？」で実行するよう指示された。
+
+1回目の実行（修正前）は`result_classification: conflicting`のまま公開されたが、内容は「信仰では存在する、無神論では存在しない、不可知論では知り得ない」と複数の立場を並べるだけで、利用者へ判断を委ねる回答だった。ユーザーはこれをOracle Councilの目的（「根拠のある回答を返す」）に反すると判断し、証拠評価（SPEC §2.2: verified/partially_verified/unverified/conflicting/withheld）は維持したまま、synthesize/auditの利用者向け最終回答の**構造**だけを変更する正式決定を下した（SPEC §2.2.1として新設）。
+
+**実装**: `adapters/base.py`の`build_phase_input()`へ、synthesize向け`_ORACLE_VERDICT_GUIDANCE_SYNTHESIZE`（神託→理由→採用しなかった見解→不確実性の4要素、「判定不能」も正式な結論として明記）とaudit向け`_ORACLE_VERDICT_GUIDANCE_AUDIT`（構造の有無だけを確認し、特定の結論を強制しない）を追加。`AgentResult`のスキーマは変更していない。
+
+**再実行で判明した2件の不具合**:
+
+1. **無関係なmeta-claimによる早期withheld（2回目の実行）**: claim_extract（Grok担当）が「AIは断定を避ける」という、AI自身の回答姿勢についての自己言及claimを抽出し、verify（Codex担当）がそれを`contradicted`と判定した。これは質問「神は存在しますか？」の内容と無関係だが、SPEC §2.2の既存規則（major+contradictedはStage 1でwithhold）どおりの正しい動作として、criticize/synthesize/audit到達前に早期withheldとなった。修正: `_CLAIM_EXTRACT_RELEVANCE_GUIDANCE`を追加し、AI自身の回答姿勢・文章構成・生成過程についての記述をclaim対象から除外（ただし質問自体がAIの性質を問う場合は除外しない）、本質的でないclaimは`minor`重要度とするよう指示。証拠評価規則自体（is_withheld等）は無改修。
+
+2. **audit指摘がre-synthesizeへ伝わっていなかった（3回目の実行）**: 全フェーズが実行され、synthesize→audit(changes_required)→revision→re-synthesize→re-audit(changes_required)まで進んだが、2回とも`changes_required`となり、SPEC上許容される修正1回分を使い切ってwithheldとなった。コード調査の結果、`_PHASE_CONTEXT_KEYS["synthesize"]`が`("question", "responses", "claims", "evidence", "critique")`のみで、直前auditの`issues`を一切含んでいないことが判明した。つまりre-synthesize呼び出しは最初のsynthesizeと全く同じcontextしか受け取っておらず、何を修正すべきか一切知らないまま再生成していた。これが2回連続`changes_required`になった直接の原因と推定される。修正: `orchestrator.py`の`_attempt()`のpayloadへ`"audit_issues": state.last_audit_issues`を追加し、`_PHASE_CONTEXT_KEYS["synthesize"]`へ`"audit_issues"`を追加。空配列なら初回呼び出し、非空なら修正呼び出しと判別でき、非空時はプロンプトへ「これは修正であり、列挙された指摘へ具体的に対応すること」という一文も追加した。修正回数の上限（1回）はユーザー指示により変更していない。
+
+**withheld草稿の監査証跡保存**: `--store-content`指定時、synthesizeの草稿とauditの判定・指摘が、withheldになった場合も含めて一切永続化されておらず、「監査で落ちたが何が落ちたか運営側にも分からない」状態だったため、`agent_execution_succeeded`イベントへ`draft_answer`（synthesize）・`audit_result_status`/`audit_issues`（audit）と`"disclosure": "internal_audit_trail_only"`を`--store-content`時のみ追加した。`RunMetadataRecord`へ`audit_status`も追加し、`run_completed`イベントの永続metadataだけで「なぜwithheldになったか」を再構成できるようにした。利用者向け公開`final_answer`（`RunResult.final_answer`）とは別経路であり、混同しない。
+
+**テスト**: `test_classification.py`（minor+contradicted単独ではwithholdしないことの直接テスト）、`test_claude_envelope.py`（claim_extract除外指示・例外・minor指示の内容、audit「判定不能」受理）、`test_orchestrator.py`（audit指摘がre-synthesizeへ伝播すること、store_content時にwithheld草稿・audit指摘が保存されること、store_content無指定時は保存されないこと）を追加。`py -m pytest`は**384 passed, 10 deselected**（既存378件は無傷、純増6件）。`git diff --check`成功。実Claude/Codex/Grok/agy呼び出しは、S-4以降ずっと実施している一次調査（`grok --version`等）に加え、今回は本文全体のE2E runを複数回実行し、認証情報の読み出し・記録は一切行っていない。
+
+**文書更新**: `SPEC.md`（§2.2.1新設・追記）、`QandA.md`（Y-4追加）、`FIX_PLAN.md`（§0-19）、本ファイル。
+
+**残存課題**:
+- 今回の4要素構造要件は、synthesize/auditへのプロンプト指示のみで実現しており、ローカルでの決定的な構造検証（正規表現等によるチェック）は追加していない（ユーザーが「必要なら」とした任意選択肢であり、audit指摘の伝播修正で根本原因に対処できると判断したため）。
+- claim_extractの除外ガイダンスは「AIの回答姿勢について」という一般的なパターンを対象としており、他の無関係meta-claimパターンを完全に網羅するものではない。
+- J-4（対話モードでの2ラウンド質問整理）は引き続き未着手。
+- `instructions/instructions.md`のfront matterは引き続き人間が次タスクを書き込む必要がある（Planner未導入、AutoLoop側の課題として別途記録済み）。
+
+**次の推奨作業**: 修正後の最終E2E再実行結果（次のセクションまたはinstructions/result.mdを参照）。J-4、またはSPEC.md/CLASS.md/TESTCASE.mdの他の未解決項目。

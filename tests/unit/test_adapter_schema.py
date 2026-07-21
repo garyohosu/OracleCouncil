@@ -1,6 +1,6 @@
 import pytest
 
-from oracle_council.adapters.base import validate_phase_output
+from oracle_council.adapters.base import validate_phase_output, extract_json_object
 from oracle_council.models import AgentFailure, safe_error_summary, safe_public_summary
 
 
@@ -93,3 +93,31 @@ def test_safe_error_summary_allows_fixed_execution_diagnostics(summary):
 
 def test_safe_error_summary_rejects_execution_diagnostic_injection():
     assert safe_error_summary("verify process exited with a non-zero status: SECRET.") is None
+
+
+def test_extract_json_object_success():
+    # Plain JSON
+    assert extract_json_object('{"answer": "ok"}') == {"answer": "ok"}
+
+    # JSON with spaces and newlines
+    assert extract_json_object('   \n  {"answer": "ok"}  \n ') == {"answer": "ok"}
+
+    # Markdown fenced JSON
+    assert extract_json_object('```json\n{"answer": "ok"}\n```') == {"answer": "ok"}
+    assert extract_json_object('```\n{"answer": "ok"}\n```') == {"answer": "ok"}
+
+    # Prose before and after
+    assert extract_json_object('Here is the result:\n{"answer": "ok"}\nHope this helps!') == {"answer": "ok"}
+    assert extract_json_object('```\n{"answer": "ok"}\n```\nSome trailing text.') == {"answer": "ok"}
+
+
+def test_extract_json_object_failure():
+    import json
+
+    # No JSON object at all
+    with pytest.raises(json.JSONDecodeError):
+        extract_json_object('There is no JSON here.')
+
+    # Malformed JSON (incomplete)
+    with pytest.raises(json.JSONDecodeError):
+        extract_json_object('{"answer": ')
