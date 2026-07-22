@@ -1838,4 +1838,20 @@ runnerは、worktree clean、HEAD一致、ローカル`refs/remotes/origin/main`
 
 ---
 
-*最終更新: 2026-07-20 — Z-1追加。実機E2Eで発見した2件の不具合（事実確認質問のFake Evidence起因withheld、非事実的claimによる不必要なaudit withheld）をclaim_nature分類とEvidence Provider透明化、--traceデバッグ機能で修正。監査ゲート自体の二値判定は意図的設計として維持。*
+### Z-2. criticize工程でagy-cliがCOMMAND_NOT_FOUND→代替claude-codeもINVALID_OUTPUTで失敗し無回答になった件（実機E2Eで発見、未解決）
+
+**重要度**: Major
+**箇所**: `adapters/agy.py`（`probe()`/`execute()`）/ `orchestrator.py`（`_UNAVAILABLE_ERROR_CODES` / `_SUBSTITUTION_ERROR_CODES` / `_MAX_RUN_SUBSTITUTIONS`）
+**背景**: 2026-07-23、ユーザーが実機ライブで哲学的な問い（自死の年数による賛否の非対称性を問う質問）を4AI評議会（`--adapter-mode real --evidence-provider cli-search`）で実行した。respond（2 Agent）→claim_extract→evidence_collect→verifyまでは実CLI4種すべて正常完走したが、`criticize`フェーズでagy-cliの実行が`COMMAND_NOT_FOUND`（`elapsed_ms=372`、実質即時失敗）となり、SPEC §8.3の1 Run 1回までの代替ルールに従いclaude-codeへ代替されたが、その代替実行も`INVALID_OUTPUT`（malformed JSON、約66秒後に判明）で失敗した。代替予算（`_MAX_RUN_SUBSTITUTIONS=1`）を使い切ったため`criticize`フェーズ自体が失敗し、synthesize/auditへ到達できずRunは`status=failed`（`oracle_exit_code=1`）で終了、`final_answer`は生成されなかった。
+
+**調査結果**: `agy --version`と同一コマンドを、Orchestratorの外で単独実行（`subprocess.run(["agy","--version"], shell=False, timeout=5)`と同条件）したところ即座に成功した（`returncode=0`、`agy`は`C:\Users\garyo\AppData\Local\agy\bin\agy.exe`として実PE32実行ファイルがPATH解決される）。`AgyAdapter`に`probe()`結果のキャッシュは無く（`claude.py`/`codex.py`と異なり`_probe_cache`が存在しない）、`execute()`は毎回`probe()`を呼び直す実装であり、コード上の恒常的なPATH解決バグは確認できなかった。したがって`COMMAND_NOT_FOUND`は、Claude/Codex/Grok/agyの4 CLIが同一Run内で実質同時期に子プロセスを起動する負荷（プロセス生成競合、初回実行時のアンチウイルス等によるスキャン遅延など、Windows環境固有の要因を推測）による一過性の誤検出である可能性が高いという仮説にとどまり、断定的な根本原因は特定できていない。再現条件を固定して切り分けるには追加のlive実行が必要。
+
+**回答**: 未解決。以下の理由からコード変更は行っていない。(1) `COMMAND_NOT_FOUND`を恒常的な不在ではなく一過性の可能性があるものとして再試行可能にする（`_RETRYABLE_ERROR_CODES`へ追加する等）のは、SPEC §8.3「transientなtimeoutとrate limitだけを再試行する」という既存方針の変更に当たり、根本原因が実際に一過性であるという確証なしに行うべきでない。(2) 代替後の`claude-code`側`INVALID_OUTPUT`（criticizeのmalformed JSON）も、X-8.1と同様に生critic出力を保存していないため（`--no-store`実行だったため）、JSON構文不正か必須フィールド欠落か型不正かを特定できておらず、parserを緩める・promptを変える等の対処も推測に基づく変更になってしまう。X-8.1の前例（「q01原因を推測してparserを緩める変更は行わない」）に倣い、未確証のまま実装を変更しない。
+
+**次の推奨作業**: 同種の問い合わせを再度live実行する際は`--trace-output`を付け、(a) `criticize`フェーズでのagy-cli `COMMAND_NOT_FOUND`が再現するか、(b) 再現した場合の代替Agentの生critic出力（malformed JSONの実際の中身）を確認する。複数回agy-cliの`COMMAND_NOT_FOUND`が再現し、かつ単独実行では常に成功する場合は、「一過性の環境要因」という仮説がより裏付けられ、`_RETRYABLE_ERROR_CODES`へ`COMMAND_NOT_FOUND`を条件付きで追加する、またはprobe自体に短いbackoff付き再試行を入れる、といった対応をSPEC変更として検討する価値がある。
+
+**テスト**: 追加なし（未確証の推測に基づく実装変更を避けたため）。
+
+---
+
+*最終更新: 2026-07-23 — Z-2追加（未解決）。criticize工程でagy-cliの`COMMAND_NOT_FOUND`→代替claude-codeの`INVALID_OUTPUT`が連鎖し、代替予算を使い切ってRunが無回答で失敗した実機E2E不具合を記録。単独実行では再現せず、一過性の環境要因という仮説にとどめ、未確証のままコード変更はしていない。*

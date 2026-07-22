@@ -681,3 +681,20 @@ v0.4完成（0b81ee9）後、ユーザーが実機ライブで「富士山の標
 - **副次的発見**: `adapters/base.py`の`_validate_claims()`/`_CLAIM_ROLE_VALUES`等はdead code（実際のvalidationは`phase_schema.py`のJSON schema経由）。今回`claim_nature`をこの慣習に合わせて両方に追加したが、実効性があるのは`schemas/claim_extract.json`側のみ。将来のリファクタリング候補として記録するに留め、今回は無関係な削除を行っていない。
 - **文書更新**: `SPEC.md`（§10.4.2新設、§10.5・§15.7・§13.1.1加筆）、`README.md`、`QandA.md`（Z-1）、`FIX_PLAN.md`（§0-20）、本ファイル。
 - **未実施**: 実機ライブ再実行（ユーザー承認後に実施予定）、コミット・push（ユーザー承認待ち）。
+
+## 0-23. criticize工程のagy-cli COMMAND_NOT_FOUND連鎖失敗を実機E2Eで発見・調査（未解決、2026-07-23）
+
+**経緯**: ユーザーがOracle Councilを使って2つの哲学的な問い（「自死の年数による賛否の非対称性」「神の国は平和で安全か」）に神託を出すよう依頼した。1つ目の質問は「どちら」を含む言い回しが`clarification.py`の重大曖昧性トリガー（`_UNCLEAR_CHOICE_RE`、比較対象不明の誤検知）に引っかかり2回停止したため、「両方とも」に言い換えて再実行した。
+
+**発見した不具合**: 言い換え後の3回目のlive実行で、respond（Claude/Codex独立回答）→claim_extract（Grok）→evidence_collect（実Web検索）→verify（Codex）までは正常完走し、実Evidence付きの検証済みClaimが得られた。しかし`criticize`フェーズでagy-cliが`COMMAND_NOT_FOUND`（`elapsed_ms=372`、実質即時失敗）となり、代替のclaude-codeへ切り替わったが、その代替実行も約66秒後に`INVALID_OUTPUT`（malformed JSON）で失敗した。SPEC §8.3の代替予算（1 Runにつき1回）を使い切ったため`criticize`フェーズ自体が失敗し、synthesize/auditに到達できずRun全体が`status=failed`（`oracle_exit_code=1`）で終了、`final_answer`は生成されなかった。
+
+**調査**: `agy --version`を`AgyAdapter.probe()`と同一条件（`subprocess.run(["agy","--version"], shell=False, timeout=5)`）でOrchestrator外から単独実行したところ即座に成功した。`agy`はPATH上に実PE32実行ファイル（`C:\Users\garyo\AppData\Local\agy\bin\agy.exe`）として存在し解決できる。`AgyAdapter`に`claude.py`/`codex.py`のような`probe()`結果キャッシュも無く、`execute()`は毎回`probe()`を呼び直す実装であり、コード上の恒常的なPATH解決バグは確認できなかった。よって`COMMAND_NOT_FOUND`は、同一Run内でClaude/Codex/Grok/agyの4 CLIがほぼ同時期に子プロセスを起動する負荷下での一過性の誤検出という仮説にとどまり、断定的な根本原因は特定できていない。
+
+**対応方針**: X-8.1の前例（未確証のまま推測でparserを緩める変更をしない）に倣い、根本原因が確定しないままコード変更（`COMMAND_NOT_FOUND`を`_RETRYABLE_ERROR_CODES`へ追加する等、SPEC §8.3の再試行方針そのものの変更）は行っていない。次にlive実行する際は`--trace-output`を付けて(a) agy-cliの`COMMAND_NOT_FOUND`再現有無、(b) 再現した場合の代替Agentの生malformed JSONの中身、を確認することを推奨する。
+
+**副産物**: 3回目のlive実行で得られた実検証済みClaim・実Evidenceを使い、Oracle Council自身のsynthesize/audit相当の構成（神託→理由→採用しなかった見解→不確実性）に沿って、この session内でユーザー向け回答を人手（Claude Code）で統合して提示した。ツール自体の正式な監査済み出力ではない。
+
+続けて「神の国は平和で安全ですか？」を live実行したところ、こちらはrespond〜verifyまで完走した上で正式に`status=completed`・`result_classification=withheld`（exit 4）となった。critical Claim「多くの宗教では神の国は正義・平和・安全が完全に実現する世界とされる」が、収集できた実Evidenceがキリスト教系サイトに偏っていたため`unverified`のまま残り、SPEC上の安全側判定（critical未検証はcriticize以降へ進まず保留）が正しく働いた結果であり、今回のagy-cli不具合とは無関係の正常系。
+
+**文書更新**: `QandA.md`（Z-2、未解決として追加）、`FIX_PLAN.md`（§0-21）、本ファイル。
+**未実施**: agy-cli COMMAND_NOT_FOUNDの確定的な原因特定（再現待ち）、コード修正（未確証のため見送り）。

@@ -137,6 +137,12 @@ X-8.14 q03 holdout（`internal_error` / `[Errno 11001] getaddrinfo failed`）の
 |---|---|---|
 | Z-1 | 実機ライブ実行2件（「富士山の標高」「神は存在しますか？」）で判明した2件の不具合を修正。(1) `Claim.claim_nature`（factual/reasoning/opinion/normative/hedge/structural、既定factual）を追加し、claim_extractが提案、verifyが`opinion`/`normative`/`hedge`/`structural`を`not_applicable`とするよう指示、Agent非準拠時はOrchestratorが決定的に正規化(`contradicted`/`conflicting`は対象外)。これにより非事実的claimだけを理由にした不必要な`withheld`を防止(critical/major factualの安全側判定は不変)。evidence_collectの検索対象選定からも非事実claimを除外。(2) `evidence_collect.Phase.metrics`へ`provider_type`/`real_search_performed`を追加し、Fake Evidence成功と実検索0件を区別可能化。`--adapter-mode real`かつEvidence Provider省略時にstderr警告を追加(既定挙動自体は後方互換のため不変)。(3) `--trace`/`--trace-output`(新規`trace.py`)を追加し、明示指定時だけ各Phase・Agentの生出力(best-effort redaction適用)を確認可能に。Storage Contractとは完全独立。監査ゲート(§11.1、approvedのみ公開)自体の二値判定は意図的設計として維持。 | QandA Z-1, SPEC §10.4.2・§10.5・§15.7・§13.1.1, `src/oracle_council/models.py`・`orchestrator.py`・`evidence.py`・`adapters/base.py`・`cli.py`・`trace.py`(新規)・`schemas/claim_extract.json`, `tests/unit/test_classification.py`・`test_orchestrator.py`・`test_evidence.py`・`test_adapter_schema.py`・`test_cli.py`・`test_trace.py`(新規) |
 
+## 0-21. criticize工程でagy-cli COMMAND_NOT_FOUND→代替claude-codeもINVALID_OUTPUTで連鎖失敗（2026-07-23、実機E2Eで発見・未解決）
+
+| # | 内容 | 反映箇所 |
+|---|---|---|
+| Z-2 | 実機ライブ実行（4AI評議会、`--adapter-mode real --evidence-provider cli-search`）でrespond〜verifyまで正常完走した後、`criticize`フェーズでagy-cliが`COMMAND_NOT_FOUND`（約372msで即時失敗）となり代替のclaude-codeへ切り替わったが、その代替実行も`INVALID_OUTPUT`（malformed JSON）で失敗し、代替予算（1 Run 1回）を使い切ってRunそのものが`failed`（exit 1、無回答）となった。単独で同一コマンド（`agy --version`）を実行すると即座に成功し、`AgyAdapter`にも`claude.py`/`codex.py`のような`probe()`結果キャッシュは無いため、コード上の恒常的なPATH解決バグは確認できず未解決。X-8.1の前例（未確証のまま推測でparserを緩めない方針）に倣い、根本原因が確定しない限りコード変更（`COMMAND_NOT_FOUND`を再試行対象に加える等のSPEC §8.3変更）は行っていない。次にlive実行する際は`--trace-output`を付けて再現状況とcriticize代替Agentの生malformed JSONを確認することを推奨。 | QandA Z-2, `src/oracle_council/adapters/agy.py`, `orchestrator.py`（`_UNAVAILABLE_ERROR_CODES`・`_SUBSTITUTION_ERROR_CODES`・`_MAX_RUN_SUBSTITUTIONS`、参照のみ・無改修） |
+
 ## 0. v0.3.1で解消済み
 
 | # | 内容 | SPEC反映箇所 |
