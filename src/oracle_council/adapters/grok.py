@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
 from typing import Any
 
@@ -10,10 +11,9 @@ from ..models import AgentCapabilities, AgentFailure, AgentRequest, AgentResult,
 from ..phase_schema import get_phase_schema
 from .base import build_phase_input, classify_cli_error, execution_failure_summary, validate_phase_output, extract_json_object
 
-# grok CLI invocation confirmed live (2026-07-18) and cross-checked against
-# garyohosu/werewolf-game's config/agents.json (command "grok", args ["-p"],
-# prompt_mode "arg"): `grok -p "<prompt>" --output-format json` wraps the
-# model's text in a CLI metadata envelope
+# grok CLI invocation confirmed live (2026-07-18, envelope shape; re-confirmed
+# for --prompt-file transport in a later session): `grok --prompt-file <path>
+# --output-format json` wraps the model's text in a CLI metadata envelope
 # `{"text": "<answer text>", "stopReason": ..., "usage": {...}, ...}` - the
 # phase JSON is inside envelope["text"], the same shape ClaudeAdapter already
 # handles for its own envelope["result"]. grok has a `--json-schema` flag
@@ -129,12 +129,8 @@ subprocess.run = _custom_run
 
 
 class GrokAdapter:
-    """xAI Grok CLI (`grok -p ... --output-format json`).
+    """xAI Grok CLI (`grok --prompt-file <path> --output-format json`).
 
-    Real invocation shape confirmed live 2026-07-18 (not guessed): prompt is
-    passed as a trailing positional argument (matching garyohosu/werewolf-game's
-    config/agents.json, which uses the same "grok -p <prompt>" + prompt_mode
-    "arg" combination this project has already exercised in real games).
     `--output-format json` wraps the response as
     `{"text": "<model text>", "stopReason": ..., "usage": {...}, ...}`; the
     phase JSON lives inside `envelope["text"]`, unwrapped the same way
@@ -144,6 +140,17 @@ class GrokAdapter:
     this adapter keeps the same SPEC Sec8.4 180s default as the other
     Adapters, which already exceeds the demonstrated-working value with
     margin, rather than inventing a Grok-specific number.
+
+    Invocation shape confirmed live: `grok -p`/`--single` only accepts the
+    prompt inline on argv and does not fall back to stdin when the value is
+    omitted (`grok -p` with no value errors on argument parsing before any
+    model call). `--prompt-file <path>` is grok's own documented single-turn
+    prompt option (confirmed live, including with Japanese/UTF-8 content),
+    so the prompt body -- which can include claim text and fetched web
+    evidence -- is written to a per-call temp file instead of argv, where it
+    would otherwise stay visible to other local users/processes via the
+    process list for the life of the subprocess. The temp file is removed
+    in `execute()`'s `finally` block whether the call succeeds or fails.
     """
 
     def __init__(self, agent_id: str, model: str | None = None, timeout_s: int = 180) -> None:
@@ -209,7 +216,33 @@ class GrokAdapter:
 
         prompt = _build_prompt(request.phase, build_phase_input(request), request.output_schema)
 
-        cmd = ["grok", "-p", prompt, "--output-format", "json"]
+        fd, path = tempfile.mkstemp(suffix=".txt", prefix="oracle-council-grok-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(prompt)
+            fd = None  # os.fdopen() took ownership and closed it via `with`
+        except OSError as exc:
+            # `fd` is still the raw descriptor only if os.fdopen() itself
+            # never took ownership of it (construction failed before the
+            # `with` block could run its cleanup). If write() failed instead,
+            # `with` already closed it above, so this is a no-op guarded
+            # against a "Bad file descriptor" double-close.
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise AgentFailure(
+                "EXECUTION_ERROR",
+                str(exc),
+                public_summary=execution_failure_summary(request.phase, "process_launch_failure"),
+            ) from exc
+
+        cmd = ["grok", "--prompt-file", path, "--output-format", "json"]
         if self.model:
             cmd.extend(["--model", self.model])
 
@@ -281,3 +314,7 @@ class GrokAdapter:
         finally:
             _thread_local.adapter = None
             _thread_local.execution_id = None
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
